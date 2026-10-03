@@ -37,22 +37,22 @@ export async function parseSubmission(form: FormData) {
   return { rating, title, body, name, images }; // no email: V1 stores no reviewer contact data
 }
 
+export const PRODUCT_LOOKUP_QUERY = `#graphql
+  query ProoflyProductLookup($id: ID!) { product(id: $id) { handle title status updatedAt } }`;
+
 /**
  * Makes sure this shop has a product row (FK) for a product that had no reviews before. The product is looked up
  * through the Admin API of the SAME authenticated shop, so another shop's product id can never be attached.
  */
 export async function ensureProduct({ db, shopId }: Tenant, admin: AdminContext, shopifyProductId: bigint) {
-  const existing = await db.product.findFirst({ where: { shopId, shopifyProductId } });
+  const existing = await db.product.findFirst({ where: { shopId, shopifyProductId, deletedAt: null } });
   if (existing) return existing;
   if (!admin) throw new SubmitError("product", "Product not found.", 404);
-  const res = await admin.graphql(
-    `query($id: ID!) { product(id: $id) { handle title status featuredMedia { preview { image { url } } } } }`,
-    { variables: { id: `gid://shopify/Product/${shopifyProductId}` } },
-  );
+  const res = await admin.graphql(PRODUCT_LOOKUP_QUERY, { variables: { id: `gid://shopify/Product/${shopifyProductId}` } });
   const p = (await res.json()).data?.product;
   if (!p || p.status !== "ACTIVE") throw new SubmitError("product", "Product not found.", 404);
   return db.product.create({
-    data: { shopId, shopifyProductId, handle: p.handle, title: p.title, status: "active", image: p.featuredMedia?.preview?.image?.url ?? null },
+    data: { shopId, shopifyProductId, handle: p.handle.toLowerCase(), title: p.title, status: "active", shopifyUpdatedAt: new Date(p.updatedAt), lastSeenAt: new Date() },
   });
 }
 

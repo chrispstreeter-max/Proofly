@@ -7,7 +7,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, payload, shop: domain } = await authenticate.webhook(request);
   const shop = await shopByDomain(domain); // includes uninstalled shops (redaction arrives after uninstall)
   if (!shop) return new Response();
-  const p = payload as { customer?: { id?: number; email?: string } };
+  const p = payload as { customer?: { id?: number } };
   await withTenant(shop.id, async ({ db, shopId }) => {
     switch (topic) {
       case "CUSTOMERS_DATA_REQUEST": {
@@ -17,12 +17,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         break;
       }
       case "CUSTOMERS_REDACT": {
-        // V1 stores no customer identity for new reviews; imported/legacy rows may still carry an email or customer id.
+        // V1 stores no reviewer contact data; rows linked to a Shopify customer id (legacy/V1.1) are unlinked.
         const id = p.customer?.id ? BigInt(p.customer.id) : null;
-        const email = p.customer?.email?.toLowerCase();
-        const or = [...(id ? [{ shopifyCustomerId: id }] : []), ...(email ? [{ reviewerEmail: email }] : [])];
-        const reviews = or.length
-          ? await db.review.updateMany({ where: { shopId, OR: or }, data: { shopifyCustomerId: null, reviewerEmail: null, submitterIpHash: null } })
+        const reviews = id
+          ? await db.review.updateMany({ where: { shopId, shopifyCustomerId: id }, data: { shopifyCustomerId: null, submitterIpHash: null } })
           : { count: 0 };
         await db.auditLog.create({ data: { shopId, actor: "system", action: "customer.redact", entity: "customer", entityId: String(p.customer?.id ?? ""), details: { reviews: reviews.count } } });
         break;

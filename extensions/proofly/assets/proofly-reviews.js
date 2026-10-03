@@ -6,7 +6,7 @@
   if (!root || root.dataset.ready) return;
   root.dataset.ready = "1";
 
-  const API = root.dataset.api || "/apps/proofly";
+  const API = root.dataset.api; // the merchant's configured app proxy path (empty → no requests)
   const productId = root.dataset.productId;
   const $ = (s) => root.querySelector(s);
   const list = $("[data-list]");
@@ -112,6 +112,7 @@
     if (state.photos) q.set("photos", "1");
     if (!state.summary) q.set("summary", "1");
     try {
+      if (!API) throw new Error("no proxy path");
       const res = await fetch(`${API}/products/${productId}/reviews?${q}`, { headers: { Accept: "application/json" } });
       if (!res.ok) throw new Error(String(res.status));
       const data = await res.json();
@@ -192,6 +193,7 @@
     btn.disabled = true;
     btn.textContent = "Submitting…";
     try {
+      if (!API) throw new Error("no proxy path");
       const res = await fetch(`${API}/reviews`, { method: "POST", body: fd, headers: { Accept: "application/json" } });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {

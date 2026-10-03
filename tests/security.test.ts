@@ -8,7 +8,7 @@ import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { loader as media } from "../app/routes/media.$";
 import { loader as devIndex } from "../app/routes/dev._index";
 import { loader as devPreview } from "../app/routes/dev.preview";
-import { loader as devProxy } from "../app/routes/apps.proofly.$";
+import { loader as devProxy } from "../app/routes/apps.$";
 import { args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, run, SAME_PRODUCT_ID, storefrontHost } from "./helpers";
 
 before(async () => {
@@ -55,7 +55,7 @@ test("media route rejects path traversal and private originals", async () => {
 
 test("dev-only routes are 404 outside development", async () => {
   for (const loader of [devIndex, devPreview, devProxy]) {
-    const r = await run(() => loader(args<LoaderFunctionArgs>(new Request("http://localhost/dev"), { "*": "ratings" })));
+    const r = await run(() => loader(args<LoaderFunctionArgs>(new Request("http://localhost/dev"), { "*": "proofly/ratings" })));
     assert.equal(r.response?.status, 404);
   }
 });

@@ -20,7 +20,13 @@
   if avg10.size != 2
     assign avg_display = '0.0'
   endif
-  assign api = routes.root_url | append: '/apps/proofly' | replace: '//', '/'
+  # The merchant's app proxy path comes from Proofly (app-data metafield). No path is hard-coded: without it the
+  # widget shows only the Shopify-rendered summary and makes no request.
+  assign proxy = app.metafields.proofly.proxy_path.value
+  assign api = ''
+  if proxy != blank
+    assign api = routes.root_url | append: proxy | replace: '//', '/'
+  endif
   assign customer_name = ''
   if customer
     assign last_initial = customer.last_name | slice: 0

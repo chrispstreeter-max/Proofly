@@ -22,7 +22,7 @@ is carried into this repository.
 | Theme app extension | `extensions/proofly/**` | Renamed and generalised (§3) |
 | Schema | `prisma/schema.prisma`, `prisma/migrations/**` | DDL only — migrations contain no data |
 | Config/tooling | `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `.eslintrc.cjs`, `.graphqlrc.ts`, `Dockerfile`, `shopify.app.toml`, `shopify.web.toml.liquid`, dotfiles, `.claude/launch.json`, `public/favicon.ico` | Names/comments generalised |
-| Brand + product docs | `brand/proofly-logo.png`, `docs/BRAND.md`, `docs/PRODUCT-SPEC-V1.md`, `docs/PROOFLY-ARCHITECTURE.md`, `docs/PUBLIC-APP-ROADMAP.md` | Merchant references replaced with neutral wording; prototype-specific audit sections condensed |
+| Brand + product docs | `brand/proofly-logo.png`, `docs/BRAND.md`, `docs/PRODUCT-SPEC-V1.md`, `docs/ARCHITECTURE.md`, `docs/PUBLIC-APP-ROADMAP.md` | Merchant references replaced with neutral wording; prototype-specific audit sections condensed |
 | CSV parser | `scripts/lib/csv.ts` | Generic RFC 4180 parser extracted from the prototype importer |
 
 ## 2. Excluded (contain merchant data or are merchant-specific)
@@ -45,10 +45,10 @@ is carried into this repository.
 | Product/app name strings, admin heading | “Proofly” |
 | “Response from {merchant}” hard-coded in widget and admin | Uses the shop's own name (`{{ shop.name }}` passed to the widget; neutral admin copy) |
 | “Imported from {legacy provider}” badge/banner | “Imported from {source}” using the review's source key |
-| Prototype-derived three-letter prefixes in CSS classes, data attributes, asset names and the proxy path | `pf` prefixes, `/apps/proofly` proxy subpath, `proofly-*` assets |
-| Card stars bound to a legacy theme's `.shopify-product-reviews-badge` markup | Documented Proofly hook only: `[data-pf-rating][data-product-id]` (legacy-markup mode, if ever offered, is an explicit opt-in) |
+| Prototype-derived three-letter prefixes in CSS classes, data attributes, asset names and the proxy path | `pf` prefixes, `proofly-*` assets; proxy path `/apps/proofly` as the default, **configurable per merchant since CP4** |
+| Card stars bound to a legacy theme's `.shopify-product-reviews-badge` markup | Baseline: documented hook `[data-pf-rating][data-product-id]`. **Superseded (CP3–4):** no theme hook at all — the product-card hierarchy in [ARCHITECTURE.md §11.8](ARCHITECTURE.md) |
 | Dev proxy default shop = a real store | `DEV_SHOP_DOMAIN` env, default fictional `proofly-dev.myshopify.com` |
-| Dev preview: real storefront origin, legacy card markup | Fictional origin, Proofly hook markup |
+| Dev preview: real storefront origin, legacy card markup | Fictional origin; since CP3 renders the real extension blocks around a generic theme-like page |
 | `shopify.app.toml` custom-app wording, real domains | Neutral Proofly config (public distribution and per-environment configs arrive in checkpoint 2) |
 | Schema comment naming a legacy provider | Generic source-key comment |
 
@@ -93,3 +93,19 @@ validated results (idempotent import of the recovery dataset with 0 mismatches, 
 offline disaster-recovery backup. It is never pushed, never merged into this repository, and its data is never
 copied here. Behavioural parity is re-established in this repository through the synthetic fixture and, where
 explicitly authorised, private local runs against the real dataset kept outside the repository.
+
+## Since the baseline
+
+This file records the clean starting point (commit `4d7a9e8`). What the code does now is described in
+[ARCHITECTURE.md §11](ARCHITECTURE.md), [TENANCY.md](TENANCY.md) and [STOREFRONT.md](STOREFRONT.md):
+
+- Checkpoints 1–2: multi-tenancy and row-level security, Shopify-managed install, V1 scopes only.
+- Checkpoint 3: storefront extension.
+- Checkpoint 4:
+  - product sync and webhooks;
+  - the canonical aggregate;
+  - the rating cache with ownership, and reconciliation;
+  - per-merchant proxy path;
+  - opaque public media ids;
+  - reviewer email removed from the schema.
+

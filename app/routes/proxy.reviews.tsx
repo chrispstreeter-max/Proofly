@@ -5,7 +5,7 @@ import { parseIds } from "../lib/reviews.server";
 import { SubmitError, createReview, ensureProduct, parseSubmission } from "../lib/submit.server";
 import { withTenant } from "../lib/tenant.server";
 
-// POST /apps/proofly/reviews (multipart) — "Write a Review" on the product page. Always lands in moderation.
+// POST <proxy path>/reviews (multipart) — "Write a Review" on the product page. Always lands in moderation.
 export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
   const { admin, shop } = await requireProxyTenant(request);

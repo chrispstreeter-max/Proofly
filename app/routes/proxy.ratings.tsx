@@ -4,7 +4,7 @@ import { requireProxyTenant } from "../lib/proxy.server";
 import { parseHandles, ratingsByHandle } from "../lib/reviews.server";
 import { withTenant } from "../lib/tenant.server";
 
-// GET /apps/proofly/ratings?handles=a,b,c → { ratings: { handle: [average, count] } } for THIS shop.
+// GET <proxy path>/ratings?handles=a,b,c → { ratings: { handle: [average, count] } } for THIS shop.
 // Fallback only: the card embed first uses ratings Liquid rendered from Shopify's standard metafields and asks here,
 // in one batched request, only for product cards Liquid could not see.
 export const loader = async ({ request }: LoaderFunctionArgs) => {

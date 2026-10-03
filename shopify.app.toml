@@ -20,7 +20,8 @@ use_legacy_install_flow = false
 [auth]
 redirect_urls = ["https://example.com/auth/callback"]
 
-# Storefront: https://<shop domain>/apps/proofly/* → {application_url}/proxy/*
+# Storefront: https://<shop domain>/<prefix>/<subpath>/* → {application_url}/proxy/*. This is the default location for
+# new installs; merchants may change it in Shopify, and set the same path in Proofly (app/lib/proxy-path.server.ts).
 [app_proxy]
 url = "/proxy"
 prefix = "apps"
@@ -36,6 +37,12 @@ api_version = "2026-10"
   [[webhooks.subscriptions]]
   topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
+
+  # Catalogue sync (read_products). Only the fields Proofly stores are delivered.
+  [[webhooks.subscriptions]]
+  topics = ["products/create", "products/update", "products/delete"]
+  uri = "/webhooks/products"
+  include_fields = ["id", "handle", "title", "status", "updated_at"]
 
   [[webhooks.subscriptions]]
   compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]

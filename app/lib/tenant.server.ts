@@ -1,5 +1,6 @@
 import type { Prisma, Shop } from "@prisma/client";
 import prisma from "../db.server";
+import { DEFAULT_PROXY_PATH, publishProxyPath } from "./proxy-path.server";
 
 /**
  * Tenant boundary.
@@ -48,20 +49,45 @@ export function shopByDomain(domain: string) {
   return prisma.shop.findUnique({ where: { shopDomain: normalise(domain) } });
 }
 
-type GraphqlFn = (q: string) => Promise<Response>;
+export const SHOP_IDENTITY_QUERY = `#graphql
+  query ProoflyShopIdentity { shop { id name myshopifyDomain primaryDomain { host } } }`;
+
+type GraphqlFn = (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response>;
 
 /**
  * Install / reinstall lifecycle. Called from Shopify's afterAuth hook (and lazily on the first authenticated admin
  * request if needed). Identity (numeric shop id, name) comes from the Admin API of the authenticated session.
  */
 export async function upsertShopFromAuth(sessionShop: string, graphql: GraphqlFn): Promise<Shop> {
-  const res = await graphql(`{ shop { id name myshopifyDomain primaryDomain { host } } }`);
+  const res = await graphql(SHOP_IDENTITY_QUERY);
   const data = (await res.json()) as { data?: { shop?: { id: string; name: string; myshopifyDomain: string; primaryDomain?: { host?: string } } } };
   const s = data.data?.shop;
   if (!s || normalise(s.myshopifyDomain) !== normalise(sessionShop)) throw new Error("Shop identity mismatch");
   const shopifyShopId = BigInt(s.id.split("/").pop()!);
   const storefrontHosts = s.primaryDomain?.host ? [normalise(s.primaryDomain.host)] : [];
-  return registerShop({ shopDomain: sessionShop, shopifyShopId, shopName: s.name, storefrontHosts });
+  const shop = await registerShop({ shopDomain: sessionShop, shopifyShopId, shopName: s.name, storefrontHosts });
+  // The theme extension reads the shop's proxy path from an app-data metafield. Best effort: a failure here must not
+  // block authentication; it is retried on the next token exchange and from the admin Storefront settings.
+  await publishShopProxyPath(shop.id, graphql).catch((e) => console.warn("proxy path metafield not published", shop.id, e));
+  return shop;
+}
+
+/** Publishes the shop's configured proxy path to its app-data metafield if it changed since the last publish. */
+export async function publishShopProxyPath(shopId: string, graphql: GraphqlFn, opts: { force?: boolean } = {}) {
+  const s = await withTenant(shopId, ({ db }) => db.shopSettings.findUniqueOrThrow({ where: { shopId } }));
+  if (!opts.force && s.proxyPathPublished === s.proxyPath) return false;
+  await publishProxyPath(graphql, s.proxyPath);
+  await withTenant(shopId, ({ db }) => db.shopSettings.update({ where: { shopId }, data: { proxyPathPublished: s.proxyPath } }));
+  return true;
+}
+
+/**
+ * Public media resolver — the only cross-tenant read in the app. Maps an opaque public asset id to its internal
+ * storage key, and ONLY while the photo is public (see proofly_public_media_key in the checkpoint 4 migration).
+ */
+export async function publicMediaKey(publicId: string, size: 320 | 1600): Promise<string | null> {
+  const rows = await prisma.$queryRaw<{ key: string | null }[]>`SELECT proofly_public_media_key(${publicId}, ${size}::int) AS key`;
+  return rows[0]?.key ?? null;
 }
 
 /** Creates the tenant (and its default settings) or reactivates it on reinstall. Data of a reinstalled shop is kept. */
@@ -82,7 +108,7 @@ export async function registerShop(input: { shopDomain: string; shopifyShopId: b
   // Only lifecycle changes go to the permanent audit trail; a routine token exchange/refresh of an active shop does not.
   const lifecycle = !existing ? "shop.installed" : existing.uninstalledAt ? "shop.reinstalled" : null;
   await withTenant(shop.id, async ({ db, shopId }) => {
-    await db.shopSettings.upsert({ where: { shopId }, create: { shopId }, update: {} });
+    await db.shopSettings.upsert({ where: { shopId }, create: { shopId, proxyPath: DEFAULT_PROXY_PATH }, update: {} });
     if (lifecycle) await db.auditLog.create({ data: { shopId, actor: "shopify", action: lifecycle, entity: "shop", entityId: shopId } });
   });
   return shop;

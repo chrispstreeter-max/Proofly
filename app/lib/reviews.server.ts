@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { publicUrl } from "./media.server";
+import { mediaUrl } from "./media.server";
 import type { Tenant } from "./tenant.server";
 
 export const PAGE_SIZE = 10;
@@ -30,7 +30,7 @@ export function parseListParams(url: URL) {
 
 /** This shop's product for a Shopify product id, or null (unknown and other-shop products look the same). */
 export function findProduct({ db, shopId }: Tenant, shopifyProductId: bigint) {
-  return db.product.findFirst({ where: { shopId, shopifyProductId } });
+  return db.product.findFirst({ where: { shopId, shopifyProductId, deletedAt: null } });
 }
 
 const EMPTY_SUMMARY = { count: 0, average: 0, distribution: [0, 0, 0, 0, 0], withPhotos: 0 };
@@ -39,12 +39,11 @@ export async function productSummary({ db, shopId }: Tenant, productId: string |
   if (!productId) return EMPTY_SUMMARY;
   const p = await db.product.findFirst({ where: { shopId, id: productId } });
   if (!p) return EMPTY_SUMMARY;
-  const withPhotos = await db.review.count({ where: { shopId, productId, ...PUBLIC_REVIEW, images: { some: PUBLIC_MEDIA } } });
   return {
     count: p.reviewCount,
     average: Number(p.averageRating),
     distribution: [p.rating1, p.rating2, p.rating3, p.rating4, p.rating5],
-    withPhotos,
+    withPhotos: p.photoReviewCount, // from the canonical aggregate (storage-limited photos excluded)
   };
 }
 
@@ -61,7 +60,7 @@ export function serializeReview(r: ReviewRow) {
     images: r.images
       .filter((i) => i.mediaStatus === "published") // also filtered in the query; never trust a caller's include
       .sort((a, b) => a.position - b.position)
-      .map((i) => ({ thumb: publicUrl(i.thumbKey), large: publicUrl(i.largeKey), w: i.width, h: i.height })),
+      .map((i) => ({ thumb: mediaUrl(i.publicId, 320), large: mediaUrl(i.publicId, 1600), w: i.width, h: i.height })),
     reply: r.reply ? { body: r.reply.reply, date: r.reply.createdAt.toISOString().slice(0, 10) } : null,
   };
 }
@@ -95,7 +94,7 @@ export async function listReviews(
  */
 export async function ratingsByHandle({ db, shopId }: Tenant, handles: string[]) {
   const rows = await db.product.findMany({
-    where: { shopId, handle: { in: handles }, reviewCount: { gt: 0 } },
+    where: { shopId, handle: { in: handles }, reviewCount: { gt: 0 }, deletedAt: null }, // a recreated product's handle never resolves to the old one
     select: { handle: true, reviewCount: true, averageRating: true },
   });
   return Object.fromEntries(rows.map((r) => [r.handle, [Number(r.averageRating), r.reviewCount] as const]));

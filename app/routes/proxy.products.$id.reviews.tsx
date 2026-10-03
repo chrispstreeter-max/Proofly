@@ -4,7 +4,7 @@ import { requireProxyTenant } from "../lib/proxy.server";
 import { findProduct, listReviews, parseIds, parseListParams, productSummary } from "../lib/reviews.server";
 import { withTenant } from "../lib/tenant.server";
 
-// GET /apps/proofly/products/:id/reviews?page=&rating=&photos=1&sort=recent|highest|lowest[&summary=1]
+// GET <proxy path>/products/:id/reviews?page=&rating=&photos=1&sort=recent|highest|lowest[&summary=1]
 // Unknown products and other shops' products produce the same empty response.
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { shop } = await requireProxyTenant(request);

@@ -1,9 +1,9 @@
-# Proofly — Shopify-Native Architecture Decision
+# Proofly — Architecture
 
-> **STATUS: ARCHITECTURE DECISION RECORD — not implemented; the commercial refactor is not authorised.**
-> No Shopify, hosting or credential changes exist. Decided on the validated prototype; carried into this repository by
-> [BASELINE.md](BASELINE.md).
-> **Commercial rules resolved 2026-10-03 (§9). Test-data policy: §10.** Awaiting approval before implementation.
+> **STATUS:** decision record (§1–§10) plus the implemented foundation (§11, checkpoints 1–4, local only).
+> No production Shopify app, hosting or credentials exist. Where §1–§10 describe something not built yet, it says so;
+> §11 is authoritative for what the code does today.
+> **Commercial rules resolved 2026-10-03 (§9). Test-data policy: §10.**
 
 **Principle:** Shopify hosts and serves everything it is good at; Proofly stores and processes only what Shopify
 cannot appropriately provide. The storefront must render ratings and reviews **without depending on a Proofly server
@@ -30,15 +30,15 @@ cross-product queries? moderation/history/audit? private? files? analytics? API/
 
 | Data | Shopify-native option | Decision | Reasoning |
 |---|---|---|---|
-| Product catalogue (id, handle, title, SKUs, status, image) | Shopify products (source of truth) | **Shopify canonical**; Proofly keeps a **synced lookup copy** | Matching, filtering and analytics need joins in Proofly; kept fresh via bulk sync + `products/*` webhooks |
+| Product catalogue (id, handle, title, status) | Shopify products (source of truth) | **Shopify canonical**; Proofly keeps a **synced lookup copy** | Matching, filtering and analytics need joins in Proofly; kept fresh via paginated catalogue sync + `products/*` webhooks (§11.4) |
 | Review records (all statuses) | Metaobjects (1M entries/definition, 40 fields) | **Proofly Postgres (canonical)** | Needs cross-product filtering/sorting/search, pending/rejected states that must never be storefront-visible, moderation history, idempotent import keys, 100k-review plans; metaobject writes are rate-limited GraphQL mutations; merchant-editable Shopify content would undermine audit integrity; uninstall/redaction behaviour of app-owned entries is unproven |
-| Product rating + count | Standard metafields `reviews.rating`, `reviews.rating_count` | **Shopify (derived cache)** | Read natively by many OS 2.0 themes for cards, used by the block for server-rendered stars/JSON-LD; written only from Postgres |
-| Published-review first page per product | App-owned JSON product metafield (≤ 128 KB for new apps) | **Shopify (derived snapshot)** | Lets the block render summary, distribution and the first ~10 reviews in Liquid on Shopify's servers/CDN with zero Proofly calls; rebuilt from Postgres whenever that product's published set changes |
+| Product rating + count | Standard metafields `reviews.rating`, `reviews.rating_count` | **Shopify (derived cache)** | Written only from Postgres, and only for products whose rating Proofly owns (§11.2); used by Proofly's blocks for server-rendered stars/JSON-LD; themes may also read them, but Proofly does not depend on that (§11.8) |
+| Published-review first page per product | App-owned JSON product metafield (≤ 128 KB for new apps) | **Shopify (derived snapshot) — planned, not built yet** | Would let the block render the first ~10 reviews in Liquid with zero Proofly calls. Today the list loads lazily from Postgres via the app proxy (§11.6) |
 | Rating distribution + photo-review count | Inside the snapshot metafield | **Shopify (derived)** | Needed for first render only |
 | Further pages, filters, sorting | Not feasible in Liquid (no ad-hoc querying) | **Proofly via app proxy** | Interactive and on demand; storefront degrades gracefully if unavailable |
 | Review submissions (shopper writes) | No anonymous Shopify write path for app data | **Proofly via app proxy** | Validation, spam/rate limits, image processing, moderation |
 | Review images: originals | Shopify Files (merchant-visible, merchant-deletable, no per-app quota) | **Proofly private object storage (R2)** | Must stay recoverable and private; quotas per plan; per-shop isolation; deletion control |
-| Review images: storefront copies | Shopify Files CDN | **Proofly public bucket + Cloudflare CDN (WebP)** | Plan storage quotas, guaranteed deletion on `shop/redact`, merchant cannot break reviews by cleaning their Files library |
+| Review images: storefront copies | Shopify Files CDN | **Proofly storage (WebP), served by the `/media` resolver behind a CDN, opaque asset ids only** (§11.7) | Plan storage quotas, guaranteed deletion on `shop/redact`, takedown when a review is hidden, merchant cannot break reviews by cleaning their Files library |
 | Merchant replies | Inside snapshot for displayed reviews | **Postgres canonical**, mirrored in snapshot | Editable, audited |
 | Moderation actions / audit log | — | **Postgres** | Private history, never storefront-visible |
 | Import jobs, files, matches, reports | — | **Postgres + private storage** | Large files, background processing, private |
@@ -50,9 +50,11 @@ cross-product queries? moderation/history/audit? private? files? analytics? API/
 | Shopify access tokens / sessions | — | **Postgres, encrypted** | Secrets never belong in Shopify-readable storage |
 | Storefront assets (JS/CSS/Liquid) | Theme app extension assets (Shopify CDN) | **Shopify** | Already the case |
 
-**Reconciliation:** Postgres always wins. A sync job writes metafields after every change and a scheduled
-reconciliation reads Shopify's values back (bulk query) and rewrites any drift (e.g. Shopify 70 vs Proofly 68 → 68).
-A merchant-visible “Resync storefront” action runs it on demand. Shopify values are never written back into Postgres.
+**Reconciliation:** Postgres always wins, for Proofly-owned ratings only. After every change the affected values are
+synced; reconciliation reads Shopify's values back for Proofly-managed products and rewrites any drift (e.g. Shopify
+67 / 4.39 vs Proofly 68 / 4.41 → 68 / 4.41). Shopify values are never written back into Postgres, and products whose
+rating Proofly does not own are never touched (§11.2–11.3). Today reconciliation runs on demand (merchant action); a
+scheduled run arrives with the job runner.
 
 ---
 
@@ -101,7 +103,7 @@ migration, images, sync and compliance. Storefront display never waits on it.
                          │   metafield/snapshot sync + reconciliation · plan sync (Partner API) ·   │
                          │   GDPR deletion · usage metering (reviews, storage)                      │
                          │ Managed PostgreSQL (canonical) · Cloudflare R2: private originals,       │
-                         │   public WebP copies behind Cloudflare CDN (keys s/<shop>/…)             │
+                         │   WebP copies served by /media/<opaque-id> (internal keys s/<shop>/…)    │
                          └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -109,9 +111,9 @@ Request paths:
 
 | Storefront action | Path | Proofly server involved? |
 |---|---|---|
-| Product page stars, count, summary, distribution, first ~10 reviews, replies, photo thumbs | Liquid ← Shopify metafields; images from Proofly CDN | **No** (CDN only for images) |
-| Product cards in themes with native rating support | Theme ← `reviews.*` metafields | **No** |
-| Product cards in themes without it | Proofly Card Ratings embed → one batched proxy request (cached) | Yes, one request per page |
+| Product page stars, count, summary | Liquid ← Shopify metafields | **No** |
+| Review list (first page included, today), photos | App proxy, lazily; photos via `/media` (CDN-cacheable) | Yes (the first-page snapshot is planned, see §2) |
+| Product cards | Rating summary block placed by the merchant (Liquid), or the card embed: inline Liquid data + ≤1 batched request (§11.8) | Only for cards Liquid can't see |
 | Load more / filter / sort | App proxy | Yes, on interaction |
 | Write a review | App proxy | Yes (write) |
 
@@ -311,3 +313,97 @@ never copied to staging or production.
    CI) with 0 unexplained mismatches.
 4. No tenant can see another tenant's data (isolation suite).
 5. The merchant-data scan passes on every commit and production build.
+
+---
+
+## 11. Implemented foundation (checkpoints 1–4)
+
+### 11.1 Review truth
+PostgreSQL is canonical for every review, in every state. Shopify holds only derived data. Tenant isolation:
+[TENANCY.md](TENANCY.md). Storefront: [STOREFRONT.md](STOREFRONT.md).
+
+### 11.2 Shopify rating data — derived cache with explicit ownership
+- Verified definitions (shopify.dev standard definitions + Admin API 2026-10 schema): `reviews.rating`, type `rating`,
+  value `{"value":"4.41","scale_min":"1.0","scale_max":"5.0"}` (strings); `reviews.rating_count`, type
+  `number_integer`. Owner: product.
+- `products.rating_ownership` = `unmanaged` | `proofly_managed`. **Transition:** a product becomes `proofly_managed`
+  when it first has a public Proofly review (published, not held), set by `recomputeProduct`. Merely existing in the
+  catalogue never does it. V1 has no transition back.
+- **Unmanaged:** Proofly never reads, writes, deletes or reconciles that product's rating metafields; an existing
+  third-party rating is left exactly as it is.
+- **Proofly-managed:** Proofly writes its aggregate (rating + count). If the product later has no public Proofly
+  reviews, Proofly writes count 0 and removes its own `reviews.rating`.
+- All writes live in `app/lib/rating-cache.server.ts`: idempotent (`metafieldsSet`), batched (≤25 metafields per
+  call), retried for throttling and transient errors. A failed write leaves canonical data untouched; the product
+  stays "dirty" (`synced_*` ≠ aggregate, `rating_sync_error` set) until a later sync or reconciliation succeeds.
+
+### 11.3 Reconciliation
+`reconcileRatingCache` reads Shopify's actual values for this shop's Proofly-managed, live products only (`nodes(ids:)`,
+50 per call). It classifies each as ok, missing, incorrect (including stale), or not in Shopify, and rewrites those
+that differ. It never changes reviews or aggregates.
+- Proofly 68 / 4.41 vs Shopify 67 / 4.39 → repaired.
+- Proofly has no reviews for the product (unmanaged) vs Shopify 68 / 4.41 → nothing (it may belong to another provider).
+
+### 11.4 Aggregate
+`computeAggregate` (`app/lib/aggregates.server.ts`) is the only rating calculation: review count, average (2 decimals),
+1★–5★ counts and photo-review count.
+- Eligible reviews: published AND not hidden AND not rejected AND not plan-limited.
+- Photos count only when published and not storage-limited.
+- Every eligible review counts; nothing is selected by rating or content.
+
+`recomputeProduct` runs after every eligibility change (moderation approve/reject/hide/restore, plan-limit hold and
+release, media status) and the cache sync follows.
+
+### 11.5 Storage limits apply to photos, never reviews
+There is no storage-limited review state.
+- A published review counts toward count, average and distribution whatever its photos' state.
+- It is a photo review only if at least one photo is public.
+- Storage-limited photos are never served, never listed and never counted.
+- A review is never deleted because of storage limits.
+
+### 11.6 Product identity and sync
+- **Identity:** the Shopify product ID is authoritative: `(shop_id, shopify_product_id)`. Handle, title and SKU are
+  never used to attach reviews. They are migration-matching hints only.
+- **Catalogue sync** (`syncCatalog`, `read_products` only):
+  - Paginated `products` query (100 per page) through the shop's own Admin API client.
+  - Waits when Shopify's cost budget is low, and retries THROTTLED and transient errors.
+  - Saves its cursor after every page, so a failed run resumes where it stopped. Only one run per shop at a time.
+  - Stores id, handle, title, status (`active | draft | archived | unlisted`) and `updatedAt`.
+  - After a complete run, products Shopify no longer returns are marked deleted.
+- **Webhooks** (`products/create|update|delete`, `include_fields` = id, handle, title, status, updated_at):
+  - The tenant is the HMAC-verified shop. Invalid HMAC → 401.
+  - Unknown or uninstalled shops and unusable payloads are acknowledged and ignored.
+  - Updates older than the stored `shopify_updated_at` are ignored. Duplicates are no-ops.
+  - Nothing here calls Shopify or touches ratings.
+- **Deletion:** `deleted_at` is set and all reviews are kept, so the merchant can still export them. Nothing is
+  deleted in Shopify, including any rating metafields. A late update never resurrects the product. A re-created
+  product (new id, possibly the same handle) is a new row with no reviews; the old history stays on the deleted row.
+
+### 11.7 Public media — opaque asset ids
+- Each photo has a random 128-bit `public_id`. Public URLs are `<MEDIA_PUBLIC_URL>/<public_id>-320.webp` and
+  `-1600.webp`. No shop, review, product or Shopify ID appears in them.
+- Storage stays namespaced per merchant internally (`s/<shop>/r/<review>/<public_id>-…`, originals under
+  `s/<shop>/originals/…`).
+- The `/media` route resolves an id through `proofly_public_media_key()`, a SECURITY DEFINER function and the only
+  cross-tenant read. It returns a storage key only while the photo is public: published media, published un-held
+  review, live product, installed shop. Every other case is the same 404.
+- Hiding a review takes its photos down at the next cache expiry (1 h). Originals are never served.
+
+### 11.8 Storefront: proxy configuration and product-card hierarchy
+- **Proxy path:** each merchant's app proxy path is stored per shop (`shop_settings.proxy_path`, set explicitly at
+  install to the app default `/apps/proofly`, editable in the admin). It is published to an app-data metafield
+  (`proofly.proxy_path` on the AppInstallation) that the extension reads through Liquid's `app` object. Every storefront
+  request must arrive signed with that shop's path, so another shop's path, or the default when a shop configured a
+  different one, gets a 404. There is no global fallback. The only place that knows paths is
+  `app/lib/proxy-path.server.ts`.
+- **Product cards:**
+  1. Shopify-native rating metafields, kept correct for Proofly-managed products.
+  2. The Rating summary app block. The merchant places it in the Theme Editor in any section that offers app blocks;
+     the product auto-fills. This is the preferred, deterministic placement.
+  3. The Product card stars app embed: the fallback for automatic card stars. It skips cards already showing a rating
+     and uses inline Liquid data plus at most one batched request.
+  4. Never theme code: no `theme.liquid`, template, section or snippet is ever modified.
+- **API version:** one constant (`app/shopify-api-version.ts`, 2026-10) is used by the Admin API client and codegen,
+  and test-enforced equal to the webhook `api_version`. `npm run check:graphql` validates every Admin operation
+  against Shopify's published schema.
+

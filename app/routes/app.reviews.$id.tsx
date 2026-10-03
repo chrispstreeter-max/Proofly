@@ -2,9 +2,9 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { Form, useActionData, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
-import { publicUrl } from "../lib/media.server";
+import { readDerivative } from "../lib/media.server";
 import { ACTIONS, moderate, moderationHistory, saveReply, type ModerationActionName } from "../lib/moderation.server";
-import { syncMetafields } from "../lib/aggregates.server";
+import { syncAfterRatingChange } from "../lib/rating-cache.server";
 import { isUuid, withTenant } from "../lib/tenant.server";
 
 // Missing reviews and other shops' reviews get the identical response (no existence leak).
@@ -25,15 +25,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   });
   if (!found) throw notFound();
   const { r, history } = found;
+  // The merchant sees ALL of their photos (also pending/hidden/storage-limited) as inline thumbnails, so moderation
+  // never needs the public /media route — which only ever serves currently public photos.
+  const thumbs = await Promise.all(r.images.map(async (i) => {
+    const b = await readDerivative(i.thumbKey);
+    return { id: i.publicId, thumb: b ? `data:image/webp;base64,${b.toString("base64")}` : "", status: i.mediaStatus };
+  }));
   return {
     review: {
       id: r.id, sourceId: r.sourceReviewId, source: r.source, imported: r.imported, status: r.status, rating: r.rating,
       title: r.title, body: r.body, name: r.reviewerName, date: r.reviewDate.toISOString().slice(0, 16).replace("T", " "),
       verified: r.verifiedPurchase, flags: r.flags,
-      // Admin-only private fields:
-      email: r.reviewerEmail,
       product: { title: r.product.title, handle: r.product.handle, id: r.product.shopifyProductId.toString() },
-      images: r.images.map((i) => ({ thumb: publicUrl(i.thumbKey), large: publicUrl(i.largeKey), sha: i.sha256.slice(0, 12) })),
+      images: thumbs,
       reply: r.reply?.reply ?? "",
     },
     history: history.map((h) => ({ at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: `${h.action} (${h.fromStatus} → ${h.toStatus})` })),
@@ -53,7 +57,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   if (intent in ACTIONS) {
     const n = await withTenant(shop.id, (t) => moderate(t, [params.id!], intent as ModerationActionName, actor));
     if (!n) throw notFound();
-    await syncMetafields(shop.id, admin.graphql);
+    await syncAfterRatingChange(shop.id, admin.graphql); // best effort: the canonical change above stands either way
     return { message: `Review ${ACTIONS[intent as ModerationActionName]}. Storefront rating updated.` };
   }
   return { message: "Unknown action." };
@@ -93,7 +97,7 @@ export default function ReviewDetail() {
           {r.images.length > 0 && (
             <s-stack direction="inline" gap="small">
               {r.images.map((i) => (
-                <s-link key={i.sha} href={i.large} target="_blank"><s-thumbnail src={i.thumb} alt="Review photo" size="large" /></s-link>
+                <s-stack key={i.id} gap="small-200"><s-thumbnail src={i.thumb} alt="Review photo" size="large" />{i.status !== "published" && <s-badge>{i.status.replace("_", " ")}</s-badge>}</s-stack>
               ))}
             </s-stack>
           )}
@@ -120,7 +124,6 @@ export default function ReviewDetail() {
         <s-stack gap="small">
           <s-text>Product: <s-link href={`shopify://admin/products/${r.product.id}`}>{r.product.title}</s-link></s-text>
           <s-text>Source: {r.source} ({r.sourceId})</s-text>
-          <s-text>Email (private): {r.email ?? "—"}</s-text>
         </s-stack>
       </s-section>
       <s-section slot="aside" heading="History">

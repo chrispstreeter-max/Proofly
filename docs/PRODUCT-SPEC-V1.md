@@ -175,7 +175,7 @@ review, never silently dropped.
 ## 12. Data model (V1)
 
 **PostgreSQL is canonical.** Shopify holds only derived data written from Proofly: the standard rating/count fields
-and a per-product snapshot of the first page of published reviews (see [PROOFLY-ARCHITECTURE.md](PROOFLY-ARCHITECTURE.md)
+and (planned, not built yet) a per-product snapshot of the first page of published reviews (see [ARCHITECTURE.md](ARCHITECTURE.md)
 for the full data-placement decisions):
 
 ```
@@ -251,8 +251,8 @@ subscriptions, audit log, imports, analytics) → STOREFRONT EXTENSIONS
   storage-limited, with counts shown to the merchant. **Upgrade:** explicit “Publish eligible reviews” action (no
   automatic publication in V1). **Downgrade:** grandfathered — published reviews and media stay visible; the lower
   allowance applies to future publishing. Selection is chronological only, never by rating or sentiment. Details:
-  PROOFLY-ARCHITECTURE §6.3, §6.3a, §9.
-- Full plan matrix, limit behaviour and open pricing questions: [PROOFLY-ARCHITECTURE.md §6, §9](PROOFLY-ARCHITECTURE.md).
+  ARCHITECTURE §6.3, §6.3a, §9.
+- Full plan matrix, limit behaviour and open pricing questions: [ARCHITECTURE.md §6, §9](ARCHITECTURE.md).
 
 ## 16. Security
 
@@ -338,5 +338,5 @@ analytics history, in a tenant created from the shop identity Shopify provides a
 own data through the generic importer. Automated tests use the synthetic fixture (`scripts/fixtures/`), equivalent in
 size and structure to a real recovery export, with 0 unexplained mismatches required. Real merchant datasets never
 enter this repository, CI, seed data or shared hosting; they are used only in authorised local or development-store
-testing from storage outside the repository. See [PROOFLY-ARCHITECTURE.md §10](PROOFLY-ARCHITECTURE.md) and
+testing from storage outside the repository. See [ARCHITECTURE.md §10](ARCHITECTURE.md) and
 [BASELINE.md](BASELINE.md).

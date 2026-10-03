@@ -3,13 +3,13 @@
 **Proofly** is a Shopify App Store app for product reviews: bring your existing reviews with you, manage them in one
 place, and display them beautifully across your store.
 
-> Status: **Checkpoint 3 — Shopify-native storefront + theme app extension** (on top of Checkpoint 1 multi-tenancy and
-> Checkpoint 2 installation/authentication/onboarding). See [docs/STOREFRONT.md](docs/STOREFRONT.md). Billing, storefront redesign and import are later checkpoints; nothing is deployed, installed
-> or connected to a Shopify store. See [docs/BASELINE.md](docs/BASELINE.md).
+> Status: **Checkpoint 4 — Shopify product sync and rating cache** (on top of checkpoints 1–3: multi-tenancy,
+> installation/authentication/onboarding, Shopify-native storefront). Billing and import are later checkpoints; nothing
+> is deployed, installed or connected to a Shopify store. See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
 
 - Brand: [docs/BRAND.md](docs/BRAND.md)
 - Product spec (V1): [docs/PRODUCT-SPEC-V1.md](docs/PRODUCT-SPEC-V1.md)
-- Architecture: [docs/PROOFLY-ARCHITECTURE.md](docs/PROOFLY-ARCHITECTURE.md)
+- Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Roadmap / checkpoints: [docs/PUBLIC-APP-ROADMAP.md](docs/PUBLIC-APP-ROADMAP.md)
 
 ## Local development
@@ -32,6 +32,7 @@ only through `withTenant()` in `app/lib/tenant.server.ts` (enforced by lint). Se
 ```bash
 npm run typecheck && npm run lint && npm run build
 npm run check:theme                                   # Shopify Theme Check, theme-app-extension rules
+npm run check:graphql                                 # every Admin GraphQL operation vs Shopify's 2026-10 schema (network)
 npm test                                              # unit, integration, tenant-isolation, security (proofly_test DB)
 npm run fixtures:generate && npm run fixtures:check   # synthetic, fictional dataset — no real merchant data
 npm run scan:merchant-data                            # fails if merchant/customer data could ship

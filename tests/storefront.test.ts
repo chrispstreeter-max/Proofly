@@ -9,13 +9,14 @@ import { gzipSync } from "node:zlib";
 import { after, before, describe, test } from "node:test";
 import type { LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
-import { recomputeProduct, syncMetafields } from "../app/lib/aggregates.server";
+import { recomputeProduct } from "../app/lib/aggregates.server";
+import { syncRatingCache } from "../app/lib/rating-cache.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { parseHandles } from "../app/lib/reviews.server";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { loader as proxyRatings } from "../app/routes/proxy.ratings";
 import { blockSchema, EXTENSION_DIR, liquidProduct, renderBlock } from "../scripts/lib/extension-liquid";
-import { args, DOMAIN_A, DOMAIN_B, DOMAIN_C, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, type Merchant } from "./helpers";
+import { args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, type Merchant } from "./helpers";
 
 const ext = (...p: string[]) => path.join(EXTENSION_DIR, ...p);
 const files = (dir: string) => readdirSync(ext(dir)).map((f) => path.join(dir, f));
@@ -37,8 +38,12 @@ describe("Theme app extension build", () => {
       const s = blockSchema(b);
       for (const a of [s.javascript, s.stylesheet].filter(Boolean) as string[]) { used.add(a); assert.ok(readdirSync(ext("assets")).includes(a), `${b} → ${a}`); }
       if (b === "card-ratings") assert.equal(s.target, "body"); // the only app embed
-      else { assert.equal(s.target, "section"); assert.deepEqual(s.enabled_on, { templates: ["product"] }); }
+      else assert.equal(s.target, "section");
     }
+    assert.deepEqual(blockSchema("reviews").enabled_on, { templates: ["product"] });
+    // Level 2 of the card hierarchy: placeable in any section that offers app blocks, product filled in by Shopify.
+    assert.equal(blockSchema("rating-summary").enabled_on, undefined);
+    assert.ok(blockSchema("rating-summary").settings.some((x) => x.type === "product" && (x as { autofill?: boolean }).autofill === true));
     assert.deepEqual([...used].sort(), readdirSync(ext("assets")).sort());
     assert.equal(blockSchema("rating-summary").javascript, undefined); // rating summary ships no JavaScript
   });
@@ -140,8 +145,10 @@ describe("Generic merchant rendering (Liquid)", () => {
 const VIS_ID = 9_000_000_000_123n;
 const VIS_HANDLE = "visibility-product";
 const PAGED_ID = 9_000_000_000_124n;
-const PRIVATE = { reviewerEmail: "private@example.com", shopifyCustomerId: 4_242_424_242n, shopifyOrderId: 5_353_535_353n, submitterIpHash: "f".repeat(64), flags: ["spam_suspected"] };
+const PRIVATE = { shopifyCustomerId: 4_242_424_242n, shopifyOrderId: 5_353_535_353n, submitterIpHash: "f".repeat(64), flags: ["spam_suspected"] };
 let A: Merchant, B: Merchant;
+/** Deterministic opaque public ids for the fixture photos (32 hex chars). */
+const pid = (label: string, position: number) => `${label === "A" ? "a" : "b"}`.repeat(31) + String(position);
 
 async function seedVisibility(m: Merchant, label: string) {
   return withTenant(m.shopId, async (t) => {
@@ -159,7 +166,7 @@ async function seedVisibility(m: Merchant, label: string) {
     await mk(1, `planlimited-pending-${label}`, { status: "pending", holdReason: "plan_limit" });
     await mk(3, `planlimited-published-${label}`, { holdReason: "plan_limit" }); // defence in depth: still never public
     const img = (key: string, mediaStatus: "published" | "storage_limited", position: number) => db.reviewImage.create({
-      data: { shopId, reviewId: r5.id, originalFilename: "x.jpg", storageKey: `s/${shopId}/originals/${key}.jpg`, thumbKey: `s/${shopId}/r/${key}-320.webp`, largeKey: `s/${shopId}/r/${key}-1600.webp`, contentType: "image/jpeg", fileSize: 1, sha256: String(position).repeat(64), width: 800, height: 600, position, mediaStatus },
+      data: { shopId, reviewId: r5.id, originalFilename: "x.jpg", storageKey: `s/${shopId}/originals/${key}.jpg`, thumbKey: `s/${shopId}/r/${key}-320.webp`, largeKey: `s/${shopId}/r/${key}-1600.webp`, contentType: "image/jpeg", fileSize: 1, sha256: String(position).repeat(64), width: 800, height: 600, position, mediaStatus, publicId: pid(label, position) },
     });
     await img(`pub-${label}`, "published", 0);
     await img(`limited-${label}`, "storage_limited", 1);
@@ -205,11 +212,12 @@ describe("Storefront data", () => {
     const body = await (await list(DOMAIN_A, VIS_ID, { summary: "1" })).json();
     const r5 = body.reviews.find((r: { body: string }) => r.body === "public-5-A");
     assert.equal(r5.images.length, 1);
-    assert.match(r5.images[0].thumb, /pub-A-320\.webp$/);
+    assert.equal(r5.images[0].thumb, `${process.env.MEDIA_PUBLIC_URL}/${pid("A", 0)}-320.webp`);
+    assert.equal(r5.images[0].large, `${process.env.MEDIA_PUBLIC_URL}/${pid("A", 0)}-1600.webp`);
     assert.equal(body.summary.withPhotos, 1);
     const photos = await (await list(DOMAIN_A, VIS_ID, { photos: "1" })).json();
     assert.deepEqual(photos.reviews.map((r: { body: string }) => r.body), ["public-5-A"]);
-    assert.ok(!JSON.stringify(body).includes("limited-A"));
+    assert.ok(!JSON.stringify(body).includes(pid("A", 1))); // the storage-limited photo
   });
 
   test("rating/count calculation uses public reviews only, and the same numbers go to Shopify's metafields", async () => {
@@ -220,16 +228,11 @@ describe("Storefront data", () => {
     const body = await (await list(DOMAIN_A, VIS_ID, { summary: "1" })).json();
     assert.deepEqual(body.summary, { count: 3, average: 4.33, distribution: [0, 0, 0, 2, 1], withPhotos: 1 });
 
-    const sent: { ownerId: string; key: string; value: string }[] = [];
-    const graphql = async (_q: string, o?: { variables?: Record<string, unknown> }) => {
-      sent.push(...((o?.variables?.metafields as typeof sent) ?? []));
-      return Response.json({ data: { metafieldsSet: { userErrors: [] } } });
-    };
-    await syncMetafields(A.shopId, graphql, { force: true });
-    const forVis = sent.filter((m) => m.ownerId === `gid://shopify/Product/${VIS_ID}`);
-    assert.deepEqual(forVis.map((m) => [m.key, m.key === "rating" ? JSON.parse(m.value).value : m.value]), [["rating", "4.33"], ["rating_count", "3"]]);
-    const forZero = sent.filter((m) => m.ownerId === "gid://shopify/Product/9000000000125");
-    assert.deepEqual(forZero.map((m) => [m.key, m.value]), [["rating_count", "0"]]); // no out-of-scale 0 rating
+    const shopify = new FakeShopify();
+    await syncRatingCache(A.shopId, shopify.graphql);
+    assert.deepEqual(shopify.rating(VIS_ID), { average: "4.33", count: 3 });
+    // A product with no Proofly reviews is unmanaged: nothing is written (it may carry another app's rating).
+    assert.deepEqual(shopify.rating(9_000_000_000_125n), { average: null, count: null });
   });
 
   test("pagination: 10 per page with hasMore, then the rest", async () => {
@@ -293,14 +296,15 @@ describe("Storefront data", () => {
       for (const i of r.images) assert.deepEqual(Object.keys(i).sort(), ["h", "large", "thumb", "w"]);
       if (r.reply) assert.deepEqual(Object.keys(r.reply).sort(), ["body", "date"]);
     }
-    for (const s of [PRIVATE.reviewerEmail, String(PRIVATE.shopifyCustomerId), String(PRIVATE.shopifyOrderId), PRIVATE.submitterIpHash, "spam_suspected", "originals", "plan_limit"]) {
+    for (const s of ["email", String(PRIVATE.shopifyCustomerId), String(PRIVATE.shopifyOrderId), PRIVATE.submitterIpHash, "spam_suspected", "originals", "plan_limit"]) {
       assert.ok(!text.includes(s), `leaked ${s}`);
     }
-    // Internal ids never appear as data. (Public media URLs embed the random per-shop storage prefix s/<shop>/r/<review>/,
-    // which grants no access and is never used to choose a tenant.)
-    const withoutMedia = JSON.stringify({ ...body, reviews: body.reviews.map((r: { images: unknown[] }) => ({ ...r, images: r.images.length })) });
+    // No internal id anywhere — media URLs included: they carry only the opaque asset id.
     const ids = await owner.review.findMany({ where: { shopId: A.shopId }, select: { id: true, productId: true, sourceReviewId: true } });
-    for (const s of [A.shopId, ...ids.flatMap((r) => [r.id, r.productId, r.sourceReviewId])]) assert.ok(!withoutMedia.includes(s), `leaked ${s}`);
+    const imgIds = await owner.reviewImage.findMany({ where: { shopId: A.shopId }, select: { id: true } });
+    for (const s of [A.shopId, String(A.shopId).slice(0, 8), ...ids.flatMap((r) => [r.id, r.productId, r.sourceReviewId]), ...imgIds.map((i) => i.id), String(VIS_ID), "s/"]) {
+      assert.ok(!text.includes(s), `leaked ${s}`);
+    }
     const r = await (await ratings(DOMAIN_A, VIS_HANDLE)).text();
     assert.equal(r, `{"ratings":{"${VIS_HANDLE}":[4.33,3]}}`);
   });

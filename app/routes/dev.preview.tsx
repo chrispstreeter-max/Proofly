@@ -23,10 +23,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Like a real collection page, Liquid only "sees" part of what is on screen: the first half of the grid. The other
   // cards (think "You may also like") exercise the embed's single batched request.
   const seen = cards.slice(0, Math.ceil(cards.length / 2));
+  const proxyPath = await withTenant(shop.id, ({ db, shopId }) => db.shopSettings.findUniqueOrThrow({ where: { shopId } })).then((s) => s.proxyPath);
+  const app = { metafields: { proofly: { proxy_path: { value: proxyPath } } } }; // what Proofly publishes to Shopify
   const [summary, widget, embed] = await Promise.all([
-    renderBlock("rating-summary", { product: lp(p) }),
-    renderBlock("reviews", { product: lp(p) }),
-    renderBlock("card-ratings", { product: lp(p), collection: { products: seen.map(lp) }, search: { performed: false } }),
+    renderBlock("rating-summary", { product: lp(p), app }),
+    renderBlock("reviews", { product: lp(p), app }),
+    renderBlock("card-ratings", { product: lp(p), app, collection: { products: seen.map(lp) }, search: { performed: false } }),
   ]);
   const grid = cards.map((c) => `<li class="card"><a href="/products/${encodeURIComponent(c.handle)}" class="media" tabindex="-1"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 3'/%3E" width="400" height="300" alt=""></a>
     <h3><a href="/products/${encodeURIComponent(c.handle)}">${esc(c.title)}</a></h3><p class="price">€29.00</p></li>`).join("");

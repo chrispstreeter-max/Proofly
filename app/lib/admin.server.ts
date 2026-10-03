@@ -8,7 +8,7 @@ import { activeShopByDomain, upsertShopFromAuth } from "./tenant.server";
  */
 export async function requireAdminTenant(request: Request) {
   const ctx = await authenticate.admin(request);
-  const shop = (await activeShopByDomain(ctx.session.shop)) ?? (await upsertShopFromAuth(ctx.session.shop, (q) => ctx.admin.graphql(q)));
+  const shop = (await activeShopByDomain(ctx.session.shop)) ?? (await upsertShopFromAuth(ctx.session.shop, (q, o) => ctx.admin.graphql(q, o)));
   const sub = (ctx as { sessionToken?: { sub?: string } }).sessionToken?.sub;
   return { ...ctx, shop, actor: sub ? `staff:${sub}` : `admin:${shop.id}` };
 }

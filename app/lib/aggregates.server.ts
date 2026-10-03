@@ -1,92 +1,58 @@
 import { Prisma } from "@prisma/client";
-import { PUBLIC_REVIEW } from "./reviews.server";
-import { withTenant, type Tenant } from "./tenant.server";
+import { PUBLIC_MEDIA, PUBLIC_REVIEW } from "./reviews.server";
+import type { Tenant } from "./tenant.server";
 
-/** Recompute review_count / average / distribution from PUBLIC reviews (published, not held) of one product of this shop. */
-export async function recomputeProduct({ db, shopId }: Tenant, productId: string) {
-  const rows = await db.review.groupBy({
-    by: ["rating"],
-    where: { shopId, productId, ...PUBLIC_REVIEW },
-    _count: { _all: true },
-  });
-  const dist = [0, 0, 0, 0, 0];
-  for (const r of rows) dist[r.rating - 1] = r._count._all;
-  const count = dist.reduce((a, b) => a + b, 0);
-  const sum = dist.reduce((a, n, i) => a + n * (i + 1), 0);
-  const average = count ? Math.round((sum / count) * 100) / 100 : 0;
+export interface Aggregate {
+  reviewCount: number;
+  averageRating: number; // 2 decimals, 0 when there are no public reviews
+  distribution: [number, number, number, number, number]; // 1★ … 5★
+  photoReviewCount: number;
+}
+
+/**
+ * THE rating aggregate of one product — the only place review counts, averages, star distribution and photo-review
+ * counts are calculated. Eligibility is PUBLIC_REVIEW (published AND not held: never pending, rejected, hidden or
+ * plan-limited). A photo review is a public review with at least one PUBLIC_MEDIA photo (storage-limited photos only
+ * ever affect photoReviewCount, never count/average/distribution). Every eligible review counts; nothing is selected
+ * by rating or content.
+ */
+export async function computeAggregate({ db, shopId }: Tenant, productId: string): Promise<Aggregate> {
+  const [rows, photoReviewCount] = await Promise.all([
+    db.review.groupBy({ by: ["rating"], where: { shopId, productId, ...PUBLIC_REVIEW }, _count: { _all: true } }),
+    db.review.count({ where: { shopId, productId, ...PUBLIC_REVIEW, images: { some: PUBLIC_MEDIA } } }),
+  ]);
+  const distribution: Aggregate["distribution"] = [0, 0, 0, 0, 0];
+  for (const r of rows) if (r.rating >= 1 && r.rating <= 5) distribution[r.rating - 1] = r._count._all;
+  const reviewCount = distribution.reduce((a, b) => a + b, 0);
+  const sum = distribution.reduce((a, n, i) => a + n * (i + 1), 0);
+  const averageRating = reviewCount ? Math.round((sum / reviewCount) * 100) / 100 : 0;
+  return { reviewCount, averageRating, distribution, photoReviewCount };
+}
+
+/**
+ * Recomputes and stores one product's aggregate. Call after ANY change that can alter public eligibility (moderation,
+ * plan-limit holds, media status, new/imported reviews). The first time a product has a public Proofly review it
+ * becomes `proofly_managed`: from then on Proofly owns its Shopify rating metafields (app/lib/rating-cache.server.ts).
+ */
+export async function recomputeProduct(t: Tenant, productId: string) {
+  const { db, shopId } = t;
+  const a = await computeAggregate(t, productId);
+  const [r1, r2, r3, r4, r5] = a.distribution;
   await db.product.updateMany({
     where: { shopId, id: productId },
     data: {
-      reviewCount: count,
-      averageRating: new Prisma.Decimal(average),
-      rating1: dist[0], rating2: dist[1], rating3: dist[2], rating4: dist[3], rating5: dist[4],
+      reviewCount: a.reviewCount, averageRating: new Prisma.Decimal(a.averageRating),
+      rating1: r1, rating2: r2, rating3: r3, rating4: r4, rating5: r5, photoReviewCount: a.photoReviewCount,
     },
   });
+  if (a.reviewCount > 0) {
+    await db.product.updateMany({ where: { shopId, id: productId, ratingOwnership: "unmanaged" }, data: { ratingOwnership: "proofly_managed", ratingManagedAt: new Date() } });
+  }
+  return a;
 }
 
 export async function recomputeAll(t: Tenant) {
   const products = await t.db.product.findMany({ where: { shopId: t.shopId }, select: { id: true } });
   for (const p of products) await recomputeProduct(t, p.id);
   return products.length;
-}
-
-type AdminGraphql = (query: string, opts?: { variables?: Record<string, unknown> }) => Promise<Response>;
-
-async function gql(graphql: AdminGraphql, query: string, variables?: Record<string, unknown>) {
-  const res = await graphql(query, { variables });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Admin GraphQL response
-  const json = (await res.json()) as { data?: any; errors?: unknown };
-  if (json.errors) throw new Error(`Shopify GraphQL error: ${JSON.stringify(json.errors)}`);
-  return json.data;
-}
-
-/** Enable Shopify's standard product-review metafield definitions on the authenticated shop (idempotent). */
-export async function ensureReviewMetafieldDefinitions(graphql: AdminGraphql) {
-  for (const key of ["rating", "rating_count"]) {
-    const data = await gql(
-      graphql,
-      `mutation($ownerType: MetafieldOwnerType!, $namespace: String!, $key: String!) {
-        standardMetafieldDefinitionEnable(ownerType: $ownerType, namespace: $namespace, key: $key, pin: false) {
-          userErrors { code message }
-        }
-      }`,
-      { ownerType: "PRODUCT", namespace: "reviews", key },
-    );
-    const errs = data.standardMetafieldDefinitionEnable.userErrors.filter((e: { code: string }) => e.code !== "TAKEN");
-    if (errs.length) throw new Error(`metafield definition ${key}: ${JSON.stringify(errs)}`);
-  }
-}
-
-/**
- * Mirror this shop's DB aggregates into its Shopify standard metafields (derived cache). `graphql` must be the
- * Admin API client of the same authenticated shop. DB reads/writes run in tenant transactions; the Shopify calls
- * happen outside them.
- */
-export async function syncMetafields(shopId: string, graphql: AdminGraphql, opts: { force?: boolean } = {}) {
-  const products = await withTenant(shopId, ({ db }) => db.product.findMany({ where: { shopId } }));
-  const changed = products.filter(
-    (p) => opts.force || p.syncedCount !== p.reviewCount || !p.syncedAverage?.equals(p.averageRating),
-  );
-  for (let i = 0; i < changed.length; i += 12) {
-    const batch = changed.slice(i, i + 12); // ≤2 metafields each, metafieldsSet max 25
-    // A rating of 0 is outside the 1–5 scale, so it is only written when count > 0.
-    const metafields = batch.flatMap((p) => [
-      ...(p.reviewCount > 0
-        ? [{
-            ownerId: `gid://shopify/Product/${p.shopifyProductId}`,
-            namespace: "reviews",
-            key: "rating",
-            type: "rating",
-            value: JSON.stringify({ value: p.averageRating.toFixed(2), scale_min: "1.0", scale_max: "5.0" }),
-          }]
-        : []),
-      { ownerId: `gid://shopify/Product/${p.shopifyProductId}`, namespace: "reviews", key: "rating_count", type: "number_integer", value: String(p.reviewCount) },
-    ]);
-    const data = await gql(graphql, `mutation($metafields: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $metafields) { userErrors { field message } } }`, { metafields });
-    if (data.metafieldsSet.userErrors.length) throw new Error(JSON.stringify(data.metafieldsSet.userErrors));
-    await withTenant(shopId, async ({ db }) => {
-      for (const p of batch) await db.product.updateMany({ where: { shopId, id: p.id }, data: { syncedCount: p.reviewCount, syncedAverage: p.averageRating } });
-    });
-  }
-  return changed.length;
 }

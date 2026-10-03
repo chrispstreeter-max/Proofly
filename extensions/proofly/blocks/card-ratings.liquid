@@ -1,12 +1,20 @@
 {%- comment -%}
-  Proofly — Product card stars (app embed). Only needed for themes that don't already show Shopify's standard
-  product rating (reviews.rating / reviews.rating_count) on their product cards — many Online Store 2.0 themes do,
-  with no app code at all.
-  Ratings for the products this page's Liquid can see (collection and search results) are written below from those
-  same metafields, so most cards need no request. Cards Liquid can't see are looked up in one batched request.
+  Proofly — Product card stars (app embed). Level 3 of the product-card hierarchy:
+    1. Shopify-native rating data: Proofly keeps reviews.rating / reviews.rating_count in sync for products it rates.
+    2. Rating summary app block: the merchant places it in the Theme Editor (preferred, deterministic placement).
+    3. This embed: automatic stars for cards where neither is present. It skips any card already showing a rating.
+    4. Never theme code: Proofly does not edit theme.liquid, templates, sections or snippets.
+  Ratings for the products this page's Liquid can see (collection and search results) are written below from the
+  rating metafields, so most cards need no request. Cards Liquid can't see are looked up in one batched request.
 {%- endcomment -%}
 {%- liquid
-  assign api = routes.root_url | append: '/apps/proofly' | replace: '//', '/'
+  # The merchant's app proxy path comes from Proofly (app-data metafield). No path is hard-coded: without it only
+  # products Liquid can see get stars (no batched request).
+  assign proxy = app.metafields.proofly.proxy_path.value
+  assign api = ''
+  if proxy != blank
+    assign api = routes.root_url | append: proxy | replace: '//', '/'
+  endif
   assign current = ''
   if product
     assign current = product.handle

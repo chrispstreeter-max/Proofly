@@ -81,6 +81,18 @@ model ShopSettings {
   displaySettings         Json      @default("{}") @map("display_settings")
   /// Set when the merchant finishes the first-run setup checklist. Kept across uninstall/reinstall.
   onboardingCompletedAt   DateTime? @map("onboarding_completed_at")
+  /// This merchant's Shopify app proxy path (prefix + subpath, e.g. /apps/proofly). Set explicitly per shop at install
+  /// (app/lib/proxy-path.server.ts); storefront requests signed with any other path_prefix are rejected.
+  proxyPath               String    @map("proxy_path")
+  /// proxyPath value last written to the app-data metafield the theme extension reads (null = never written).
+  proxyPathPublished      String?   @map("proxy_path_published")
+  /// Catalogue sync (app/lib/products.server.ts): never | running | completed | failed. Cursor allows resuming.
+  catalogSyncStatus       String    @default("never") @map("catalog_sync_status")
+  catalogSyncCursor       String?   @map("catalog_sync_cursor")
+  catalogSyncStartedAt    DateTime? @map("catalog_sync_started_at")
+  catalogSyncFinishedAt   DateTime? @map("catalog_sync_finished_at")
+  catalogSyncCount        Int       @default(0) @map("catalog_sync_count")
+  catalogSyncError        String?   @map("catalog_sync_error")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @updatedAt @map("updated_at")
 
@@ -118,6 +130,14 @@ enum HoldReason {
   plan_limit
 }
 
+/// Who owns a product's Shopify rating metafields (reviews.rating / reviews.rating_count).
+/// unmanaged: Proofly never writes them (they may belong to another review app). proofly_managed: Proofly keeps them
+/// equal to its canonical aggregate. A product becomes proofly_managed when it first has a public Proofly review.
+enum RatingOwnership {
+  unmanaged
+  proofly_managed
+}
+
 /// Public (optimised) media state. Only `published` media is ever served on the storefront.
 enum MediaStatus {
   published
@@ -127,27 +147,40 @@ enum MediaStatus {
 }
 
 model Product {
-  id               String   @id @default(uuid()) @db.Uuid
-  shopId           String   @map("shop_id") @db.Uuid
-  shopifyProductId BigInt   @map("shopify_product_id")
-  shopifyVariantId BigInt?  @map("shopify_variant_id")
+  id               String          @id @default(uuid()) @db.Uuid
+  shopId           String          @map("shop_id") @db.Uuid
+  shopifyProductId BigInt          @map("shopify_product_id")
+  shopifyVariantId BigInt?         @map("shopify_variant_id")
   handle           String
   title            String
   image            String?
+  /// Shopify ProductStatus, lower-case: active | draft | archived | unlisted. Deleted products keep their last status.
   status           String?
-  // Aggregates over PUBLISHED reviews only. Recomputed by app/lib/aggregates.server.ts.
-  reviewCount      Int      @default(0) @map("review_count")
-  averageRating    Decimal  @default(0) @map("average_rating") @db.Decimal(3, 2)
-  rating1          Int      @default(0) @map("rating_1")
-  rating2          Int      @default(0) @map("rating_2")
-  rating3          Int      @default(0) @map("rating_3")
-  rating4          Int      @default(0) @map("rating_4")
-  rating5          Int      @default(0) @map("rating_5")
-  // Last values written to Shopify metafields reviews.rating / reviews.rating_count (derived cache).
-  syncedCount      Int?     @map("synced_count")
-  syncedAverage    Decimal? @map("synced_average") @db.Decimal(3, 2)
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  /// Shopify's updatedAt of the version stored here — older webhook deliveries never overwrite newer data.
+  shopifyUpdatedAt DateTime?       @map("shopify_updated_at")
+  /// Last time a catalogue sync or webhook saw this product in Shopify (full-sync sweep marks the rest deleted).
+  lastSeenAt       DateTime?       @map("last_seen_at")
+  /// Deleted in Shopify. Reviews are kept; the row is never re-attached to a new product (identity = shopifyProductId).
+  deletedAt        DateTime?       @map("deleted_at")
+  // Canonical aggregate over PUBLIC reviews (published, not held). Written only by app/lib/aggregates.server.ts.
+  reviewCount      Int             @default(0) @map("review_count")
+  averageRating    Decimal         @default(0) @map("average_rating") @db.Decimal(3, 2)
+  rating1          Int             @default(0) @map("rating_1")
+  rating2          Int             @default(0) @map("rating_2")
+  rating3          Int             @default(0) @map("rating_3")
+  rating4          Int             @default(0) @map("rating_4")
+  rating5          Int             @default(0) @map("rating_5")
+  /// Public reviews with at least one public (published, not storage-limited) photo.
+  photoReviewCount Int             @default(0) @map("photo_review_count")
+  ratingOwnership  RatingOwnership @default(unmanaged) @map("rating_ownership")
+  ratingManagedAt  DateTime?       @map("rating_managed_at")
+  // Last values confirmed written to Shopify's rating metafields (derived cache). Differs from the aggregate = needs sync.
+  syncedCount      Int?            @map("synced_count")
+  syncedAverage    Decimal?        @map("synced_average") @db.Decimal(3, 2)
+  ratingSyncedAt   DateTime?       @map("rating_synced_at")
+  ratingSyncError  String?         @map("rating_sync_error")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
 
   shop    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   reviews Review[]
@@ -175,7 +208,6 @@ model Review {
   imported          Boolean      @default(false)
   flags             String[]     @default([])
   // Private: never serialised to the storefront.
-  reviewerEmail     String?      @map("reviewer_email")
   shopifyCustomerId BigInt?      @map("shopify_customer_id")
   shopifyOrderId    BigInt?      @map("shopify_order_id")
   submitterIpHash   String?      @map("submitter_ip_hash")
@@ -213,6 +245,8 @@ model ReviewImage {
   height           Int?
   position         Int         @default(0)
   mediaStatus      MediaStatus @default(published) @map("media_status")
+  /// Opaque public asset id (128 random bits, hex). The ONLY identifier in public media URLs.
+  publicId         String      @unique @default(dbgenerated("replace((gen_random_uuid())::text, '-'::text, ''::text)")) @map("public_id")
   createdAt        DateTime    @default(now()) @map("created_at")
 
   shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)

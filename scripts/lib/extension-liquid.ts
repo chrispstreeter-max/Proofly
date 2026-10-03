@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Liquid, Tag, type TagToken, type TopLevelToken } from "liquidjs";
+import { DEFAULT_PROXY_PATH } from "../../app/lib/proxy-path.server";
 
 export const EXTENSION_DIR = path.resolve("extensions/proofly");
 
@@ -44,6 +45,8 @@ export function liquidProduct(p: { id: string | number | bigint; handle: string;
 export function renderBlock(name: string, ctx: Record<string, unknown>, settings: Record<string, unknown> = {}) {
   return engine.parseAndRender(blockSource(name), {
     shop: { name: "Example Store" }, routes: { root_url: "/" }, request: { origin: "https://example.myshopify.com" }, customer: null,
+    // The app-data metafield Proofly publishes per merchant (pass `app: null` to render without it).
+    app: { metafields: { proofly: { proxy_path: { value: DEFAULT_PROXY_PATH } } } },
     ...ctx,
     block: { settings: { ...defaults(name), ...settings }, shopify_attributes: "" },
   });

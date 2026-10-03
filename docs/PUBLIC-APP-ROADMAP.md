@@ -28,10 +28,10 @@ App Store app. Brand: [BRAND.md](BRAND.md) · V1 scope: [PRODUCT-SPEC-V1.md](PRO
 | Storefront design | Premium, clean, fast, theme-compatible, responsive, native-looking, configurable. No iframe aesthetic, no forced “Powered by”. |
 | Images | Originals in private object storage; storefront gets optimised WebP via CDN. The offline backup stays completely separate from production storage. |
 | Hosting | Managed Node hosting, managed PostgreSQL, Cloudflare R2, Cloudflare CDN. Primary region Canada or US. No multi-region in V1. |
-| Test data | Real merchant datasets are private test data only — never bundled, seeded, uploaded as shared data or referenced by production code; synthetic fixtures in CI; every new merchant starts at zero (PROOFLY-ARCHITECTURE §10). |
+| Test data | Real merchant datasets are private test data only — never bundled, seeded, uploaded as shared data or referenced by production code; synthetic fixtures in CI; every new merchant starts at zero (ARCHITECTURE §10). |
 | Tenant isolation | Every merchant table tenant-scoped; shop resolved before any data access; **database row-level security required** as a second barrier; tenant-isolation tests **mandatory and merge-blocking in CI**. |
-| Billing | **Shopify App Pricing** for the App Store subscription; no Stripe. Launch prices decided (Free / $9 / $19 / $39 / $79, yearly ≈ 2 months free) — see PROOFLY-ARCHITECTURE §6. Entitlements centralised. |
-| Storefront architecture | Shopify-native first: ratings, summary and the first page of reviews render from Shopify metafields with no Proofly call; backend only for interaction, writes, management, migration, images. See PROOFLY-ARCHITECTURE.md. |
+| Billing | **Shopify App Pricing** for the App Store subscription; no Stripe. Launch prices decided (Free / $9 / $19 / $39 / $79, yearly ≈ 2 months free) — see ARCHITECTURE §6. Entitlements centralised. |
+| Storefront architecture | Shopify-native first: ratings, summary and the first page of reviews render from Shopify metafields with no Proofly call; backend only for interaction, writes, management, migration, images. See ARCHITECTURE.md. |
 
 The decisions above resolve D1–D6 of the original audit (see §11).
 
@@ -128,7 +128,7 @@ dataset used locally lives in a development tenant created by a local-only scrip
 4. **Storage:** object keys prefixed by `shop_id`; public URLs unguessable; originals never public.
 5. **Isolation test suite (mandatory, merge-blocking in CI):** two synthetic shops A/B with overlapping Shopify IDs and source review IDs. Tests:
    A reads B's review/product/image by id → 404; A moderates/replies to B's review → 404 and B unchanged; A's proxy
-   `ratings?ids=` with B's product ids → empty; A's import cannot create rows under B; identical `source_review_id`
+   `ratings?handles=` with B's products → empty; A's import cannot create rows under B; identical `source_review_id`
    in A and B both import; uninstalled shop's proxy → 404; GDPR redact for A touches only A.
 6. Tokens: access tokens encrypted at rest (AES-256-GCM, key rotation supported); per-env secrets; no secrets in logs.
 7. Rate limits keyed by `shop_id` + transient hashed IP, stored centrally with short expiry; IPs are never stored with
@@ -143,7 +143,7 @@ dataset used locally lives in a development tenant created by a local-only scrip
 | Naming | Proofly theme extension; blocks “Proofly Reviews”, “Proofly Rating”, “Proofly Card Ratings”; all customer-facing copy in `locales/*.json` (en first); internal `pf` prefixes renamed during the refactor |
 | Product reviews block | Same UI; `Response from {{ shop.name }}`; write-review form without email field; Verified Purchase badge component kept but never shown in V1 (no verified reviews until V1.1); block settings: heading, star colour, show photos, show sort/filters, show write-review, JSON-LD on/off, proxy path (default `/apps/<subpath>`) |
 | Theme inheritance | Keep inheriting font; colours via CSS custom properties exposed as block settings; all selectors prefixed and scoped under the block root (no global resets) |
-| Product card ratings | **Primary:** standard `reviews.rating` metafields → themes with built-in rating support (Dawn family: “Show product rating”) render natively, zero JS. **Fallback:** app embed hydrating a documented hook `<span data-pf-rating data-product-id="{{ product.id }}">` (merchant/developer adds via theme editor custom Liquid — no code edits by the app), plus an opt-in “legacy review badge markup” setting for themes that ship `.shopify-product-reviews-badge` |
+| Product card ratings | **Implemented (CP3–4), deterministic hierarchy:** (1) standard `reviews.rating` metafields kept correct for Proofly-managed products; (2) Rating summary app block placed by the merchant in the Theme Editor (product auto-filled); (3) Product card stars app embed as the automatic fallback; (4) never theme code. See [ARCHITECTURE.md §11.8](ARCHITECTURE.md) |
 | Star rating block | Small app block for product info sections (stars + count linking to the widget) — works in any OS 2.0 product section that accepts app blocks |
 | Branding | No “Powered by” in storefront components (App Store rule: app branding only where customers directly interact with branded elements) |
 | QA | Test in Dawn + 3 popular free themes in the theme editor and storefront; no console errors; Lighthouse impact measured |
@@ -158,15 +158,15 @@ dataset used locally lives in a development tenant created by a local-only scrip
   App must not call `appSubscriptionCreate` when managed pricing is on.
 - App learns state from the `plan_handle` redirect + Partner API `activeSubscription` (no subscription webhooks since 2026-04-28) → writes
   `subscriptions` + `shops.plan_id/subscription_status`. (Verify exact fields during CP9.)
-- **Entitlement service**: one plan config (fields and per-plan values in PROOFLY-ARCHITECTURE §6.2 — limits for
+- **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review
   requests, verified purchase, each behind a `released` flag) read by `entitlements.server.ts`. All gating calls go through `can(shop, feature)` / `limit(shop, key)`; no plan names elsewhere in code.
 - Over-limit behaviour: never delete or hide genuine reviews; new reviews are stored but not auto-published past the
   limit, with an admin banner to upgrade (avoids “hiding reviews” concerns while staying fair).
 - Plans: **launch pricing** Free $0 (100) · Starter $9 / $90 yr (1,000) · Growth $19 / $190 yr (5,000) · Pro $39 / $390 yr
-  (25,000) · Scale $79 / $790 yr (100,000) — details, storage and open questions in PROOFLY-ARCHITECTURE §6/§9.
+  (25,000) · Scale $79 / $790 yr (100,000) — details, storage and open questions in ARCHITECTURE §6/§9.
   Unbuilt features (API access, review requests, verified purchase) are never listed until shipped. Resolved rules
-  (grandfathered downgrades, explicit publish after upgrade, 500 MB Free media, unlimited products): PROOFLY-ARCHITECTURE §9.
+  (grandfathered downgrades, explicit publish after upgrade, 500 MB Free media, unlimited products): ARCHITECTURE §9.
 - Upgrade/downgrade self-serve (App Store requirement); downgrade keeps data, applies limits going forward.
 - No Stripe or off-platform billing.
 
@@ -222,7 +222,10 @@ Checkpoint 2 (Shopify-managed installation + token exchange, manual login remove
 Checkpoint 3 (Shopify-native storefront: Review widget + Rating summary app blocks, Product card stars app embed,
 published-only / plan-limited visibility, handle-batched card ratings) complete locally — see [STOREFRONT.md](STOREFRONT.md).
 Note: the user-approved order puts the storefront extension here; roadmap rows 5–6 are largely covered by it (locales,
-proxy-path setting and multi-theme verification remain).
+multi-theme verification remain; the proxy-path setting landed in CP4).
+Checkpoint 4 (product catalogue sync + `products/*` webhooks, canonical aggregate, rating-cache ownership
+(`unmanaged` / `proofly_managed`), metafield sync + reconciliation, per-merchant proxy path, opaque public media ids,
+API version 2026-10) complete locally — see [ARCHITECTURE.md §11](ARCHITECTURE.md). Real-store verification remains.
 
 Recommended order: 1 → 2 → 11 (isolation tests early, then kept green) → 3 → 4 → 6 → 5 → 7 → 8 → 10 → 9 → 12 → 13.
 
@@ -244,7 +247,7 @@ after App Store approval and explicit owner authorisation.
 | D2 | First launch merchant | **Decided:** development store, then App Store approval, then ordinary-merchant install. No bypass. |
 | D3 | Hosting + data region | **Decided:** managed Node + managed PostgreSQL + Cloudflare R2/CDN; Canada or US; single region. Provider choice open. |
 | D4 | Reviewer email | **Decided:** not collected by default; no IP/country/customer data |
-| D5 | Pricing | **Decided:** launch pricing in PROOFLY-ARCHITECTURE §6.1; open details P1–P7 (§9 there) |
+| D5 | Pricing | **Decided:** launch pricing in ARCHITECTURE §6.1; open details P1–P7 (§9 there) |
 | D6 | Verified purchase | **Decided:** V1.1, with automated review requests and order-based links |
 | R1 | Merchant-customised proxy path | Mitigated by proxy-path setting passed from Liquid |
 | R2 | Card stars on themes without metafield support or hooks | Native metafield path + documented hook + legacy mode; onboarding explains |

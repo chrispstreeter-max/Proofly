@@ -5,6 +5,7 @@ import { PrismaClient } from "@prisma/client";
 import { Session } from "@shopify/shopify-api";
 import { sessionStorage } from "../app/shopify.server";
 import { signProxyParams } from "../app/lib/devsign.server";
+import { DEFAULT_PROXY_PATH } from "../app/lib/proxy-path.server";
 import { registerShop, withTenant } from "../app/lib/tenant.server";
 
 /** Schema-owner connection, used ONLY for test setup/teardown and FK checks that must bypass RLS. */
@@ -72,11 +73,95 @@ export const storeOfflineSession = (domain: string, label: string) =>
     new Session({ id: `offline_${domain}`, shop: domain, state: "", isOnline: false, scope: process.env.SCOPES, accessToken: `fixture-token-${label}` }),
   );
 
-/** Stand-in for the Admin API client of an authenticated session: answers the `shop` identity query. */
-export const fakeAdmin = (shop: { myshopifyDomain: string; id: bigint; name: string; host: string }) => ({
-  graphql: async () =>
-    Response.json({ data: { shop: { id: `gid://shopify/Shop/${shop.id}`, name: shop.name, myshopifyDomain: shop.myshopifyDomain, primaryDomain: { host: shop.host } } } }),
-});
+type Identity = { myshopifyDomain: string; id: bigint; name: string; host: string };
+type FailKind = "throw" | "throttle" | "userError";
+
+/**
+ * In-memory Shopify Admin API for offline tests (no network): shop identity, app installation, catalogue pages and
+ * product/app metafields. Records every call; failures can be injected per operation.
+ */
+export class FakeShopify {
+  metafields = new Map<string, string>(); // `${ownerId}|${namespace}.${key}` → value
+  calls: { op: string; variables?: Record<string, unknown> }[] = [];
+  products: { legacyResourceId: string; handle: string; title: string; status: string; updatedAt: string }[] = [];
+  missingProducts = new Set<string>(); // product gids Shopify no longer has
+  pageSize = 2;
+  private failures: { op: string; kind: FailKind; times: number }[] = [];
+  constructor(public identity?: Identity) {}
+
+  failNext(op: string, kind: FailKind, times = 1) { this.failures.push({ op, kind, times }); }
+  ops(op?: string) { return this.calls.filter((c) => !op || c.op === op); }
+  rating(productId: bigint) {
+    const owner = `gid://shopify/Product/${productId}`;
+    const r = this.metafields.get(`${owner}|reviews.rating`);
+    const c = this.metafields.get(`${owner}|reviews.rating_count`);
+    return { average: r ? JSON.parse(r).value as string : null, count: c === undefined ? null : Number(c) };
+  }
+  setRating(productId: bigint, average: string | null, count: number | null) {
+    const owner = `gid://shopify/Product/${productId}`;
+    if (average === null) this.metafields.delete(`${owner}|reviews.rating`);
+    else this.metafields.set(`${owner}|reviews.rating`, JSON.stringify({ value: average, scale_min: "1.0", scale_max: "5.0" }));
+    if (count === null) this.metafields.delete(`${owner}|reviews.rating_count`);
+    else this.metafields.set(`${owner}|reviews.rating_count`, String(count));
+  }
+
+  graphql = async (query: string, o: { variables?: Record<string, unknown> } = {}) => {
+    const op = /(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? "anonymous";
+    const v = o.variables ?? {};
+    this.calls.push({ op, variables: v });
+    const f = this.failures.find((x) => x.op === op && x.times > 0);
+    if (f) {
+      f.times--;
+      if (f.kind === "throw") throw new Error("network error (injected)");
+      if (f.kind === "throttle") return Response.json({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] });
+      return Response.json({ data: { metafieldsSet: { metafields: [], userErrors: [{ field: ["value"], message: "injected", code: "INVALID" }] } } });
+    }
+    switch (op) {
+      case "ProoflyShopIdentity": {
+        const s = this.identity!;
+        return Response.json({ data: { shop: { id: `gid://shopify/Shop/${s.id}`, name: s.name, myshopifyDomain: s.myshopifyDomain, primaryDomain: { host: s.host } } } });
+      }
+      case "ProoflyCurrentAppInstallation":
+        return Response.json({ data: { currentAppInstallation: { id: "gid://shopify/AppInstallation/1" } } });
+      case "ProoflySetAppMetafield":
+      case "ProoflySetRatings": {
+        const mfs = v.metafields as { ownerId: string; namespace: string; key: string; value: string }[];
+        for (const m of mfs) this.metafields.set(`${m.ownerId}|${m.namespace}.${m.key}`, m.value);
+        return Response.json({ data: { metafieldsSet: { metafields: mfs.map(() => ({ id: "gid://shopify/Metafield/1" })), userErrors: [] } } });
+      }
+      case "ProoflyDeleteRatings": {
+        const mfs = v.metafields as { ownerId: string; namespace: string; key: string }[];
+        for (const m of mfs) this.metafields.delete(`${m.ownerId}|${m.namespace}.${m.key}`);
+        return Response.json({ data: { metafieldsDelete: { deletedMetafields: mfs, userErrors: [] } } });
+      }
+      case "ProoflyReadRatings": {
+        const nodes = (v.ids as string[]).map((id) => {
+          if (this.missingProducts.has(id)) return null;
+          const r = this.metafields.get(`${id}|reviews.rating`);
+          const c = this.metafields.get(`${id}|reviews.rating_count`);
+          return { id, rating: r ? { value: r } : null, ratingCount: c !== undefined ? { value: c } : null };
+        });
+        return Response.json({ data: { nodes } });
+      }
+      case "ProoflyProductsPage": {
+        const start = v.after ? Number(v.after) : 0;
+        const nodes = this.products.slice(start, start + this.pageSize);
+        const next = start + this.pageSize;
+        return Response.json({
+          data: { products: { pageInfo: { hasNextPage: next < this.products.length, endCursor: String(next) }, nodes } },
+          extensions: { cost: { requestedQueryCost: 52, throttleStatus: { currentlyAvailable: 1900, restoreRate: 100 } } },
+        });
+      }
+      case "ProoflyEnableRatingDefinition":
+        return Response.json({ data: { standardMetafieldDefinitionEnable: { userErrors: [] } } });
+      default:
+        throw new Error(`FakeShopify: unexpected operation ${op}`);
+    }
+  };
+}
+
+/** Stand-in for the Admin API client of an authenticated session (identity, app installation, metafields). */
+export const fakeAdmin = (shop: Identity) => new FakeShopify(shop);
 
 /** A webhook exactly as Shopify sends it for `domain` (HMAC-SHA256 of the raw body with the app secret). */
 export function webhookRequest(domain: string, topic: string, path: string, payload: unknown = {}) {
@@ -95,9 +180,9 @@ export function webhookRequest(domain: string, topic: string, path: string, payl
   });
 }
 
-/** A storefront request exactly as Shopify's app proxy would send it for `domain` (HMAC-signed). */
-export function proxyRequest(domain: string, path: string, extra: Record<string, string> = {}, init: RequestInit = {}) {
-  const params = new URLSearchParams({ ...extra, shop: domain, path_prefix: "/apps/proofly", timestamp: String(Math.floor(Date.now() / 1000)), logged_in_customer_id: "" });
+/** A storefront request exactly as Shopify's app proxy would send it for `domain` via `pathPrefix` (HMAC-signed). */
+export function proxyRequest(domain: string, path: string, extra: Record<string, string> = {}, init: RequestInit = {}, pathPrefix = DEFAULT_PROXY_PATH) {
+  const params = new URLSearchParams({ ...extra, shop: domain, path_prefix: pathPrefix, timestamp: String(Math.floor(Date.now() / 1000)), logged_in_customer_id: "" });
   signProxyParams(params, process.env.SHOPIFY_API_SECRET!);
   return new Request(`${process.env.SHOPIFY_APP_URL}/proxy/${path}?${params}`, init);
 }

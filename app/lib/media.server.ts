@@ -1,12 +1,15 @@
-import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // Review image storage.
 //  - originals: byte-identical copy in PRIVATE storage (never served publicly; GPS EXIF stays private)
-//  - thumb/large: re-encoded WebP in PUBLIC storage, EXIF stripped, immutable cache
+//  - thumb/large: re-encoded WebP (EXIF stripped) in the derivatives store, namespaced per merchant internally:
+//      s/<shop_id>/r/<review_id>/<public_id>-320.webp | -1600.webp
+//  - public URL: <MEDIA_PUBLIC_URL>/<public_id>-320.webp — ONLY the opaque asset id, never a shop/review/product id.
+//    The /media route resolves it (tenant.server publicMediaKey) and serves it only while the photo is public.
 // Driver "local" (dev) writes to MEDIA_LOCAL_DIR/{private,public}; "s3" works with any S3-compatible store.
 
 export const ALLOWED_TYPES: Record<string, string> = {
@@ -48,7 +51,7 @@ async function put(visibility: Visibility, key: string, body: Buffer, contentTyp
         Key: key,
         Body: body,
         ContentType: contentType,
-        CacheControl: visibility === "public" ? "public, max-age=31536000, immutable" : "private, no-store",
+        CacheControl: "private, no-store", // nothing is served straight from storage; the /media route decides
       }),
     );
     return;
@@ -62,11 +65,33 @@ export function localDir() {
   return path.resolve(process.env.MEDIA_LOCAL_DIR || "./storage");
 }
 
-export function publicUrl(key: string) {
-  return `${(process.env.MEDIA_PUBLIC_URL || "").replace(/\/$/, "")}/${key}`;
+export type MediaSize = 320 | 1600;
+/** Opaque public asset id: 128 random bits, hex. Unrelated to any database or Shopify identifier. */
+export const newPublicId = () => randomBytes(16).toString("hex");
+
+/** The public URL of one derivative. The only identifier in it is the opaque asset id. */
+export function mediaUrl(publicId: string, size: MediaSize) {
+  return `${(process.env.MEDIA_PUBLIC_URL || "").replace(/\/$/, "")}/${publicId}-${size}.webp`;
+}
+
+/** Parses a public media file name ("<32 hex>-320.webp"); anything else (paths, internal keys, originals) → null. */
+export function parsePublicMediaName(name: string): { publicId: string; size: MediaSize } | null {
+  const m = /^([0-9a-f]{32})-(320|1600)\.webp$/.exec(name);
+  return m ? { publicId: m[1], size: Number(m[2]) as MediaSize } : null;
+}
+
+/** Reads one stored derivative by its internal key (never called with user input — keys come from the resolver). */
+export async function readDerivative(key: string): Promise<Buffer | null> {
+  if ((process.env.MEDIA_DRIVER || "local") === "s3") {
+    const out = await s3Client().send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET_PUBLIC, Key: key })).catch(() => null);
+    const bytes = await out?.Body?.transformToByteArray();
+    return bytes ? Buffer.from(bytes) : null;
+  }
+  return readFile(path.join(localDir(), "public", key)).catch(() => null);
 }
 
 export interface StoredImage {
+  publicId: string;
   storageKey: string;
   thumbKey: string;
   largeKey: string;
@@ -80,13 +105,14 @@ export interface StoredImage {
 /** Per-shop key prefix: every object belongs to exactly one tenant (listing/deletion per shop, no collisions). */
 export const shopPrefix = (shopId: string) => `s/${shopId}`;
 
-/** Stores one review image. Keys are deterministic, so re-running is idempotent. */
+/** Stores one review image (private original + two WebP derivatives) under a fresh opaque public id. */
 export async function storeReviewImage(shopId: string, reviewId: string, original: Buffer): Promise<StoredImage> {
   const contentType = sniffType(original);
   if (!contentType) throw new Error("Unsupported image type");
   const hash = sha256(original);
   const storageKey = `${shopPrefix(shopId)}/originals/${reviewId}/${hash}.${ALLOWED_TYPES[contentType]}`;
-  const base = `${shopPrefix(shopId)}/r/${reviewId}/${hash.slice(0, 16)}`;
+  const publicId = newPublicId();
+  const base = `${shopPrefix(shopId)}/r/${reviewId}/${publicId}`;
 
   const img = sharp(original, { failOn: "error" }).rotate(); // apply EXIF orientation, then metadata is dropped
   const meta = await img.metadata();
@@ -102,6 +128,7 @@ export async function storeReviewImage(shopId: string, reviewId: string, origina
   // EXIF orientations 5–8 swap width/height.
   const swap = (meta.orientation ?? 1) >= 5;
   return {
+    publicId,
     storageKey,
     thumbKey: `${base}-320.webp`,
     largeKey: `${base}-1600.webp`,

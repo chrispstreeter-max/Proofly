@@ -32,7 +32,7 @@
       const h = a && handleOf(a);
       const card = h && h !== cfg.dataset.current && el.textContent.trim() && cardOf(el);
       // Skip cards that already show a rating (the theme's native one, or ours from another link in the card).
-      if (!card || cards.has(card) || card.querySelector(".pf-badge,[class*='rating']:not([class*='pf-'])")) continue;
+      if (!card || cards.has(card) || card.querySelector(".pf-badge,.pf-summary,[class*='rating']:not([class*='pf-'])")) continue;
       cards.add(card);
       out.push([el, h]);
     }
@@ -64,7 +64,7 @@
   async function run() {
     queued = false;
     const found = targets();
-    const missing = [...new Set(found.map((f) => f[1]))].filter((h) => !(h in known) && !asked.has(h));
+    const missing = cfg.dataset.api ? [...new Set(found.map((f) => f[1]))].filter((h) => !(h in known) && !asked.has(h)) : [];
     for (let i = 0; i < missing.length; i += 100) {
       const batch = missing.slice(i, i + 100);
       batch.forEach((h) => asked.add(h));
