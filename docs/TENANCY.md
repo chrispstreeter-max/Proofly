@@ -22,7 +22,7 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
   form. The public landing page only forwards Shopify's `?shop=&host=` to `/app`, which re-verifies via the session token.
 - **Authenticate**: every embedded request carries an App Bridge session token. With no valid offline session the
   library performs a token exchange, stores the (expiring) offline token encrypted, and runs `afterAuth`. Running
-  `afterAuth` again on refresh keeps the same tenant and refreshes the name and storefront hosts.
+  `afterAuth` again on refresh keeps the same tenant and refreshes the name and storefront hosts; routine refreshes write no audit record (only install, reinstall, uninstall and merchant actions are audited).
 - **Scopes**: `read_products,write_products` only. No order or customer scopes and no order webhooks; storefront
   submissions ignore `logged_in_customer_id` and store no customer identity.
 - **Onboarding**: a new tenant starts empty (default settings only). The dashboard shows a setup checklist with

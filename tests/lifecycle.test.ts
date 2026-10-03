@@ -120,12 +120,13 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
     assert.equal((r.data as { stats: { total: number } }).stats.total, 0); // A has 1 review; C sees its own 0
   });
 
-  test("token refresh (afterAuth again on an active shop) keeps the same tenant and touches no data", async () => {
+  test("token refresh (afterAuth again on an active shop) keeps the same tenant, touches no data, writes no audit record", async () => {
     const id = (await shopC()).id;
-    await install();
+    for (let i = 0; i < 3; i++) await install(); // e.g. three hourly refreshes of an expiring offline token
     assert.equal((await shopC()).id, id);
     assert.equal(await owner.shop.count(), 2);
-    assert.deepEqual(await audit(id), ["shop.installed", "shop.authenticated"]);
+    assert.deepEqual(await audit(id), ["shop.installed"]);
+    assert.equal(await owner.auditLog.count({ where: { action: "shop.authenticated" } }), 0);
   });
 
   test("onboard: finishing setup is recorded for C only", async () => {
@@ -195,7 +196,7 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
     assert.equal(c.id, before.id);
     assert.equal(c.uninstalledAt, null);
     assert.ok(c.installedAt > before.installedAt);
-    assert.deepEqual(await audit(c.id), ["shop.installed", "shop.authenticated", "onboarding.completed", "review.submitted", "shop.uninstalled", "shop.reinstalled"]);
+    assert.deepEqual(await audit(c.id), ["shop.installed", "onboarding.completed", "review.submitted", "shop.uninstalled", "shop.reinstalled"]);
 
     const d = await dashboard(DOMAIN_C);
     assert.equal(d.stats.total, 1);

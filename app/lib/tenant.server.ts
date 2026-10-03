@@ -79,11 +79,11 @@ export async function registerShop(input: { shopDomain: string; shopifyShopId: b
         },
       })
     : await prisma.shop.create({ data: { shopDomain, shopifyShopId: input.shopifyShopId, shopName: input.shopName, storefrontHosts: input.storefrontHosts ?? [] } });
+  // Only lifecycle changes go to the permanent audit trail; a routine token exchange/refresh of an active shop does not.
+  const lifecycle = !existing ? "shop.installed" : existing.uninstalledAt ? "shop.reinstalled" : null;
   await withTenant(shop.id, async ({ db, shopId }) => {
     await db.shopSettings.upsert({ where: { shopId }, create: { shopId }, update: {} });
-    await db.auditLog.create({
-      data: { shopId, actor: "shopify", action: existing ? (existing.uninstalledAt ? "shop.reinstalled" : "shop.authenticated") : "shop.installed", entity: "shop", entityId: shopId },
-    });
+    if (lifecycle) await db.auditLog.create({ data: { shopId, actor: "shopify", action: lifecycle, entity: "shop", entityId: shopId } });
   });
   return shop;
 }
