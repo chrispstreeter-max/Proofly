@@ -3,17 +3,33 @@ on: [push, pull_request]
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_USER: proofly, POSTGRES_PASSWORD: proofly, POSTGRES_DB: proofly_test }
+        ports: ["54330:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+    env:
+      PGPASSWORD: proofly
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      # Application role: not a superuser, cannot bypass row-level security
+      - run: |
+          psql -h localhost -p 54330 -U proofly -d proofly_test -c "CREATE ROLE proofly_app LOGIN PASSWORD 'proofly' NOSUPERUSER NOBYPASSRLS;"
+          psql -h localhost -p 54330 -U proofly -d proofly_test -c "GRANT USAGE ON SCHEMA public TO proofly_app; ALTER DEFAULT PRIVILEGES FOR ROLE proofly IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO proofly_app;"
+      - run: |
+          sed -i 's#postgresql://proofly_app@#postgresql://proofly_app:proofly@#; s#postgresql://proofly@#postgresql://proofly:proofly@#' .env.test
+          set -a; . ./.env.test; set +a; npx prisma migrate deploy
       - run: npx prisma generate
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      # Unit, integration, tenant-isolation and security tests (incl. the production-build merchant-data scan)
+      - run: npm test
       # Synthetic fixture replaces any real dataset in CI
       - run: npm run fixtures:generate
       - run: npm run fixtures:check
-      # Merchant-data scan over committable files and the production build
       - run: npm run scan:merchant-data

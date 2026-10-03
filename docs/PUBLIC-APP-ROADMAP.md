@@ -217,6 +217,8 @@ and a short report. No checkpoint touches a live merchant store.
 | 13 | App Store readiness | Listing, privacy policy, support, screenshots, performance report, reviewer test plan, demo store | Internal pre-submission checklist 100% | M |
 | — | After approval | App Store review → **the first launch merchant installs the production app as an ordinary merchant** (explicit owner authorisation; theme redesign finished) → public merchant installs | Owner sign-off at each step | — |
 
+**Progress:** Checkpoint 1 (multi-tenant foundation, incl. shop lifecycle, encrypted sessions and the isolation suite) complete locally — see [TENANCY.md](TENANCY.md).
+
 Recommended order: 1 → 2 → 11 (isolation tests early, then kept green) → 3 → 4 → 6 → 5 → 7 → 8 → 10 → 9 → 12 → 13.
 
 ---

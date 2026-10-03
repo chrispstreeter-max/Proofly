@@ -1,11 +1,11 @@
 import { Prisma } from "@prisma/client";
-import prisma from "../db.server";
+import { withTenant, type Tenant } from "./tenant.server";
 
-/** Recompute review_count / average / distribution from PUBLISHED reviews. The DB is the source of truth. */
-export async function recomputeProduct(shopifyProductId: bigint) {
-  const rows = await prisma.review.groupBy({
+/** Recompute review_count / average / distribution from PUBLISHED reviews of one product of this shop. */
+export async function recomputeProduct({ db, shopId }: Tenant, productId: string) {
+  const rows = await db.review.groupBy({
     by: ["rating"],
-    where: { shopifyProductId, status: "published" },
+    where: { shopId, productId, status: "published" },
     _count: { _all: true },
   });
   const dist = [0, 0, 0, 0, 0];
@@ -13,23 +13,19 @@ export async function recomputeProduct(shopifyProductId: bigint) {
   const count = dist.reduce((a, b) => a + b, 0);
   const sum = dist.reduce((a, n, i) => a + n * (i + 1), 0);
   const average = count ? Math.round((sum / count) * 100) / 100 : 0;
-  return prisma.product.update({
-    where: { shopifyProductId },
+  await db.product.updateMany({
+    where: { shopId, id: productId },
     data: {
       reviewCount: count,
       averageRating: new Prisma.Decimal(average),
-      rating1: dist[0],
-      rating2: dist[1],
-      rating3: dist[2],
-      rating4: dist[3],
-      rating5: dist[4],
+      rating1: dist[0], rating2: dist[1], rating3: dist[2], rating4: dist[3], rating5: dist[4],
     },
   });
 }
 
-export async function recomputeAll() {
-  const products = await prisma.product.findMany({ select: { shopifyProductId: true } });
-  for (const p of products) await recomputeProduct(p.shopifyProductId);
+export async function recomputeAll(t: Tenant) {
+  const products = await t.db.product.findMany({ where: { shopId: t.shopId }, select: { id: true } });
+  for (const p of products) await recomputeProduct(t, p.id);
   return products.length;
 }
 
@@ -43,7 +39,7 @@ async function gql(graphql: AdminGraphql, query: string, variables?: Record<stri
   return json.data;
 }
 
-/** Enable Shopify's standard product-review metafield definitions (idempotent). */
+/** Enable Shopify's standard product-review metafield definitions on the authenticated shop (idempotent). */
 export async function ensureReviewMetafieldDefinitions(graphql: AdminGraphql) {
   for (const key of ["rating", "rating_count"]) {
     const data = await gql(
@@ -61,18 +57,18 @@ export async function ensureReviewMetafieldDefinitions(graphql: AdminGraphql) {
 }
 
 /**
- * Mirror DB aggregates into Shopify standard metafields reviews.rating / reviews.rating_count
- * (used by the product-page block for server-rendered stars + JSON-LD). Only changed products are written.
+ * Mirror this shop's DB aggregates into its Shopify standard metafields (derived cache). `graphql` must be the
+ * Admin API client of the same authenticated shop. DB reads/writes run in tenant transactions; the Shopify calls
+ * happen outside them.
  */
-export async function syncMetafields(graphql: AdminGraphql, opts: { force?: boolean } = {}) {
-  const products = await prisma.product.findMany();
+export async function syncMetafields(shopId: string, graphql: AdminGraphql, opts: { force?: boolean } = {}) {
+  const products = await withTenant(shopId, ({ db }) => db.product.findMany({ where: { shopId } }));
   const changed = products.filter(
     (p) => opts.force || p.syncedCount !== p.reviewCount || !p.syncedAverage?.equals(p.averageRating),
   );
   for (let i = 0; i < changed.length; i += 12) {
     const batch = changed.slice(i, i + 12); // ≤2 metafields each, metafieldsSet max 25
-    // A rating of 0 is outside the 1–5 scale, so it is only written when count > 0;
-    // storefront Liquid always checks reviews.rating_count first.
+    // A rating of 0 is outside the 1–5 scale, so it is only written when count > 0.
     const metafields = batch.flatMap((p) => [
       ...(p.reviewCount > 0
         ? [{
@@ -83,28 +79,13 @@ export async function syncMetafields(graphql: AdminGraphql, opts: { force?: bool
             value: JSON.stringify({ value: p.averageRating.toFixed(2), scale_min: "1.0", scale_max: "5.0" }),
           }]
         : []),
-      {
-        ownerId: `gid://shopify/Product/${p.shopifyProductId}`,
-        namespace: "reviews",
-        key: "rating_count",
-        type: "number_integer",
-        value: String(p.reviewCount),
-      },
+      { ownerId: `gid://shopify/Product/${p.shopifyProductId}`, namespace: "reviews", key: "rating_count", type: "number_integer", value: String(p.reviewCount) },
     ]);
-    const data = await gql(
-      graphql,
-      `mutation($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) { userErrors { field message } }
-      }`,
-      { metafields },
-    );
+    const data = await gql(graphql, `mutation($metafields: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $metafields) { userErrors { field message } } }`, { metafields });
     if (data.metafieldsSet.userErrors.length) throw new Error(JSON.stringify(data.metafieldsSet.userErrors));
-    for (const p of batch) {
-      await prisma.product.update({
-        where: { id: p.id },
-        data: { syncedCount: p.reviewCount, syncedAverage: p.averageRating },
-      });
-    }
+    await withTenant(shopId, async ({ db }) => {
+      for (const p of batch) await db.product.updateMany({ where: { shopId, id: p.id }, data: { syncedCount: p.reviewCount, syncedAverage: p.averageRating } });
+    });
   }
   return changed.length;
 }

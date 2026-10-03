@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
-import prisma from "../db.server";
 import { clientIp, ipHash, originAllowed, rateLimit } from "../lib/http.server";
+import { requireProxyTenant } from "../lib/proxy.server";
+import { withTenant, type Tenant } from "../lib/tenant.server";
 import { parseIds } from "../lib/reviews.server";
 import { SubmitError, createReview, ensureProduct, openRequests, parseSubmission } from "../lib/submit.server";
 
@@ -11,11 +11,11 @@ import { SubmitError, createReview, ensureProduct, openRequests, parseSubmission
 const esc = (s: string) =>
   s.replace(/[&<>"'{}%]/g, (c) => `&#${c.charCodeAt(0)};`); // HTML-escape + neutralise Liquid delimiters
 
-async function page(liquid: (b: string, o?: ResponseInit) => Response, token: string, notice = "", status = 200) {
+async function page(t: Tenant, liquid: (b: string, o?: ResponseInit) => Response, token: string, notice = "", status = 200) {
   const error = status >= 400;
-  const open = token ? await openRequests(token) : [];
+  const open = token ? await openRequests(t, token) : [];
   const products = open.length
-    ? await prisma.product.findMany({ where: { shopifyProductId: { in: open.map((r) => r.shopifyProductId) } } })
+    ? await t.db.product.findMany({ where: { shopId: t.shopId, shopifyProductId: { in: open.map((r) => r.shopifyProductId) } } })
     : [];
   const items = open.map((r) => {
     const p = products.find((x) => x.shopifyProductId === r.shopifyProductId);
@@ -60,35 +60,39 @@ ${items.length ? `<p>Choose a product to review. Reviews are checked before they
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { liquid } = await authenticate.public.appProxy(request);
+  const { liquid, shop } = await requireProxyTenant(request);
   const url = new URL(request.url);
-  if (!rateLimit(`write:${clientIp(request)}`, 60, 60_000)) return liquid("<p>Too many requests.</p>", { status: 429 });
-  return page(liquid, url.searchParams.get("t") ?? "", url.searchParams.get("done") ? "Thank you! Your review has been submitted." : "");
+  if (!rateLimit(`write:${shop.id}:${clientIp(request)}`, 60, 60_000)) return liquid("<p>Too many requests.</p>", { status: 429 });
+  return withTenant(shop.id, (t) =>
+    page(t, liquid, url.searchParams.get("t") ?? "", url.searchParams.get("done") ? "Thank you! Your review has been submitted." : ""),
+  );
 };
 
+// V1.1 (review requests) — retained and tenant-scoped; not part of the V1 product scope.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, liquid } = await authenticate.public.appProxy(request);
-  const url = new URL(request.url);
+  const { admin, liquid, shop } = await requireProxyTenant(request);
   const ip = clientIp(request);
   const form = await request.formData();
   const token = String(form.get("t") ?? "");
   try {
-    if (!originAllowed(request, url.searchParams.get("shop"))) throw new SubmitError("form", "Submission rejected.", 403);
-    if (!rateLimit(`submit:${ip}`, 10, 3_600_000)) throw new SubmitError("form", "Too many submissions. Try again later.", 429);
+    if (!originAllowed(request, shop)) throw new SubmitError("form", "Submission rejected.", 403);
+    if (!rateLimit(`submit:${shop.id}:${ip}`, 10, 3_600_000)) throw new SubmitError("form", "Too many submissions. Try again later.", 429);
     const [productId] = parseIds(String(form.get("product_id") ?? ""), 1);
-    const req = (await openRequests(token)).find((r) => r.shopifyProductId === productId);
-    if (!productId || !req) throw new SubmitError("form", "This review link has expired or was already used.", 410);
     const data = await parseSubmission(form);
-    await ensureProduct(admin, productId);
-    await createReview({
-      productId, data, verified: true, source: "request", requestId: req.id,
-      customerId: req.shopifyCustomerId, orderId: req.shopifyOrderId, ipHash: ipHash(ip),
+    await withTenant(shop.id, async (t) => {
+      const req = (await openRequests(t, token)).find((r) => r.shopifyProductId === productId);
+      if (!productId || !req) throw new SubmitError("form", "This review link has expired or was already used.", 410);
+      const product = await ensureProduct(t, admin, productId);
+      await createReview(t, {
+        productId: product.id, data, verified: true, source: "request", requestId: req.id,
+        customerId: req.shopifyCustomerId, orderId: req.shopifyOrderId, ipHash: ipHash(ip),
+      });
     });
     // Post/redirect/get back through the proxy path (relative, stays on the shop domain).
     return new Response(null, { status: 303, headers: { Location: `/apps/proofly/write?t=${encodeURIComponent(token)}&done=1` } });
   } catch (e) {
-    if (e instanceof SubmitError) return page(liquid, token, e.message, e.status);
-    console.error("token review submit failed", e);
-    return page(liquid, token, "Something went wrong. Please try again.", 500);
+    const [notice, status] = e instanceof SubmitError ? [e.message, e.status] : ["Something went wrong. Please try again.", 500];
+    if (!(e instanceof SubmitError)) console.error("token review submit failed", e);
+    return withTenant(shop.id, (t) => page(t, liquid, token, notice, status));
   }
 };

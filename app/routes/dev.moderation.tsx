@@ -1,8 +1,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import type { Prisma, ReviewStatus } from "@prisma/client";
-import prisma from "../db.server";
-import { isDev } from "../lib/devsign.server";
-import { ACTIONS, moderate, saveReply, type ModerationAction } from "../lib/moderation.server";
+import { devShop } from "../lib/devsign.server";
+import { ACTIONS, moderate, saveReply, type ModerationActionName } from "../lib/moderation.server";
+import { withTenant } from "../lib/tenant.server";
 
 // DEV ONLY: local stand-in for the embedded admin's moderation screen (the real one only renders inside
 // Shopify admin). Uses the same moderation functions; never calls Shopify (no metafield sync). 404 in production.
@@ -11,23 +11,26 @@ const STATUSES: ReviewStatus[] = ["pending", "published", "rejected", "hidden"];
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  if (!isDev()) return new Response("Not found", { status: 404 });
+  const shop = await devShop();
+  if (!shop) return new Response("Not found", { status: 404 });
+  return withTenant(shop.id, async ({ db, shopId }) => {
   const sp = new URL(request.url).searchParams;
   const status = STATUSES.find((s) => s === sp.get("status"));
   const flag = sp.get("flag") ?? "";
   // Flags like duplicate_text_x8 are matched by prefix, so one link covers every duplicate count.
   const flagIds = flag
-    ? (await prisma.$queryRaw<{ id: string }[]>`select id::text from reviews where exists (select 1 from unnest(flags) f where f = ${flag} or f like ${flag + "\\_x%"})`).map((r) => r.id)
+    ? (await db.$queryRaw<{ id: string }[]>`select id::text from reviews where shop_id = ${shopId}::uuid and exists (select 1 from unnest(flags) f where f = ${flag} or f like ${flag + "\\_x%"})`).map((r) => r.id)
     : null;
   const where: Prisma.ReviewWhereInput = {
+    shopId,
     ...(status ? { status } : {}),
     ...(flagIds ? { id: { in: flagIds } } : {}),
     ...(!status && !flag ? { status: "pending" } : {}),
   };
   const [rows, counts, flagRows] = await Promise.all([
-    prisma.review.findMany({ where, orderBy: { reviewDate: "desc" }, take: 50, include: { product: true, reply: true, _count: { select: { images: true } } } }),
-    prisma.review.groupBy({ by: ["status"], _count: { _all: true } }),
-    prisma.$queryRaw<{ flag: string; n: bigint }[]>`select regexp_replace(unnest(flags), '_x[0-9]+$', '') as flag, count(*) as n from reviews group by 1 order by 2 desc`,
+    db.review.findMany({ where, orderBy: { reviewDate: "desc" }, take: 50, include: { product: true, reply: true, _count: { select: { images: true } } } }),
+    db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
+    db.$queryRaw<{ flag: string; n: bigint }[]>`select regexp_replace(unnest(flags), '_x[0-9]+$', '') as flag, count(*) as n from reviews where shop_id = ${shopId}::uuid group by 1 order by 2 desc`,
   ]);
   const count = (s: string) => counts.find((c) => c.status === s)?._count._all ?? 0;
   const link = (q: string, label: string) => `<a href="/dev/moderation?${q}">${esc(label)}</a>`;
@@ -66,15 +69,19 @@ textarea{font:inherit;padding:8px;border:1px solid #ccc;border-radius:8px}button
 ${rows.map(card).join("") || "<p>Nothing here.</p>"}
 <p><a href="/dev">← All products</a></p></main></body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if (!isDev()) return new Response("Not found", { status: 404 });
+  const shop = await devShop();
+  if (!shop) return new Response("Not found", { status: 404 });
   const form = await request.formData();
   const id = String(form.get("id") ?? "");
   const intent = String(form.get("intent") ?? "");
   if (!/^[0-9a-f-]{36}$/.test(id)) return new Response("Bad id", { status: 400 });
-  if (intent === "reply") await saveReply(id, String(form.get("reply") ?? ""), "dev-preview");
-  else if (intent in ACTIONS) await moderate([id], intent as ModerationAction, "dev-preview"); // no graphql → no Shopify writes
+  await withTenant(shop.id, async (t) => {
+    if (intent === "reply") await saveReply(t, id, String(form.get("reply") ?? ""), "dev-preview");
+    else if (intent in ACTIONS) await moderate(t, [id], intent as ModerationActionName, "dev-preview"); // no Shopify writes
+  });
   return new Response(null, { status: 303, headers: { Location: request.headers.get("referer") ?? "/dev/moderation" } });
 };

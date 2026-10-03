@@ -16,6 +16,7 @@ database.sqlite
 .env
 .env.*
 !.env.example
+!.env.test
 
 yarn.lock
 pnpm-lock.yaml
@@ -39,3 +40,6 @@ storage/
 # Fixtures: synthetic output is generated; private datasets never live in this repository
 /fixtures/synthetic/
 /fixtures/private/
+
+# test media output
+/storage-test/

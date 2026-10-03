@@ -21,7 +21,9 @@
     "db": "./scripts/db.sh",
     "fixtures:generate": "tsx scripts/fixtures/generate.ts",
     "fixtures:check": "tsx scripts/fixtures/check.ts",
-    "scan:merchant-data": "tsx scripts/scan-merchant-data.ts"
+    "scan:merchant-data": "tsx scripts/scan-merchant-data.ts",
+    "test": "tsx --env-file=.env.test --test --test-concurrency=1 tests/*.test.ts",
+    "db:setup": "./scripts/db.sh setup"
   },
   "type": "module",
   "engines": {

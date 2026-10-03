@@ -2,15 +2,15 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useLoaderData, useSearchParams } from "react-router";
 import type { Prisma, ReviewStatus } from "@prisma/client";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import prisma from "../db.server";
-import { adminContext } from "../lib/admin.server";
+import { requireAdminTenant } from "../lib/admin.server";
+import { withTenant } from "../lib/tenant.server";
 
 const PER_PAGE = 50;
 const STATUSES: ReviewStatus[] = ["pending", "published", "rejected", "hidden"];
 const STATUS_TONE = { published: "success", pending: "warning", rejected: "critical", hidden: "neutral" } as const;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await adminContext(request);
+  const { shop } = await requireAdminTenant(request);
   const sp = new URL(request.url).searchParams;
   const q = sp.get("q")?.trim().slice(0, 100) ?? "";
   const product = sp.get("product")?.trim().slice(0, 100) ?? "";
@@ -25,6 +25,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const page = Math.max(1, Number(sp.get("page")) || 1);
 
   const where: Prisma.ReviewWhereInput = {
+    shopId: shop.id,
     ...(q ? { OR: ["title", "body", "reviewerName"].map((f) => ({ [f]: { contains: q, mode: "insensitive" } })) } : {}),
     ...(product ? { product: { OR: [{ handle: { contains: product, mode: "insensitive" } }, { title: { contains: product, mode: "insensitive" } }] } } : {}),
     ...(rating >= 1 && rating <= 5 ? { rating } : {}),
@@ -34,13 +35,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ...(flagged === true ? { NOT: { flags: { isEmpty: true } } } : flagged === false ? { flags: { isEmpty: true } } : {}),
     ...(from || to ? { reviewDate: { ...(from && !isNaN(+from) ? { gte: from } : {}), ...(to && !isNaN(+to) ? { lte: to } : {}) } } : {}),
   };
-  const [rows, count] = await Promise.all([
-    prisma.review.findMany({
+  const [rows, count] = await withTenant(shop.id, ({ db }) => Promise.all([
+    db.review.findMany({
       where, orderBy: [{ reviewDate: "desc" }, { id: "desc" }], skip: (page - 1) * PER_PAGE, take: PER_PAGE,
       include: { product: { select: { title: true, handle: true } }, _count: { select: { images: true } }, reply: { select: { id: true } } },
     }),
-    prisma.review.count({ where }),
-  ]);
+    db.review.count({ where }),
+  ]));
   return {
     count, page, pages: Math.max(1, Math.ceil(count / PER_PAGE)),
     rows: rows.map((r) => ({

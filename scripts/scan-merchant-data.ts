@@ -24,7 +24,7 @@ const IMAGE = /\.(png|jpe?g|gif|webp|avif|heic|bmp|tiff?|ico|svg)$/i;
 const DATA_DUMP = /\.(csv|tsv|sql|sqlite3?|db|zip|tar|gz|tgz|7z|ndjson|jsonl)$/i;
 const SKIP_CONTENT = /(^|\/)(package-lock\.json)$|\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|map)$/i;
 const ALLOWED_EMAIL_DOMAINS = /@(example\.(com|org|net)|proofly\.test)$/i;
-const ALLOWED_SHOPS = new Set(["proofly-dev", "example", "your-store", "shop", "my-shop-domain"]); // fictional / template placeholders
+const ALLOWED_SHOPS = new Set(["proofly-dev", "proofly-test-a", "proofly-test-b", "proofly-test-gone", "example", "your-store", "shop", "my-shop-domain"]); // fictional / template placeholders
 
 type Finding = { rule: string; file: string; line?: number; detail: string };
 const findings: Finding[] = [];

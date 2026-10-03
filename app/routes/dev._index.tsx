@@ -1,15 +1,17 @@
-import prisma from "../db.server";
-import { isDev } from "../lib/devsign.server";
+import { devShop } from "../lib/devsign.server";
+import { withTenant } from "../lib/tenant.server";
 
 // DEV ONLY: index of the local preview — every product with its own published / imported counts.
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 export const loader = async () => {
-  if (!isDev()) return new Response("Not found", { status: 404 });
-  const products = await prisma.product.findMany({ orderBy: [{ reviewCount: "desc" }, { title: "asc" }], include: { _count: { select: { reviews: true } } } });
+  const shop = await devShop();
+  if (!shop) return new Response("Not found", { status: 404 });
+  return withTenant(shop.id, async ({ db, shopId }) => {
+  const products = await db.product.findMany({ where: { shopId }, orderBy: [{ reviewCount: "desc" }, { title: "asc" }], include: { _count: { select: { reviews: true } } } });
   const [total, published, pending, images] = await Promise.all([
-    prisma.review.count(), prisma.review.count({ where: { status: "published" } }),
-    prisma.review.count({ where: { status: "pending" } }), prisma.reviewImage.count(),
+    db.review.count({ where: { shopId } }), db.review.count({ where: { shopId, status: "published" } }),
+    db.review.count({ where: { shopId, status: "pending" } }), db.reviewImage.count({ where: { shopId } }),
   ]);
   const rows = products.map((p) => `<tr><td><a href="/dev/preview?handle=${encodeURIComponent(p.handle)}">${esc(p.title)}</a></td>
     <td>${esc(p.status ?? "")}</td><td class="n">${p.reviewCount}</td><td class="n">${p._count.reviews}</td><td class="n">${Number(p.averageRating).toFixed(2)}</td></tr>`).join("");
@@ -28,4 +30,5 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;bord
 <div class="wrap"><table><thead><tr><th>Product</th><th>Status</th><th class="n">Published</th><th class="n">Imported</th><th class="n">Average</th></tr></thead>
 <tbody>${rows}</tbody></table></div></main></body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+  });
 };

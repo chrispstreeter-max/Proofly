@@ -1,23 +1,30 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import prisma from "../db.server";
-import { adminContext } from "../lib/admin.server";
+import { requireAdminTenant } from "../lib/admin.server";
 import { publicUrl } from "../lib/media.server";
-import { ACTIONS, moderate, saveReply, type ModerationAction } from "../lib/moderation.server";
+import { ACTIONS, moderate, moderationHistory, saveReply, type ModerationActionName } from "../lib/moderation.server";
+import { syncMetafields } from "../lib/aggregates.server";
+import { isUuid, withTenant } from "../lib/tenant.server";
 
-const UUID = /^[0-9a-f-]{36}$/;
+// Missing reviews and other shops' reviews get the identical response (no existence leak).
+const notFound = () => new Response("Not found", { status: 404 });
 const TONE = { published: "success", pending: "warning", rejected: "critical", hidden: "neutral" } as const;
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  await adminContext(request);
-  if (!UUID.test(params.id ?? "")) throw new Response("Not found", { status: 404 });
-  const r = await prisma.review.findUnique({
-    where: { id: params.id },
-    include: { product: true, images: { orderBy: { position: "asc" } }, reply: true },
+  const { shop } = await requireAdminTenant(request);
+  if (!isUuid(params.id)) throw notFound();
+  const found = await withTenant(shop.id, async (t) => {
+    const r = await t.db.review.findFirst({
+      where: { shopId: t.shopId, id: params.id },
+      include: { product: true, images: { orderBy: { position: "asc" } }, reply: true },
+    });
+    if (!r) return null;
+    const history = await moderationHistory(t, r.id);
+    return { r, history };
   });
-  if (!r) throw new Response("Not found", { status: 404 });
-  const history = await prisma.auditLog.findMany({ where: { entity: "review", entityId: r.id }, orderBy: { createdAt: "desc" }, take: 20 });
+  if (!found) throw notFound();
+  const { r, history } = found;
   return {
     review: {
       id: r.id, sourceId: r.sourceReviewId, source: r.source, imported: r.imported, status: r.status, rating: r.rating,
@@ -29,22 +36,25 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       images: r.images.map((i) => ({ thumb: publicUrl(i.thumbKey), large: publicUrl(i.largeKey), sha: i.sha256.slice(0, 12) })),
       reply: r.reply?.reply ?? "",
     },
-    history: history.map((h) => ({ at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: h.action })),
+    history: history.map((h) => ({ at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: `${h.action} (${h.fromStatus} → ${h.toStatus})` })),
   };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { admin, actor } = await adminContext(request);
-  if (!UUID.test(params.id ?? "")) throw new Response("Not found", { status: 404 });
+  const { admin, actor, shop } = await requireAdminTenant(request);
+  if (!isUuid(params.id)) throw notFound();
   const form = await request.formData();
   const intent = String(form.get("intent"));
   if (intent === "reply") {
-    await saveReply(params.id!, String(form.get("reply") ?? ""), actor);
+    const ok = await withTenant(shop.id, (t) => saveReply(t, params.id!, String(form.get("reply") ?? ""), actor));
+    if (!ok) throw notFound();
     return { message: "Reply saved." };
   }
   if (intent in ACTIONS) {
-    await moderate([params.id!], intent as ModerationAction, actor, admin.graphql);
-    return { message: `Review ${ACTIONS[intent as ModerationAction]}. Storefront rating updated.` };
+    const n = await withTenant(shop.id, (t) => moderate(t, [params.id!], intent as ModerationActionName, actor));
+    if (!n) throw notFound();
+    await syncMetafields(shop.id, admin.graphql);
+    return { message: `Review ${ACTIONS[intent as ModerationActionName]}. Storefront rating updated.` };
   }
   return { message: "Unknown action." };
 };

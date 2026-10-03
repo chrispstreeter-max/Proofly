@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
-import prisma from "../db.server";
 import { publicUrl } from "./media.server";
+import type { Tenant } from "./tenant.server";
 
 export const PAGE_SIZE = 10;
 export type Sort = "recent" | "highest" | "lowest";
@@ -20,12 +20,18 @@ export function parseListParams(url: URL) {
   return { sort, rating, photos, page };
 }
 
-export async function productSummary(shopifyProductId: bigint) {
-  const p = await prisma.product.findUnique({ where: { shopifyProductId } });
-  if (!p) return { count: 0, average: 0, distribution: [0, 0, 0, 0, 0], withPhotos: 0 };
-  const withPhotos = await prisma.review.count({
-    where: { shopifyProductId, status: "published", images: { some: {} } },
-  });
+/** This shop's product for a Shopify product id, or null (unknown and other-shop products look the same). */
+export function findProduct({ db, shopId }: Tenant, shopifyProductId: bigint) {
+  return db.product.findFirst({ where: { shopId, shopifyProductId } });
+}
+
+const EMPTY_SUMMARY = { count: 0, average: 0, distribution: [0, 0, 0, 0, 0], withPhotos: 0 };
+
+export async function productSummary({ db, shopId }: Tenant, productId: string | null) {
+  if (!productId) return EMPTY_SUMMARY;
+  const p = await db.product.findFirst({ where: { shopId, id: productId } });
+  if (!p) return EMPTY_SUMMARY;
+  const withPhotos = await db.review.count({ where: { shopId, productId, status: "published", images: { some: {} } } });
   return {
     count: p.reviewCount,
     average: Number(p.averageRating),
@@ -53,16 +59,19 @@ export function serializeReview(r: ReviewRow) {
 }
 
 export async function listReviews(
-  shopifyProductId: bigint,
+  { db, shopId }: Tenant,
+  productId: string | null,
   { sort, rating, photos, page }: ReturnType<typeof parseListParams>,
 ) {
+  if (!productId) return { reviews: [], page, hasMore: false }; // unknown and other-shop products: identical response
   const where: Prisma.ReviewWhereInput = {
-    shopifyProductId,
+    shopId,
+    productId,
     status: "published",
     ...(rating ? { rating } : {}),
     ...(photos ? { images: { some: {} } } : {}),
   };
-  const rows = await prisma.review.findMany({
+  const rows = await db.review.findMany({
     where,
     orderBy: ORDER[sort],
     skip: (page - 1) * PAGE_SIZE,
@@ -72,10 +81,10 @@ export async function listReviews(
   return { reviews: rows.slice(0, PAGE_SIZE).map(serializeReview), page, hasMore: rows.length > PAGE_SIZE };
 }
 
-/** Batched card ratings: { "<productId>": { c: count, a: average } } for products with ≥1 review. */
-export async function ratingsFor(ids: bigint[]) {
-  const rows = await prisma.product.findMany({
-    where: { shopifyProductId: { in: ids }, reviewCount: { gt: 0 } },
+/** Batched card ratings for this shop: { "<shopifyProductId>": { c, a } } — ids of other shops are simply absent. */
+export async function ratingsFor({ db, shopId }: Tenant, ids: bigint[]) {
+  const rows = await db.product.findMany({
+    where: { shopId, shopifyProductId: { in: ids }, reviewCount: { gt: 0 } },
     select: { shopifyProductId: true, reviewCount: true, averageRating: true },
   });
   return Object.fromEntries(rows.map((r) => [r.shopifyProductId.toString(), { c: r.reviewCount, a: Number(r.averageRating) }]));

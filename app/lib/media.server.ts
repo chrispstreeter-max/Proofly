@@ -77,13 +77,16 @@ export interface StoredImage {
   height: number | null;
 }
 
+/** Per-shop key prefix: every object belongs to exactly one tenant (listing/deletion per shop, no collisions). */
+export const shopPrefix = (shopId: string) => `s/${shopId}`;
+
 /** Stores one review image. Keys are deterministic, so re-running is idempotent. */
-export async function storeReviewImage(reviewId: string, original: Buffer): Promise<StoredImage> {
+export async function storeReviewImage(shopId: string, reviewId: string, original: Buffer): Promise<StoredImage> {
   const contentType = sniffType(original);
   if (!contentType) throw new Error("Unsupported image type");
   const hash = sha256(original);
-  const storageKey = `originals/${reviewId}/${hash}.${ALLOWED_TYPES[contentType]}`;
-  const base = `r/${reviewId}/${hash.slice(0, 16)}`;
+  const storageKey = `${shopPrefix(shopId)}/originals/${reviewId}/${hash}.${ALLOWED_TYPES[contentType]}`;
+  const base = `${shopPrefix(shopId)}/r/${reviewId}/${hash.slice(0, 16)}`;
 
   const img = sharp(original, { failOn: "error" }).rotate(); // apply EXIF orientation, then metadata is dropped
   const meta = await img.metadata();

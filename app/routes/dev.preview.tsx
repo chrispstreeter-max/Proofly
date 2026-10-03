@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { LoaderFunctionArgs } from "react-router";
 import type { TagToken, TopLevelToken, Liquid as L } from "liquidjs";
-import prisma from "../db.server";
-import { isDev } from "../lib/devsign.server";
+import { devShop } from "../lib/devsign.server";
+import { withTenant } from "../lib/tenant.server";
 
 // DEV ONLY: renders the real theme-extension Liquid (blocks/reviews.liquid) for a product from the local
 // DB, plus a product-card grid using the Proofly card-rating hook. /dev/preview[?handle=<product-handle>]
@@ -12,11 +12,15 @@ const EXT = path.resolve("extensions/proofly");
 
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  if (!isDev()) return new Response("Not found", { status: 404 });
+  const shop = await devShop();
+  if (!shop) return new Response("Not found", { status: 404 });
   const url = new URL(request.url);
   const handle = url.searchParams.get("handle");
   // No default product: without ?handle= the product with the most reviews in the local database is shown.
-  const p = handle ? await prisma.product.findFirst({ where: { handle } }) : await prisma.product.findFirst({ orderBy: { reviewCount: "desc" } });
+  const [p, cards] = await withTenant(shop.id, ({ db, shopId }) => Promise.all([
+    handle ? db.product.findFirst({ where: { shopId, handle } }) : db.product.findFirst({ where: { shopId }, orderBy: { reviewCount: "desc" } }),
+    db.product.findMany({ where: { shopId }, orderBy: { reviewCount: "desc" }, take: 8 }),
+  ]));
   if (!p) return new Response("Unknown handle", { status: 404 });
 
   // liquidjs is a devDependency: import lazily so production builds never load it.
@@ -45,7 +49,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     routes: { account_login_url: "/account/login" },
   });
 
-  const cards = await prisma.product.findMany({ orderBy: { reviewCount: "desc" }, take: 8 });
   const grid = [...cards.map((c) => ({ id: c.shopifyProductId.toString(), title: c.title })), { id: "9999999999999", title: "Product with no reviews" }]
     .map((c) => `<div class="card"><div class="ph"></div><h4>${c.title.replace(/</g, "&lt;")}</h4>
       <span data-pf-rating data-product-id="${c.id}"></span></div>`)

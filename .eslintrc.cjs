@@ -76,6 +76,21 @@ module.exports = {
       ],
     },
 
+    // Tenant boundary: merchant data is only reachable through app/lib/tenant.server.ts (withTenant + RLS).
+    {
+      files: ["app/**/*.{ts,tsx}"],
+      excludedFiles: [
+        "app/db.server.ts",
+        "app/shopify.server.ts", // Shopify session storage
+        "app/lib/tenant.server.ts", // shops table + tenant transactions
+        "app/routes/webhooks.app.uninstalled.tsx", // sessions table only
+        "app/routes/webhooks.app.scopes_update.tsx", // sessions table only
+      ],
+      rules: {
+        "no-restricted-imports": ["error", { patterns: [{ group: ["**/db.server", "../db.server", "./db.server"], message: "Access merchant data through withTenant() in app/lib/tenant.server.ts." }] }],
+      },
+    },
+
     // Node
     {
       files: [

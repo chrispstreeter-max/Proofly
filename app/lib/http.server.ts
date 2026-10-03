@@ -33,12 +33,17 @@ export function json(data: unknown, init: ResponseInit & { cache?: number } = {}
   return new Response(JSON.stringify(data), { ...rest, headers });
 }
 
-/** Cross-site POST guard: if the browser sent an Origin, it must be one of the store's own origins. */
-export function originAllowed(request: Request, shop: string | null | undefined) {
+/**
+ * Cross-site POST guard: if the browser sent an Origin, its host must be one of THIS shop's storefront hosts
+ * (its myshopify domain or the hosts recorded from Shopify at install). STOREFRONT_ORIGINS is honoured only in
+ * development (local preview). No global, cross-merchant allow-list.
+ */
+export function originAllowed(request: Request, shop: { shopDomain: string; storefrontHosts: string[] }) {
   const origin = request.headers.get("origin");
   if (!origin) return true; // same-origin form posts from some browsers omit it; HMAC + rate limit still apply
-  const allowed = new Set(
-    [`https://${shop}`, ...(process.env.STOREFRONT_ORIGINS ?? "").split(",")].map((s) => s.trim()).filter(Boolean),
-  );
-  return allowed.has(origin);
+  let host: string;
+  try { host = new URL(origin).host.toLowerCase(); } catch { return false; }
+  if (!origin.startsWith("https://") && process.env.NODE_ENV !== "development") return false;
+  if (host === shop.shopDomain || shop.storefrontHosts.includes(host)) return true;
+  return process.env.NODE_ENV === "development" && (process.env.STOREFRONT_ORIGINS ?? "").split(",").map((s) => s.trim()).includes(origin);
 }

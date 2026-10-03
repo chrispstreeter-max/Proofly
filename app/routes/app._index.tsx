@@ -1,50 +1,53 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import prisma from "../db.server";
-import { adminContext } from "../lib/admin.server";
+import { requireAdminTenant } from "../lib/admin.server";
 import { ensureReviewMetafieldDefinitions, recomputeAll, syncMetafields } from "../lib/aggregates.server";
 import { issueReviewLink } from "../lib/requests.server";
+import { withTenant } from "../lib/tenant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await adminContext(request);
-  const [byStatus, total, withPhotos, verified, flagged, products, unsynced, requests] = await Promise.all([
-    prisma.review.groupBy({ by: ["status"], _count: { _all: true } }),
-    prisma.review.count(),
-    prisma.review.count({ where: { images: { some: {} } } }),
-    prisma.review.count({ where: { verifiedPurchase: true } }),
-    prisma.review.count({ where: { NOT: { flags: { isEmpty: true } } } }),
-    prisma.product.count({ where: { reviewCount: { gt: 0 } } }),
-    prisma.$queryRaw<{ n: bigint }[]>`select count(*) as n from products
-      where synced_count is distinct from review_count or synced_average is distinct from average_rating`,
-    prisma.reviewRequest.groupBy({
-      by: ["shopifyOrderId"],
-      _count: { _all: true },
-      _max: { createdAt: true, sentAt: true, completedAt: true },
-      orderBy: { _max: { createdAt: "desc" } },
-      take: 10,
-    }),
-  ]);
-  const status = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
-  return {
-    stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, verified, flagged, products },
-    unsynced: Number(unsynced[0]?.n ?? 0),
-    requests: requests.map((r) => ({
-      order: r.shopifyOrderId.toString(), products: r._count._all,
-      created: r._max.createdAt?.toISOString().slice(0, 10), sent: !!r._max.sentAt, completed: !!r._max.completedAt,
-    })),
-  };
+  const { shop } = await requireAdminTenant(request);
+  return withTenant(shop.id, async ({ db, shopId }) => {
+    const [byStatus, total, withPhotos, verified, flagged, products, unsynced, requests] = await Promise.all([
+      db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
+      db.review.count({ where: { shopId } }),
+      db.review.count({ where: { shopId, images: { some: {} } } }),
+      db.review.count({ where: { shopId, verifiedPurchase: true } }),
+      db.review.count({ where: { shopId, NOT: { flags: { isEmpty: true } } } }),
+      db.product.count({ where: { shopId, reviewCount: { gt: 0 } } }),
+      db.$queryRaw<{ n: bigint }[]>`select count(*) as n from products where shop_id = ${shopId}::uuid
+        and (synced_count is distinct from review_count or synced_average is distinct from average_rating)`,
+      db.reviewRequest.groupBy({
+        by: ["shopifyOrderId"],
+        where: { shopId },
+        _count: { _all: true },
+        _max: { createdAt: true, sentAt: true, completedAt: true },
+        orderBy: { _max: { createdAt: "desc" } },
+        take: 10,
+      }),
+    ]);
+    const status = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
+    return {
+      stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, verified, flagged, products },
+      unsynced: Number(unsynced[0]?.n ?? 0),
+      requests: requests.map((r) => ({
+        order: r.shopifyOrderId.toString(), products: r._count._all,
+        created: r._max.createdAt?.toISOString().slice(0, 10), sent: !!r._max.sentAt, completed: !!r._max.completedAt,
+      })),
+    };
+  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, actor } = await adminContext(request);
+  const { admin, actor, shop } = await requireAdminTenant(request);
   const form = await request.formData();
   const intent = form.get("intent");
   if (intent === "sync") {
-    await recomputeAll();
+    await withTenant(shop.id, (t) => recomputeAll(t));
     await ensureReviewMetafieldDefinitions(admin.graphql);
-    const n = await syncMetafields(admin.graphql);
-    await prisma.auditLog.create({ data: { actor, action: "metafields.sync", entity: "products", details: { written: n } } });
+    const n = await syncMetafields(shop.id, admin.graphql);
+    await withTenant(shop.id, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor, action: "metafields.sync", entity: "products", details: { written: n } } }));
     return { message: `Ratings synced to Shopify for ${n} product${n === 1 ? "" : "s"}.` };
   }
   if (intent === "issue_link") {
@@ -52,7 +55,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!/^\d+$/.test(order)) return { message: "Invalid order." };
     const res = await admin.graphql(`{ shop { primaryDomain { url } } }`);
     const origin = (await res.json()).data.shop.primaryDomain.url as string;
-    const url = await issueReviewLink(BigInt(order), origin);
+    const url = await withTenant(shop.id, (t) => issueReviewLink(t, BigInt(order), origin));
     return url ? { message: "New review link (copy it now — it is not stored):", url } : { message: "Every product on that order has already been reviewed." };
   }
   return { message: "Unknown action." };

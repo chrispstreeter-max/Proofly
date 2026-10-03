@@ -4,8 +4,9 @@ import {
   AppDistribution,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
-import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
+import { EncryptedSessionStorage } from "./lib/session-storage.server";
+import { upsertShopFromAuth } from "./lib/tenant.server";
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -14,10 +15,16 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: new EncryptedSessionStorage(prisma), // access/refresh tokens encrypted at rest
   distribution: AppDistribution.AppStore,
   future: {
     expiringOfflineAccessTokens: true,
+  },
+  hooks: {
+    // Install / reinstall: create or reactivate the tenant from the authenticated session's own shop identity.
+    afterAuth: async ({ session, admin }) => {
+      await upsertShopFromAuth(session.shop, (q) => admin.graphql(q));
+    },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }

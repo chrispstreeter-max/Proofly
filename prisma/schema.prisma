@@ -2,12 +2,24 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// DATABASE_URL: the application role (proofly_app) — not a superuser, NOBYPASSRLS, so row-level security applies.
+// DIRECT_DATABASE_URL: the schema owner, used only by Prisma Migrate.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
-// Shopify OAuth session storage (from the Shopify app template).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Tenant isolation
+//  * Every merchant-owned table has shop_id (NOT NULL, FK → shops).
+//  * Relations between merchant records are COMPOSITE foreign keys (shop_id, id), so the database
+//    rejects a row that points at another shop's record.
+//  * Postgres row-level security on every merchant-owned table (migration "tenant_rls") restricts rows to
+//    current_setting('app.shop_id'); application code also filters by shopId (app/lib/tenant.server.ts).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Shopify OAuth session storage (template shape). Access/refresh tokens are stored encrypted (app/lib/session-storage.server.ts).
 model Session {
   id                  String    @id
   shop                String
@@ -26,6 +38,69 @@ model Session {
   emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+/// One row per Shopify store that has installed Proofly. Identity comes only from authenticated Shopify context.
+model Shop {
+  id                 String    @id @default(uuid()) @db.Uuid
+  shopifyShopId      BigInt?   @unique @map("shopify_shop_id")
+  shopDomain         String    @unique @map("shop_domain") // e.g. example.myshopify.com (from the authenticated session)
+  shopName           String?   @map("shop_name")
+  /// Storefront hosts of this shop (primary domain etc.), from the Admin API at install — used for the Origin check.
+  storefrontHosts    String[]  @default([]) @map("storefront_hosts")
+  planId             String    @default("free") @map("plan_id") // billing arrives in a later checkpoint
+  subscriptionStatus String    @default("none") @map("subscription_status")
+  installedAt        DateTime  @default(now()) @map("installed_at")
+  uninstalledAt      DateTime? @map("uninstalled_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  settings          ShopSettings?
+  subscriptions     Subscription[]
+  products          Product[]
+  reviews           Review[]
+  reviewImages      ReviewImage[]
+  reviewReplies     ReviewReply[]
+  reviewRequests    ReviewRequest[]
+  moderationActions ModerationAction[]
+  importJobs        ImportJob[]
+  auditLogs         AuditLog[]
+
+  @@map("shops")
+}
+
+model ShopSettings {
+  shopId                  String   @id @map("shop_id") @db.Uuid
+  widgetEnabled           Boolean  @default(true) @map("widget_enabled")
+  reviewSubmissionEnabled Boolean  @default(true) @map("review_submission_enabled")
+  photoReviewsEnabled     Boolean  @default(true) @map("photo_reviews_enabled")
+  moderationEnabled       Boolean  @default(true) @map("moderation_enabled")
+  themeSettings           Json     @default("{}") @map("theme_settings")
+  displaySettings         Json     @default("{}") @map("display_settings")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@map("shop_settings")
+}
+
+model Subscription {
+  id                     String    @id @default(uuid()) @db.Uuid
+  shopId                 String    @map("shop_id") @db.Uuid
+  shopifySubscriptionId  String?   @map("shopify_subscription_id")
+  planId                 String    @map("plan_id")
+  status                 String
+  currentPeriodEnd       DateTime? @map("current_period_end")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@map("subscriptions")
 }
 
 enum ReviewStatus {
@@ -37,7 +112,8 @@ enum ReviewStatus {
 
 model Product {
   id               String   @id @default(uuid()) @db.Uuid
-  shopifyProductId BigInt   @unique @map("shopify_product_id")
+  shopId           String   @map("shop_id") @db.Uuid
+  shopifyProductId BigInt   @map("shopify_product_id")
   shopifyVariantId BigInt?  @map("shopify_variant_id")
   handle           String
   title            String
@@ -51,22 +127,27 @@ model Product {
   rating3          Int      @default(0) @map("rating_3")
   rating4          Int      @default(0) @map("rating_4")
   rating5          Int      @default(0) @map("rating_5")
-  // Last values written to Shopify metafields reviews.rating / reviews.rating_count.
+  // Last values written to Shopify metafields reviews.rating / reviews.rating_count (derived cache).
   syncedCount      Int?     @map("synced_count")
   syncedAverage    Decimal? @map("synced_average") @db.Decimal(3, 2)
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
+  shop    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   reviews Review[]
 
-  @@index([handle])
+  @@unique([shopId, shopifyProductId])
+  @@unique([shopId, id])
+  @@index([shopId, handle])
   @@map("products")
 }
 
 model Review {
   id                String       @id @default(uuid()) @db.Uuid
-  sourceReviewId    String       @unique @map("source_review_id")
-  shopifyProductId  BigInt       @map("shopify_product_id")
+  shopId            String       @map("shop_id") @db.Uuid
+  productId         String       @map("product_id") @db.Uuid
+  source            String // import source key (e.g. "csv") | storefront | request
+  sourceReviewId    String       @map("source_review_id")
   rating            Int
   title             String       @default("")
   body              String
@@ -75,7 +156,6 @@ model Review {
   status            ReviewStatus @default(pending)
   verifiedPurchase  Boolean      @default(false) @map("verified_purchase")
   imported          Boolean      @default(false)
-  source            String // import source key (e.g. "csv") | storefront | request
   flags             String[]     @default([])
   // Private: never serialised to the storefront.
   reviewerEmail     String?      @map("reviewer_email")
@@ -86,22 +166,27 @@ model Review {
   createdAt         DateTime     @default(now()) @map("created_at")
   updatedAt         DateTime     @updatedAt @map("updated_at")
 
-  product Product        @relation(fields: [shopifyProductId], references: [shopifyProductId])
-  images  ReviewImage[]
-  reply   ReviewReply?
-  request ReviewRequest?
+  shop              Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product           Product            @relation(fields: [shopId, productId], references: [shopId, id], onDelete: Cascade)
+  images            ReviewImage[]
+  reply             ReviewReply?
+  request           ReviewRequest?
+  moderationActions ModerationAction[]
 
-  @@index([shopifyProductId, status, reviewDate(sort: Desc)])
-  @@index([status, reviewDate(sort: Desc)])
+  @@unique([shopId, source, sourceReviewId])
+  @@unique([shopId, id])
+  @@index([shopId, productId, status, reviewDate(sort: Desc)])
+  @@index([shopId, status, reviewDate(sort: Desc)])
   @@map("reviews")
 }
 
 model ReviewImage {
   id               String   @id @default(uuid()) @db.Uuid
+  shopId           String   @map("shop_id") @db.Uuid
   reviewId         String   @map("review_id") @db.Uuid
   originalFilename String   @map("original_filename")
-  storageKey       String   @map("storage_key") // private original
-  thumbKey         String   @map("thumb_key") // public WebP 320px
+  storageKey       String   @map("storage_key") // private original (s/<shop>/originals/…)
+  thumbKey         String   @map("thumb_key") // public WebP 320px (s/<shop>/r/…)
   largeKey         String   @map("large_key") // public WebP 1600px
   originalUrl      String?  @map("original_url")
   contentType      String   @map("content_type")
@@ -112,31 +197,37 @@ model ReviewImage {
   position         Int      @default(0)
   createdAt        DateTime @default(now()) @map("created_at")
 
-  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)
 
   @@unique([reviewId, sha256])
+  @@index([shopId, reviewId])
   @@map("review_images")
 }
 
 model ReviewReply {
   id        String   @id @default(uuid()) @db.Uuid
+  shopId    String   @map("shop_id") @db.Uuid
   reviewId  String   @unique @map("review_id") @db.Uuid
   reply     String
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)
 
+  @@unique([shopId, reviewId])
   @@map("review_replies")
 }
 
+/// V1.1 feature (review requests) — table retained and tenant-scoped; not part of the V1 product scope.
 model ReviewRequest {
   id                String    @id @default(uuid()) @db.Uuid
+  shopId            String    @map("shop_id") @db.Uuid
   shopifyCustomerId BigInt?   @map("shopify_customer_id")
   shopifyOrderId    BigInt    @map("shopify_order_id")
   shopifyProductId  BigInt    @map("shopify_product_id")
   // SHA-256 of the emailed token, set when the link is issued (raw token is never stored).
-  // One token per order; one row per product in that order.
   tokenHash         String?   @map("token_hash")
   sentAt            DateTime? @map("sent_at")
   completedAt       DateTime? @map("completed_at")
@@ -144,22 +235,62 @@ model ReviewRequest {
   reviewId          String?   @unique @map("review_id") @db.Uuid
   createdAt         DateTime  @default(now()) @map("created_at")
 
-  review Review? @relation(fields: [reviewId], references: [id])
+  shop   Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  review Review? @relation(fields: [shopId, reviewId], references: [shopId, id])
 
-  @@unique([shopifyOrderId, shopifyProductId])
-  @@index([tokenHash])
+  @@unique([shopId, shopifyOrderId, shopifyProductId])
+  @@unique([shopId, reviewId])
+  @@index([shopId, tokenHash])
   @@map("review_requests")
+}
+
+/// Moderation history (one row per status change), merchant-private.
+model ModerationAction {
+  id         String       @id @default(uuid()) @db.Uuid
+  shopId     String       @map("shop_id") @db.Uuid
+  reviewId   String       @map("review_id") @db.Uuid
+  action     String
+  fromStatus ReviewStatus @map("from_status")
+  toStatus   ReviewStatus @map("to_status")
+  actor      String
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)
+
+  @@index([shopId, reviewId, createdAt(sort: Desc)])
+  @@map("moderation_actions")
+}
+
+/// Import job records (the import pipeline itself arrives in a later checkpoint).
+model ImportJob {
+  id         String    @id @default(uuid()) @db.Uuid
+  shopId     String    @map("shop_id") @db.Uuid
+  source     String
+  status     String    @default("pending")
+  counts     Json      @default("{}")
+  report     Json      @default("{}")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  finishedAt DateTime? @map("finished_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("import_jobs")
 }
 
 model AuditLog {
   id        String   @id @default(uuid()) @db.Uuid
-  actor     String // admin user id / "importer" / "system"
+  shopId    String   @map("shop_id") @db.Uuid
+  actor     String
   action    String
   entity    String
   entityId  String?  @map("entity_id")
   details   Json?
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([entity, entityId])
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, entity, entityId])
   @@map("audit_log")
 }
