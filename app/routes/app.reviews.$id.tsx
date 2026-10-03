@@ -31,7 +31,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       title: r.title, body: r.body, name: r.reviewerName, date: r.reviewDate.toISOString().slice(0, 16).replace("T", " "),
       verified: r.verifiedPurchase, flags: r.flags,
       // Admin-only private fields:
-      email: r.reviewerEmail, customerId: r.shopifyCustomerId?.toString() ?? null, orderId: r.shopifyOrderId?.toString() ?? null,
+      email: r.reviewerEmail,
       product: { title: r.product.title, handle: r.product.handle, id: r.product.shopifyProductId.toString() },
       images: r.images.map((i) => ({ thumb: publicUrl(i.thumbKey), large: publicUrl(i.largeKey), sha: i.sha256.slice(0, 12) })),
       reply: r.reply?.reply ?? "",
@@ -121,8 +121,6 @@ export default function ReviewDetail() {
           <s-text>Product: <s-link href={`shopify://admin/products/${r.product.id}`}>{r.product.title}</s-link></s-text>
           <s-text>Source: {r.source} ({r.sourceId})</s-text>
           <s-text>Email (private): {r.email ?? "—"}</s-text>
-          <s-text>Customer ID: {r.customerId ?? "—"}</s-text>
-          <s-text>Order ID: {r.orderId ?? "—"}</s-text>
         </s-stack>
       </s-section>
       <s-section slot="aside" heading="History">

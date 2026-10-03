@@ -8,27 +8,32 @@ import prisma from "./db.server";
 import { EncryptedSessionStorage } from "./lib/session-storage.server";
 import { upsertShopFromAuth } from "./lib/tenant.server";
 
+// Fail fast: an empty API secret would make every HMAC/JWT check forgeable, so never start without these.
+const REQUIRED_ENV = ["SHOPIFY_API_KEY", "SHOPIFY_API_SECRET", "SHOPIFY_APP_URL", "SCOPES", "TOKEN_ENCRYPTION_KEY"] as const;
+const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (missing.length) throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+
+/**
+ * Install / reinstall / token refresh. Runs after every token exchange (Shopify-managed installation): creates or
+ * reactivates the tenant from the shop identity the Admin API reports for this session — never from request input.
+ */
+export const afterAuth = async ({ session, admin }: { session: { shop: string }; admin: { graphql: (q: string) => Promise<Response> } }) => {
+  await upsertShopFromAuth(session.shop, (q) => admin.graphql(q));
+};
+
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  apiSecretKey: process.env.SHOPIFY_API_SECRET!,
   apiVersion: ApiVersion.October25,
-  scopes: process.env.SCOPES?.split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "",
+  scopes: process.env.SCOPES!.split(","),
+  appUrl: process.env.SHOPIFY_APP_URL!,
   authPathPrefix: "/auth",
   sessionStorage: new EncryptedSessionStorage(prisma), // access/refresh tokens encrypted at rest
   distribution: AppDistribution.AppStore,
   future: {
     expiringOfflineAccessTokens: true,
   },
-  hooks: {
-    // Install / reinstall: create or reactivate the tenant from the authenticated session's own shop identity.
-    afterAuth: async ({ session, admin }) => {
-      await upsertShopFromAuth(session.shop, (q) => admin.graphql(q));
-    },
-  },
-  ...(process.env.SHOP_CUSTOM_DOMAIN
-    ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
-    : {}),
+  hooks: { afterAuth },
 });
 
 export default shopify;
@@ -36,6 +41,5 @@ export const apiVersion = ApiVersion.October25;
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 export const authenticate = shopify.authenticate;
 export const unauthenticated = shopify.unauthenticated;
-export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;

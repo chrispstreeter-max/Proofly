@@ -72,15 +72,17 @@ model Shop {
 }
 
 model ShopSettings {
-  shopId                  String   @id @map("shop_id") @db.Uuid
-  widgetEnabled           Boolean  @default(true) @map("widget_enabled")
-  reviewSubmissionEnabled Boolean  @default(true) @map("review_submission_enabled")
-  photoReviewsEnabled     Boolean  @default(true) @map("photo_reviews_enabled")
-  moderationEnabled       Boolean  @default(true) @map("moderation_enabled")
-  themeSettings           Json     @default("{}") @map("theme_settings")
-  displaySettings         Json     @default("{}") @map("display_settings")
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
+  shopId                  String    @id @map("shop_id") @db.Uuid
+  widgetEnabled           Boolean   @default(true) @map("widget_enabled")
+  reviewSubmissionEnabled Boolean   @default(true) @map("review_submission_enabled")
+  photoReviewsEnabled     Boolean   @default(true) @map("photo_reviews_enabled")
+  moderationEnabled       Boolean   @default(true) @map("moderation_enabled")
+  themeSettings           Json      @default("{}") @map("theme_settings")
+  displaySettings         Json      @default("{}") @map("display_settings")
+  /// Set when the merchant finishes the first-run setup checklist. Kept across uninstall/reinstall.
+  onboardingCompletedAt   DateTime? @map("onboarding_completed_at")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
@@ -88,14 +90,14 @@ model ShopSettings {
 }
 
 model Subscription {
-  id                     String    @id @default(uuid()) @db.Uuid
-  shopId                 String    @map("shop_id") @db.Uuid
-  shopifySubscriptionId  String?   @map("shopify_subscription_id")
-  planId                 String    @map("plan_id")
-  status                 String
-  currentPeriodEnd       DateTime? @map("current_period_end")
-  createdAt              DateTime  @default(now()) @map("created_at")
-  updatedAt              DateTime  @updatedAt @map("updated_at")
+  id                    String    @id @default(uuid()) @db.Uuid
+  shopId                String    @map("shop_id") @db.Uuid
+  shopifySubscriptionId String?   @map("shopify_subscription_id")
+  planId                String    @map("plan_id")
+  status                String
+  currentPeriodEnd      DateTime? @map("current_period_end")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 

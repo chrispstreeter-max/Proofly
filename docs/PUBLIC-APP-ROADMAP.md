@@ -181,7 +181,7 @@ dataset used locally lives in a development tenant created by a local-only scrip
 | OAuth immediately on install/reinstall, redirect to app UI | ✅ template | Test reinstall path explicitly |
 | Shopify billing for charges, self-serve plan changes | ❌ | CP9 |
 | Theme app extensions only, no theme code edits, onboarding instructions | ⚠️ embed relies on existing theme markup | CP5 + onboarding deep links |
-| Minimal scopes | ⚠️ `read_customers`, `read_orders` always | V1: `read_products` + `write_products` only (CP4/CP7) |
+| Minimal scopes | ✅ `read_products`, `write_products` only (CP2) | V1.1 asks for order/customer scopes when built |
 | Protected customer data | ⚠️ current build reads orders/customers | V1 uses none; apply for Level 1 only when V1.1 is ready |
 | Compliance webhooks actually honoured | ⚠️ shop/redact only logs | CP10 |
 | No fake/incentivised reviews; neutral request wording | ✅ no incentives | Keep request copy neutral; no “review for discount” features; verified only with evidence |
@@ -218,6 +218,7 @@ and a short report. No checkpoint touches a live merchant store.
 | — | After approval | App Store review → **the first launch merchant installs the production app as an ordinary merchant** (explicit owner authorisation; theme redesign finished) → public merchant installs | Owner sign-off at each step | — |
 
 **Progress:** Checkpoint 1 (multi-tenant foundation, incl. shop lifecycle, encrypted sessions and the isolation suite) complete locally — see [TENANCY.md](TENANCY.md).
+Checkpoint 2 (Shopify-managed installation + token exchange, manual login removed, onboarding, session lifecycle, V1 scopes reduced to `read_products,write_products`, order/customer code paths removed) complete locally; dev-store install verification still pending explicit authorisation.
 
 Recommended order: 1 → 2 → 11 (isolation tests early, then kept green) → 3 → 4 → 6 → 5 → 7 → 8 → 10 → 9 → 12 → 13.
 

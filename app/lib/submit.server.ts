@@ -1,13 +1,10 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { ALLOWED_TYPES, sniffType, storeReviewImage } from "./media.server";
 import type { Tenant } from "./tenant.server";
 
 type AdminContext = { graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response> } | undefined;
 
 export const LIMITS = { title: 120, body: 5000, name: 60, email: 254, images: 5, imageBytes: 10 * 1024 * 1024 };
-
-export const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
-export const newToken = () => randomBytes(32).toString("base64url");
 
 export class SubmitError extends Error {
   constructor(public field: string, message: string, public status = 400) { super(message); }
@@ -62,50 +59,17 @@ export async function ensureProduct({ db, shopId }: Tenant, admin: AdminContext,
   });
 }
 
-/**
- * V1.1 (verified purchase): order lookup for a logged-in shopper of the same authenticated shop.
- * ponytail: checks the customer's 25 most recent orders; widen if long-tail purchases need verifying.
- */
-export async function findPurchase(admin: AdminContext, customerId: bigint, productId: bigint): Promise<bigint | null> {
-  if (!admin) return null;
-  const res = await admin.graphql(
-    `query($id: ID!) { customer(id: $id) { orders(first: 25, sortKey: PROCESSED_AT, reverse: true) {
-      nodes { legacyResourceId cancelledAt lineItems(first: 30) { nodes { product { legacyResourceId } } } } } } }`,
-    { variables: { id: `gid://shopify/Customer/${customerId}` } },
-  );
-  type Order = { legacyResourceId: string; cancelledAt: string | null; lineItems: { nodes: { product: { legacyResourceId: string } | null }[] } };
-  const orders: Order[] = (await res.json()).data?.customer?.orders?.nodes ?? [];
-  const hit = orders.find((o) => !o.cancelledAt && o.lineItems.nodes.some((li) => li.product?.legacyResourceId === productId.toString()));
-  return hit ? BigInt(hit.legacyResourceId) : null;
-}
-
-/** V1.1: open review requests of THIS shop for a link token. */
-export function openRequests({ db, shopId }: Tenant, token: string) {
-  return db.reviewRequest.findMany({
-    where: { shopId, tokenHash: hashToken(token), completedAt: null, expiresAt: { gt: new Date() } },
-  });
-}
-
 export async function createReview(
   t: Tenant,
   input: {
     productId: string; // internal products.id of this shop
     data: Awaited<ReturnType<typeof parseSubmission>>;
-    verified: boolean;
-    source: "storefront" | "request";
-    customerId?: bigint | null;
-    orderId?: bigint | null;
-    requestId?: string;
+    source: "storefront";
     ipHash: string;
   },
 ) {
   const { db, shopId } = t;
   const { data } = input;
-  if (input.requestId) {
-    // Single use: only succeeds if the request is still open (guards against double submits).
-    const done = await db.reviewRequest.updateMany({ where: { shopId, id: input.requestId, completedAt: null }, data: { completedAt: new Date() } });
-    if (done.count !== 1) throw new SubmitError("form", "This review link has already been used.", 409);
-  }
   const review = await db.review.create({
     data: {
       shopId,
@@ -118,21 +82,18 @@ export async function createReview(
       reviewerEmail: data.email,
       reviewDate: new Date(),
       status: "pending", // every new review is moderated before publishing
-      verifiedPurchase: input.verified,
+      verifiedPurchase: false, // V1 has no order access; verified purchase is V1.1
       imported: false,
       source: input.source,
-      shopifyCustomerId: input.customerId ?? null,
-      shopifyOrderId: input.orderId ?? null,
       submitterIpHash: input.ipHash,
     },
   });
-  if (input.requestId) await db.reviewRequest.updateMany({ where: { shopId, id: input.requestId }, data: { reviewId: review.id } });
   for (const [position, buf] of data.images.entries()) {
     const stored = await storeReviewImage(shopId, review.id, buf);
     await db.reviewImage.create({ data: { shopId, reviewId: review.id, position, originalFilename: `upload-${position + 1}`, ...stored } });
   }
   await db.auditLog.create({
-    data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id, details: { verified: input.verified, images: data.images.length } },
+    data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id, details: { images: data.images.length } },
   });
   return review;
 }

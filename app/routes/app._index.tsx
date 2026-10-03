@@ -3,13 +3,13 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import { ensureReviewMetafieldDefinitions, recomputeAll, syncMetafields } from "../lib/aggregates.server";
-import { issueReviewLink } from "../lib/requests.server";
 import { withTenant } from "../lib/tenant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop } = await requireAdminTenant(request);
   return withTenant(shop.id, async ({ db, shopId }) => {
-    const [byStatus, total, withPhotos, verified, flagged, products, unsynced, requests] = await Promise.all([
+    const [settings, byStatus, total, withPhotos, verified, flagged, products, unsynced] = await Promise.all([
+      db.shopSettings.findUnique({ where: { shopId } }),
       db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
       db.review.count({ where: { shopId } }),
       db.review.count({ where: { shopId, images: { some: {} } } }),
@@ -18,23 +18,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       db.product.count({ where: { shopId, reviewCount: { gt: 0 } } }),
       db.$queryRaw<{ n: bigint }[]>`select count(*) as n from products where shop_id = ${shopId}::uuid
         and (synced_count is distinct from review_count or synced_average is distinct from average_rating)`,
-      db.reviewRequest.groupBy({
-        by: ["shopifyOrderId"],
-        where: { shopId },
-        _count: { _all: true },
-        _max: { createdAt: true, sentAt: true, completedAt: true },
-        orderBy: { _max: { createdAt: "desc" } },
-        take: 10,
-      }),
     ]);
+    // Theme editor deep links: they only open the merchant's editor with the block/embed preselected; the merchant
+    // decides whether to save. The app never edits theme files.
+    const editor = `https://${shop.shopDomain}/admin/themes/current/editor`;
+    const key = process.env.SHOPIFY_API_KEY;
     const status = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
     return {
       stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, verified, flagged, products },
       unsynced: Number(unsynced[0]?.n ?? 0),
-      requests: requests.map((r) => ({
-        order: r.shopifyOrderId.toString(), products: r._count._all,
-        created: r._max.createdAt?.toISOString().slice(0, 10), sent: !!r._max.sentAt, completed: !!r._max.completedAt,
-      })),
+      onboarding: {
+        done: !!settings?.onboardingCompletedAt,
+        reviewsBlockUrl: `${editor}?template=product&addAppBlockId=${key}/reviews&target=mainSection`,
+        ratingsEmbedUrl: `${editor}?context=apps&activateAppId=${key}/ratings`,
+      },
     };
   });
 };
@@ -50,13 +47,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await withTenant(shop.id, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor, action: "metafields.sync", entity: "products", details: { written: n } } }));
     return { message: `Ratings synced to Shopify for ${n} product${n === 1 ? "" : "s"}.` };
   }
-  if (intent === "issue_link") {
-    const order = String(form.get("order") ?? "");
-    if (!/^\d+$/.test(order)) return { message: "Invalid order." };
-    const res = await admin.graphql(`{ shop { primaryDomain { url } } }`);
-    const origin = (await res.json()).data.shop.primaryDomain.url as string;
-    const url = await withTenant(shop.id, (t) => issueReviewLink(t, BigInt(order), origin));
-    return url ? { message: "New review link (copy it now — it is not stored):", url } : { message: "Every product on that order has already been reviewed." };
+  if (intent === "complete_onboarding") {
+    await withTenant(shop.id, async ({ db, shopId }) => {
+      await db.shopSettings.update({ where: { shopId }, data: { onboardingCompletedAt: new Date() } });
+      await db.auditLog.create({ data: { shopId, actor, action: "onboarding.completed", entity: "shop", entityId: shopId } });
+    });
+    return { message: "Setup complete." };
   }
   return { message: "Unknown action." };
 };
@@ -71,7 +67,7 @@ const Stat = ({ label, value, href }: { label: string; value: number; href?: str
 );
 
 export default function Dashboard() {
-  const { stats, unsynced, requests } = useLoaderData<typeof loader>();
+  const { stats, unsynced, onboarding } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   return (
@@ -79,8 +75,31 @@ export default function Dashboard() {
       {result && (
         <s-banner tone="info">
           <s-paragraph>{result.message}</s-paragraph>
-          {"url" in result && result.url && <s-paragraph><code style={{ wordBreak: "break-all" }}>{result.url}</code></s-paragraph>}
         </s-banner>
+      )}
+      {!onboarding.done && (
+        <s-section heading="Set up Proofly">
+          <s-stack gap="base">
+            <s-paragraph>Your Proofly account is ready and empty. Three steps to start collecting reviews:</s-paragraph>
+            <s-ordered-list>
+              <s-list-item>
+                Add the <strong>Product reviews</strong> block to your product page.{" "}
+                <s-link href={onboarding.reviewsBlockUrl} target="_blank">Open theme editor</s-link>
+              </s-list-item>
+              <s-list-item>
+                Turn on <strong>Product card stars</strong> to show ratings in collections.{" "}
+                <s-link href={onboarding.ratingsEmbedUrl} target="_blank">Open app embeds</s-link>
+              </s-list-item>
+              <s-list-item>
+                New reviews arrive as <strong>pending</strong>. Approve them under <s-link href="/app/reviews">Reviews</s-link>.
+              </s-list-item>
+            </s-ordered-list>
+            <Form method="post">
+              <input type="hidden" name="intent" value="complete_onboarding" />
+              <s-button type="submit" variant="primary" loading={busy || undefined}>Finish setup</s-button>
+            </Form>
+          </s-stack>
+        </s-section>
       )}
       <s-section heading="Overview">
         <s-grid gridTemplateColumns="repeat(auto-fit, minmax(150px, 1fr))" gap="base">
@@ -110,35 +129,6 @@ export default function Dashboard() {
         </s-stack>
       </s-section>
 
-      <s-section heading="Review requests">
-        {requests.length === 0 ? (
-          <s-paragraph>Fulfilled orders will appear here. Review-request emails are not automated yet.</s-paragraph>
-        ) : (
-          <s-table>
-            <s-table-header-row>
-              <s-table-header>Order</s-table-header><s-table-header>Products</s-table-header>
-              <s-table-header>Created</s-table-header><s-table-header>Status</s-table-header><s-table-header>Link</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {requests.map((r) => (
-                <s-table-row key={r.order}>
-                  <s-table-cell>{r.order}</s-table-cell>
-                  <s-table-cell>{r.products}</s-table-cell>
-                  <s-table-cell>{r.created}</s-table-cell>
-                  <s-table-cell>{r.completed ? <s-badge tone="success">Reviewed</s-badge> : r.sent ? <s-badge tone="info">Link issued</s-badge> : <s-badge>Not sent</s-badge>}</s-table-cell>
-                  <s-table-cell>
-                    <Form method="post">
-                      <input type="hidden" name="intent" value="issue_link" />
-                      <input type="hidden" name="order" value={r.order} />
-                      <s-button type="submit" variant="tertiary">Create review link</s-button>
-                    </Form>
-                  </s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
-        )}
-      </s-section>
     </s-page>
   );
 }

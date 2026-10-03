@@ -12,6 +12,7 @@ export const owner = new PrismaClient({ datasources: { db: { url: process.env.DI
 
 export const DOMAIN_A = "proofly-test-a.myshopify.com";
 export const DOMAIN_B = "proofly-test-b.myshopify.com";
+export const DOMAIN_C = "proofly-test-c.myshopify.com"; // installed during the lifecycle tests
 export const SAME_PRODUCT_ID = 9_000_000_000_001n; // deliberately identical in both shops
 export const SAME_SOURCE_REVIEW_ID = "fixture-review-1"; // deliberately identical in both shops
 
@@ -38,9 +39,7 @@ export async function installMerchant(domain: string, label: string): Promise<Me
     shopDomain: domain, shopifyShopId: BigInt(9_100_000_000_000 + Math.floor(Math.random() * 1e6)), shopName: `Fixture Store ${label}`,
     storefrontHosts: [storefrontHost(label)],
   });
-  await sessionStorage.storeSession(
-    new Session({ id: `offline_${domain}`, shop: domain, state: "", isOnline: false, scope: process.env.SCOPES, accessToken: `fixture-token-${label}` }),
-  );
+  await storeOfflineSession(domain, label);
   return withTenant(shop.id, async ({ db, shopId }) => {
     const product = await db.product.create({
       data: { shopId, shopifyProductId: SAME_PRODUCT_ID, handle: `fixture-product-${label}`, title: `Fixture Product ${label}`, reviewCount: 1, averageRating: 5, rating5: 1 },
@@ -62,6 +61,35 @@ export async function installMerchant(domain: string, label: string): Promise<Me
     const job = await db.importJob.create({ data: { shopId, source: "csv", status: "finished" } });
     const action = await db.moderationAction.create({ data: { shopId, reviewId: review.id, action: "approve", fromStatus: "pending", toStatus: "published", actor: "fixture" } });
     return { shopId, domain, productId: product.id, reviewId: review.id, imageId: image.id, importJobId: job.id, moderationActionId: action.id };
+  });
+}
+
+/** Stores the offline session a successful token exchange would store (encrypted, via the app's session storage). */
+export const storeOfflineSession = (domain: string, label: string) =>
+  sessionStorage.storeSession(
+    new Session({ id: `offline_${domain}`, shop: domain, state: "", isOnline: false, scope: process.env.SCOPES, accessToken: `fixture-token-${label}` }),
+  );
+
+/** Stand-in for the Admin API client of an authenticated session: answers the `shop` identity query. */
+export const fakeAdmin = (shop: { myshopifyDomain: string; id: bigint; name: string; host: string }) => ({
+  graphql: async () =>
+    Response.json({ data: { shop: { id: `gid://shopify/Shop/${shop.id}`, name: shop.name, myshopifyDomain: shop.myshopifyDomain, primaryDomain: { host: shop.host } } } }),
+});
+
+/** A webhook exactly as Shopify sends it for `domain` (HMAC-SHA256 of the raw body with the app secret). */
+export function webhookRequest(domain: string, topic: string, path: string, payload: unknown = {}) {
+  const body = JSON.stringify(payload);
+  return new Request(`${process.env.SHOPIFY_APP_URL}${path}`, {
+    method: "POST",
+    body,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Hmac-Sha256": createHmac("sha256", process.env.SHOPIFY_API_SECRET!).update(body).digest("base64"),
+      "X-Shopify-Topic": topic,
+      "X-Shopify-Shop-Domain": domain,
+      "X-Shopify-API-Version": "2026-10",
+      "X-Shopify-Webhook-Id": randomUUID(),
+    },
   });
 }
 

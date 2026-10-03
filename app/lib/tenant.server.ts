@@ -88,10 +88,11 @@ export async function registerShop(input: { shopDomain: string; shopifyShopId: b
   return shop;
 }
 
-/** app/uninstalled: tenant becomes inactive immediately (storefront + admin stop serving), data is retained. */
+/** app/uninstalled: tenant becomes inactive immediately (storefront + admin stop serving), data is retained.
+ *  Idempotent: Shopify may deliver the webhook more than once. */
 export async function markUninstalled(domain: string) {
   const shop = await shopByDomain(domain);
-  if (!shop) return null;
+  if (!shop || shop.uninstalledAt) return shop;
   await prisma.shop.update({ where: { id: shop.id }, data: { uninstalledAt: new Date() } });
   await withTenant(shop.id, ({ db, shopId }) =>
     db.auditLog.create({ data: { shopId, actor: "shopify", action: "shop.uninstalled", entity: "shop", entityId: shopId } }),

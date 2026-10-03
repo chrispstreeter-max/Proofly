@@ -1,57 +1,23 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect, Form, useLoaderData } from "react-router";
+import { redirect } from "react-router";
 
-import { login } from "../../shopify.server";
-
-import styles from "./styles.module.css";
-
+// Public landing page. Proofly is installed from the Shopify App Store (Shopify-managed installation) and opened
+// from the Shopify admin — there is deliberately no "enter your shop domain" login. When Shopify opens the app URL
+// with ?shop=&host=, hand over to /app, where the shop is taken from the verified session token, not these params.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
-
-  if (url.searchParams.get("shop")) {
-    throw redirect(`/app?${url.searchParams.toString()}`);
-  }
-
-  return { showForm: Boolean(login) };
+  if (url.searchParams.get("shop")) throw redirect(`/app?${url.searchParams.toString()}`);
+  return null;
 };
 
-export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
-
+export default function Landing() {
   return (
-    <div className={styles.index}>
-      <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
-        <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
-        </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
-        <ul className={styles.list}>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
-          </li>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
-          </li>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
-          </li>
-        </ul>
+    <main style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: "1rem", textAlign: "center", fontFamily: "system-ui, sans-serif" }}>
+      <div>
+        <h1>Proofly</h1>
+        <p style={{ fontSize: "1.2rem" }}>Product reviews for Shopify. Bring your existing reviews with you.</p>
+        <p>Install Proofly from the Shopify App Store, then open it from your Shopify admin.</p>
       </div>
-    </div>
+    </main>
   );
 }
