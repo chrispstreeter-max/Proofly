@@ -3,6 +3,14 @@ import { publicUrl } from "./media.server";
 import type { Tenant } from "./tenant.server";
 
 export const PAGE_SIZE = 10;
+
+/**
+ * The ONLY definition of "publicly visible": published and not held (pending, rejected, hidden and plan-limited
+ * reviews never reach the storefront). Aggregates, metafields, lists and card ratings all use it.
+ */
+export const PUBLIC_REVIEW = { status: "published", holdReason: null } as const satisfies Prisma.ReviewWhereInput;
+/** Only optimised media that is currently servable (not storage-limited / processing / failed). */
+export const PUBLIC_MEDIA = { mediaStatus: "published" } as const satisfies Prisma.ReviewImageWhereInput;
 export type Sort = "recent" | "highest" | "lowest";
 
 const ORDER: Record<Sort, Prisma.ReviewOrderByWithRelationInput[]> = {
@@ -31,7 +39,7 @@ export async function productSummary({ db, shopId }: Tenant, productId: string |
   if (!productId) return EMPTY_SUMMARY;
   const p = await db.product.findFirst({ where: { shopId, id: productId } });
   if (!p) return EMPTY_SUMMARY;
-  const withPhotos = await db.review.count({ where: { shopId, productId, status: "published", images: { some: {} } } });
+  const withPhotos = await db.review.count({ where: { shopId, productId, ...PUBLIC_REVIEW, images: { some: PUBLIC_MEDIA } } });
   return {
     count: p.reviewCount,
     average: Number(p.averageRating),
@@ -40,11 +48,10 @@ export async function productSummary({ db, shopId }: Tenant, productId: string |
   };
 }
 
-/** Public, allow-listed shape. Never add email, customer/order IDs or IP hashes here. */
+/** Public, allow-listed shape. Never add ids, email, customer/order IDs, IP hashes, status or flags here. */
 type ReviewRow = Prisma.ReviewGetPayload<{ include: { images: true; reply: true } }>;
 export function serializeReview(r: ReviewRow) {
   return {
-    id: r.id,
     rating: r.rating,
     title: r.title,
     body: r.body,
@@ -52,6 +59,7 @@ export function serializeReview(r: ReviewRow) {
     date: r.reviewDate.toISOString().slice(0, 10),
     verified: r.verifiedPurchase,
     images: r.images
+      .filter((i) => i.mediaStatus === "published") // also filtered in the query; never trust a caller's include
       .sort((a, b) => a.position - b.position)
       .map((i) => ({ thumb: publicUrl(i.thumbKey), large: publicUrl(i.largeKey), w: i.width, h: i.height })),
     reply: r.reply ? { body: r.reply.reply, date: r.reply.createdAt.toISOString().slice(0, 10) } : null,
@@ -67,27 +75,35 @@ export async function listReviews(
   const where: Prisma.ReviewWhereInput = {
     shopId,
     productId,
-    status: "published",
+    ...PUBLIC_REVIEW,
     ...(rating ? { rating } : {}),
-    ...(photos ? { images: { some: {} } } : {}),
+    ...(photos ? { images: { some: PUBLIC_MEDIA } } : {}),
   };
   const rows = await db.review.findMany({
     where,
     orderBy: ORDER[sort],
     skip: (page - 1) * PAGE_SIZE,
     take: PAGE_SIZE + 1, // one extra row tells us whether there is another page
-    include: { images: true, reply: true },
+    include: { images: { where: PUBLIC_MEDIA }, reply: true },
   });
   return { reviews: rows.slice(0, PAGE_SIZE).map(serializeReview), page, hasMore: rows.length > PAGE_SIZE };
 }
 
-/** Batched card ratings for this shop: { "<shopifyProductId>": { c, a } } — ids of other shops are simply absent. */
-export async function ratingsFor({ db, shopId }: Tenant, ids: bigint[]) {
+/**
+ * Batched card ratings for this shop by product handle: { "<handle>": [average, count] }. Handles of other shops,
+ * unknown handles and products without public reviews are simply absent. Reads the aggregates (published, not held).
+ */
+export async function ratingsByHandle({ db, shopId }: Tenant, handles: string[]) {
   const rows = await db.product.findMany({
-    where: { shopId, shopifyProductId: { in: ids }, reviewCount: { gt: 0 } },
-    select: { shopifyProductId: true, reviewCount: true, averageRating: true },
+    where: { shopId, handle: { in: handles }, reviewCount: { gt: 0 } },
+    select: { handle: true, reviewCount: true, averageRating: true },
   });
-  return Object.fromEntries(rows.map((r) => [r.shopifyProductId.toString(), { c: r.reviewCount, a: Number(r.averageRating) }]));
+  return Object.fromEntries(rows.map((r) => [r.handle, [Number(r.averageRating), r.reviewCount] as const]));
+}
+
+/** Parses "a,b,c" into ≤limit distinct, plausible Shopify product handles (lower-case, no separators/markup). */
+export function parseHandles(raw: string | null, limit = 100): string[] {
+  return [...new Set((raw ?? "").split(",").map((h) => h.trim().toLowerCase()).filter((h) => /^[^\s/?#<>"',]{1,255}$/u.test(h)))].slice(0, limit);
 }
 
 /** Parses "1,2,3" into ≤limit valid Shopify numeric IDs. */

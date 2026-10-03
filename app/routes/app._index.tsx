@@ -30,7 +30,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       onboarding: {
         done: !!settings?.onboardingCompletedAt,
         reviewsBlockUrl: `${editor}?template=product&addAppBlockId=${key}/reviews&target=mainSection`,
-        ratingsEmbedUrl: `${editor}?context=apps&activateAppId=${key}/ratings`,
+        summaryBlockUrl: `${editor}?template=product&addAppBlockId=${key}/rating-summary&target=mainSection`,
+        ratingsEmbedUrl: `${editor}?context=apps&activateAppId=${key}/card-ratings`,
       },
     };
   });
@@ -83,11 +84,14 @@ export default function Dashboard() {
             <s-paragraph>Your Proofly account is ready and empty. Three steps to start collecting reviews:</s-paragraph>
             <s-ordered-list>
               <s-list-item>
-                Add the <strong>Product reviews</strong> block to your product page.{" "}
-                <s-link href={onboarding.reviewsBlockUrl} target="_blank">Open theme editor</s-link>
+                Add the <strong>Review widget</strong> block to your product page (and, optionally, the{" "}
+                <strong>Rating summary</strong> block near the product title).{" "}
+                <s-link href={onboarding.reviewsBlockUrl} target="_blank">Add review widget</s-link>{" · "}
+                <s-link href={onboarding.summaryBlockUrl} target="_blank">Add rating summary</s-link>
               </s-list-item>
               <s-list-item>
-                Turn on <strong>Product card stars</strong> to show ratings in collections.{" "}
+                Product cards: if your theme has a “Show product rating” setting, turn it on — it uses Proofly ratings
+                directly. Otherwise turn on the <strong>Product card stars</strong> app embed.{" "}
                 <s-link href={onboarding.ratingsEmbedUrl} target="_blank">Open app embeds</s-link>
               </s-list-item>
               <s-list-item>

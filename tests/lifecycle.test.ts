@@ -18,7 +18,7 @@ import { loader as proxyRatings } from "../app/routes/proxy.ratings";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import { action as uninstalledWebhook } from "../app/routes/webhooks.app.uninstalled";
 import {
-  adminRequest, args, DOMAIN_A, DOMAIN_C, fakeAdmin, installMerchant, owner, proxyRequest, resetDb, run, SAME_PRODUCT_ID,
+  adminRequest, args, DOMAIN_A, DOMAIN_C, fakeAdmin, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, SAME_PRODUCT_ID,
   storeOfflineSession, webhookRequest, type Merchant,
 } from "./helpers";
 
@@ -105,8 +105,8 @@ describe("Install: a newly installed merchant starts with an empty tenant", () =
     assert.deepEqual(body.reviews, []);
     assert.ok(!body.summary || body.summary.count === 0);
 
-    const ratings = await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_C, "ratings", { ids: String(SAME_PRODUCT_ID) })));
-    assert.ok(!JSON.stringify(await ratings.json()).includes(`"${SAME_PRODUCT_ID}":{`));
+    const ratings = await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_C, "ratings", { handles: SAME_HANDLE })));
+    assert.deepEqual(await ratings.json(), { ratings: {} });
   });
 });
 

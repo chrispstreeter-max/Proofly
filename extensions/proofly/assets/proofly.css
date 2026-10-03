@@ -1,5 +1,5 @@
-/* Proofly. Inherits the theme font; all colours are tokens on .pf / .pf-badge. */
-.pf, .pf-badge, .pf-dialog, .pf-lightbox {
+/* Proofly — Review Widget. Inherits the theme font; all colours are tokens on .pf. */
+.pf, .pf-dialog, .pf-lightbox {
   --pf-ink: #111;
   --pf-text: #374151;
   --pf-muted: #6b7280;
@@ -25,13 +25,6 @@
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.6l2.8 6 6.6.7-4.9 4.5 1.4 6.5L12 17l-5.9 3.3 1.4-6.5-4.9-4.5 6.6-.7z'/%3E%3C/svg%3E") 0 0 / var(--s) var(--s) repeat-x;
 }
 .pf-stars--lg { --s: 30px; }
-
-/* Card badge */
-.pf-badge { display: inline-flex; align-items: center; gap: 6px; line-height: 1; white-space: nowrap; }
-.pf-badge .pf-stars { --s: 14px; }
-.pf-badge-count { font-size: 13px; color: var(--pf-muted); }
-.pf-badge--link { cursor: pointer; }
-.pf-badge--link:hover .pf-badge-count { text-decoration: underline; }
 
 /* Widget */
 .pf { color: var(--pf-text); margin: 48px auto; max-width: 1200px; padding: 0 16px; font-size: 15px; line-height: 1.5; }
@@ -91,6 +84,7 @@
 .pf-reply { margin-top: 14px; padding: 12px 16px; background: var(--pf-soft); border-radius: var(--pf-radius); border-left: 3px solid var(--pf-ink); }
 .pf-reply-h { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--pf-ink); }
 .pf-empty { padding: 32px 0; color: var(--pf-muted); text-align: center; }
+.pf-link { appearance: none; border: 0; background: none; padding: 0; font: inherit; color: var(--pf-ink); text-decoration: underline; cursor: pointer; }
 .pf-skel { height: 120px; margin: 16px 0; border-radius: var(--pf-radius); background: linear-gradient(90deg, #f3f3f3, #fafafa, #f3f3f3); background-size: 200% 100%; animation: pf-shimmer 1.4s infinite linear; }
 @keyframes pf-shimmer { to { background-position: -200% 0; } }
 .pf-more { display: block; margin: 24px auto 0; appearance: none; background: #fff; border: 1px solid var(--pf-ink); color: var(--pf-ink); border-radius: 8px; font: inherit; font-weight: 600; padding: 12px 28px; min-height: 44px; cursor: pointer; }
@@ -122,7 +116,7 @@
 .pf-rate-stars input:checked ~ label, .pf-rate-stars label:hover, .pf-rate-stars label:hover ~ label { background: var(--pf-star); }
 .pf-rate-stars input:focus-visible + label { outline: 2px solid var(--pf-ink); outline-offset: 2px; border-radius: 4px; }
 .pf-lightbox { border: 0; padding: 0; background: transparent; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: visible; }
-.pf-lightbox img { display: block; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 10px; }
+.pf-lightbox img { display: block; width: auto; height: auto; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 10px; }
 .pf-lightbox .pf-x { position: absolute; top: -48px; right: 0; color: #fff; }
 
 @media (min-width: 750px) {

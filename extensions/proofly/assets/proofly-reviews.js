@@ -1,11 +1,12 @@
-/* Proofly — product page widget. No dependencies. Review data is only ever written with
-   textContent / attributes (never innerHTML) so customer text cannot inject markup. */
+/* Proofly — Review Widget. No dependencies, no polling. Loads reviews through the store's own app proxy only when
+   the widget nears the viewport and the product has reviews. Review data is only ever written with textContent /
+   attributes (never innerHTML) so customer text cannot inject markup. */
 (() => {
   const root = document.getElementById("pf-reviews");
   if (!root || root.dataset.ready) return;
   root.dataset.ready = "1";
 
-  const API = "/apps/proofly";
+  const API = root.dataset.api || "/apps/proofly";
   const productId = root.dataset.productId;
   const $ = (s) => root.querySelector(s);
   const list = $("[data-list]");
@@ -78,6 +79,7 @@
         const b = el("button", "pf-photo");
         b.type = "button";
         b.dataset.large = img.large;
+        if (img.w && img.h) b.dataset.ratio = `${img.w}x${img.h}`;
         b.setAttribute("aria-label", `Open photo ${i + 1} from ${r.name}`);
         const im = el("img");
         im.src = img.thumb;
@@ -119,7 +121,15 @@
       if (!list.children.length) list.append(el("li", "pf-empty", "No reviews match this filter yet."));
       more.hidden = !data.hasMore;
     } catch {
-      if (reset) list.replaceChildren(el("li", "pf-empty", "Reviews couldn't be loaded. Please refresh to try again."));
+      // The summary above is server-rendered and stays; only the list reports the problem.
+      if (reset) {
+        const li = el("li", "pf-empty", "Reviews couldn't be loaded right now. ");
+        const retry = el("button", "pf-link", "Try again");
+        retry.type = "button";
+        retry.dataset.retry = "";
+        li.append(retry);
+        list.replaceChildren(li);
+      }
     } finally {
       state.loading = false;
       more.disabled = false;
@@ -142,7 +152,8 @@
     if (t.matches(".pf-pill, .pf-bar")) setFilter({ rating: state.rating === Number(t.dataset.rating) && t.matches(".pf-bar") ? 0 : Number(t.dataset.rating) });
     else if (t.matches("[data-photos]")) setFilter({ photos: !state.photos });
     else if (t.matches("[data-more]")) { state.page += 1; load(false); }
-    else if (t.matches(".pf-photo")) openLightbox(t.dataset.large);
+    else if (t.matches("[data-retry]")) load(true);
+    else if (t.matches(".pf-photo")) openLightbox(t.dataset.large, t.dataset.ratio);
     else if (t.matches("[data-write]")) openForm();
     else if (t.matches("[data-close]")) t.closest("dialog").close();
   });
@@ -150,8 +161,12 @@
 
   // Lightbox
   const lightbox = $("[data-lightbox]");
-  function openLightbox(src) {
-    lightbox.querySelector("[data-lightbox-img]").src = src;
+  function openLightbox(src, ratio) {
+    const img = lightbox.querySelector("[data-lightbox-img]");
+    const [w, h] = (ratio || "1600x1600").split("x");
+    img.width = Number(w);
+    img.height = Number(h);
+    img.src = src;
     lightbox.showModal();
   }
   root.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target === d) d.close(); }));
@@ -161,11 +176,12 @@
   const form = $("[data-form]");
   const thanks = $("[data-thanks]");
   function openForm() {
+    if (!dialog) return;
     form.hidden = false;
     thanks.hidden = true;
     dialog.showModal();
   }
-  form.addEventListener("submit", async (e) => {
+  form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     form.querySelectorAll("[data-err]").forEach((n) => (n.textContent = ""));
     const fd = new FormData(form);

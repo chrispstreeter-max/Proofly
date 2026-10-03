@@ -1,7 +1,9 @@
 {%- comment -%}
-  Proofly — product page widget (app block).
-  Summary + JSON-LD are server-rendered from reviews.rating / reviews.rating_count (synced from the app DB),
-  so there is no layout shift and search engines see the aggregate. The list lazy-loads via /apps/proofly.
+  Proofly — Review Widget (app block, product pages).
+  Average, stars and count are rendered server-side by Shopify from the product's standard metafields
+  reviews.rating / reviews.rating_count (Proofly mirrors them from its database), so they need no JavaScript and
+  cause no layout shift. The review list (photos, sorting, load more) is fetched from Proofly through the store's own
+  app proxy only when the section approaches the viewport, and only if the product has reviews.
 {%- endcomment -%}
 {%- liquid
   assign count = product.metafields.reviews.rating_count.value | default: 0
@@ -18,9 +20,9 @@
   if avg10.size != 2
     assign avg_display = '0.0'
   endif
+  assign api = routes.root_url | append: '/apps/proofly' | replace: '//', '/'
   assign customer_name = ''
   if customer
-    # Default display name: first name + last initial (customer can edit it in the form).
     assign last_initial = customer.last_name | slice: 0
     assign customer_name = customer.first_name | append: ' ' | append: last_initial | strip
   endif
@@ -30,9 +32,8 @@
   class="pf"
   data-product-id="{{ product.id }}"
   data-count="{{ count }}"
+  data-api="{{ api }}"
   data-shop-name="{{ shop.name | escape }}"
-  data-customer="{{ customer_name | escape }}"
-  data-logged-in="{% if customer %}1{% endif %}"
   {{ block.shopify_attributes }}
 >
   <h2 class="pf-h">{{ block.settings.heading | escape }}</h2>
@@ -46,7 +47,7 @@
         </div>
         <p class="pf-based">Based on {{ count }} review{% if count != 1 %}s{% endif %}</p>
       {%- else -%}
-        <p class="pf-based">No reviews yet. Be the first to share your thoughts.</p>
+        <p class="pf-based" data-empty>No reviews yet. Be the first to share your thoughts.</p>
       {%- endif -%}
     </div>
 
@@ -61,11 +62,13 @@
     {%- endif -%}
 
     <div class="pf-actions">
-      <button type="button" class="pf-btn" data-write>Write a Review</button>
+      {%- if block.settings.allow_submissions -%}
+        <button type="button" class="pf-btn" data-write>Write a review</button>
+      {%- endif -%}
       {%- if count > 0 -%}
         <button type="button" class="pf-chip" data-photos aria-pressed="false" hidden>
           <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16"><path fill="currentColor" d="M4 4h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v6.6l3.3-3.3a1 1 0 0 1 1.4 0l3.3 3.3 1.3-1.3a1 1 0 0 1 1.4 0L16 12.6V6H4Zm9 3a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"/></svg>
-          With Photos
+          With photos
         </button>
       {%- endif -%}
     </div>
@@ -76,9 +79,9 @@
       <div class="pf-filters" role="group" aria-label="Filter by rating" data-filters></div>
       <label class="pf-sort"><span class="pf-vh">Sort reviews</span>
         <select data-sort>
-          <option value="recent">Most Recent</option>
-          <option value="highest">Highest Rated</option>
-          <option value="lowest">Lowest Rated</option>
+          <option value="recent">Most recent</option>
+          <option value="highest">Highest rated</option>
+          <option value="lowest">Lowest rated</option>
         </select>
       </label>
     </div>
@@ -88,6 +91,7 @@
     <button type="button" class="pf-more" data-more hidden>Show more reviews</button>
   {%- endif -%}
 
+  {%- if block.settings.allow_submissions -%}
   <dialog class="pf-dialog" data-form-dialog aria-labelledby="pf-form-title">
     <form class="pf-form" data-form novalidate>
       <div class="pf-dialog-head">
@@ -119,17 +123,10 @@
         <input name="name" maxlength="60" required autocomplete="name" value="{{ customer_name | escape }}">
         <span class="pf-err" data-err="name"></span>
       </label>
-      <label class="pf-field"><span>Email <span class="pf-hint">(optional, never shown)</span></span>
-        <input name="email" type="email" maxlength="254" autocomplete="email" value="{{ customer.email | escape }}">
-        <span class="pf-err" data-err="email"></span>
-      </label>
       <label class="pf-field"><span>Photos <span class="pf-hint">(optional, up to 5)</span></span>
         <input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple>
         <span class="pf-err" data-err="images"></span>
       </label>
-      {%- unless customer -%}
-        <p class="pf-hint">Bought this product? <a href="{{ routes.account_login_url }}">Log in</a> so your review shows as a Verified Purchase.</p>
-      {%- endunless -%}
       <p class="pf-err" data-err="form" role="alert"></p>
       <button type="submit" class="pf-btn pf-btn--full">Submit review</button>
     </form>
@@ -139,11 +136,14 @@
       <button type="button" class="pf-btn" data-close>Close</button>
     </div>
   </dialog>
+  {%- endif -%}
 
+  {%- if count > 0 -%}
   <dialog class="pf-lightbox" data-lightbox aria-label="Review photo">
     <button type="button" class="pf-x" data-close aria-label="Close">×</button>
-    <img alt="" data-lightbox-img>
+    <img alt="" width="1600" height="1600" data-lightbox-img>
   </dialog>
+  {%- endif -%}
 </section>
 
 {%- if block.settings.json_ld and count > 0 -%}
@@ -167,14 +167,15 @@
 
 {% schema %}
 {
-  "name": "Product reviews",
+  "name": "Review widget",
   "target": "section",
   "javascript": "proofly-reviews.js",
   "stylesheet": "proofly.css",
   "enabled_on": { "templates": ["product"] },
   "settings": [
-    { "type": "text", "id": "heading", "label": "Heading", "default": "Customer Reviews" },
-    { "type": "checkbox", "id": "json_ld", "label": "Output review structured data (JSON-LD)", "default": true }
+    { "type": "text", "id": "heading", "label": "Heading", "default": "Customer reviews" },
+    { "type": "checkbox", "id": "allow_submissions", "label": "Show “Write a review”", "default": true },
+    { "type": "checkbox", "id": "json_ld", "label": "Output review structured data (JSON-LD)", "info": "Turn off if your theme or another app already outputs product rating structured data.", "default": true }
   ]
 }
 {% endschema %}

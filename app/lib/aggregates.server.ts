@@ -1,11 +1,12 @@
 import { Prisma } from "@prisma/client";
+import { PUBLIC_REVIEW } from "./reviews.server";
 import { withTenant, type Tenant } from "./tenant.server";
 
-/** Recompute review_count / average / distribution from PUBLISHED reviews of one product of this shop. */
+/** Recompute review_count / average / distribution from PUBLIC reviews (published, not held) of one product of this shop. */
 export async function recomputeProduct({ db, shopId }: Tenant, productId: string) {
   const rows = await db.review.groupBy({
     by: ["rating"],
-    where: { shopId, productId, status: "published" },
+    where: { shopId, productId, ...PUBLIC_REVIEW },
     _count: { _all: true },
   });
   const dist = [0, 0, 0, 0, 0];

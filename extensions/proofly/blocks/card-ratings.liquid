@@ -1,0 +1,43 @@
+{%- comment -%}
+  Proofly — Product card stars (app embed). Only needed for themes that don't already show Shopify's standard
+  product rating (reviews.rating / reviews.rating_count) on their product cards — many Online Store 2.0 themes do,
+  with no app code at all.
+  Ratings for the products this page's Liquid can see (collection and search results) are written below from those
+  same metafields, so most cards need no request. Cards Liquid can't see are looked up in one batched request.
+{%- endcomment -%}
+{%- liquid
+  assign api = routes.root_url | append: '/apps/proofly' | replace: '//', '/'
+  assign current = ''
+  if product
+    assign current = product.handle
+  endif
+-%}
+{%- capture pf_entries -%}
+  {%- if collection -%}
+    {%- for p in collection.products limit: 50 -%}
+      {{ p.handle | json }}:[{{ p.metafields.reviews.rating.value.rating | default: 0 }},{{ p.metafields.reviews.rating_count.value | default: 0 }}],
+    {%- endfor -%}
+  {%- endif -%}
+  {%- if search.performed -%}
+    {%- for p in search.results limit: 50 -%}
+      {%- if p.object_type == 'product' -%}
+        {{ p.handle | json }}:[{{ p.metafields.reviews.rating.value.rating | default: 0 }},{{ p.metafields.reviews.rating_count.value | default: 0 }}],
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endcapture -%}
+<script type="application/json" id="pf-cards" data-api="{{ api }}" data-current="{{ current | escape }}" data-selector="{{ block.settings.title_selector | escape }}" data-count="{% if block.settings.show_count %}1{% else %}0{% endif %}">{{ '{' }}{{ pf_entries | strip | remove_last: ',' }}{{ '}' }}</script>
+
+{% schema %}
+{
+  "name": "Product card stars",
+  "target": "body",
+  "javascript": "proofly-cards.js",
+  "stylesheet": "proofly-stars.css",
+  "settings": [
+    { "type": "paragraph", "content": "Turn this on only if your theme does not already show product ratings on product cards." },
+    { "type": "checkbox", "id": "show_count", "label": "Show review count", "default": true },
+    { "type": "text", "id": "title_selector", "label": "Card title selector (advanced)", "info": "Leave blank to detect product cards automatically. Otherwise a CSS selector matching the product title link in each card." }
+  ]
+}
+{% endschema %}

@@ -23,7 +23,9 @@
     "fixtures:check": "tsx scripts/fixtures/check.ts",
     "scan:merchant-data": "tsx scripts/scan-merchant-data.ts",
     "test": "tsx --env-file=.env.test --test --test-concurrency=1 tests/*.test.ts",
-    "db:setup": "./scripts/db.sh setup"
+    "db:setup": "./scripts/db.sh setup",
+    "check:theme": "shopify theme check --path extensions/proofly -C theme-check:theme-app-extension --fail-level suggestion",
+    "dev:seed": "tsx --env-file=.env scripts/dev-seed.ts"
   },
   "type": "module",
   "engines": {

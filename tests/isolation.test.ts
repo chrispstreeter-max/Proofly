@@ -8,7 +8,7 @@ import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { moderate, moderationHistory, saveReply } from "../app/lib/moderation.server";
-import { listReviews, parseListParams, ratingsFor } from "../app/lib/reviews.server";
+import { listReviews, parseListParams, ratingsByHandle } from "../app/lib/reviews.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { action as reviewAction, loader as reviewLoader } from "../app/routes/app.reviews.$id";
 import { loader as reviewsListLoader } from "../app/routes/app.reviews._index";
@@ -18,7 +18,7 @@ import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { action as uninstalledWebhook } from "../app/routes/webhooks.app.uninstalled";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import {
-  adminRequest, args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, run, SAME_PRODUCT_ID, storefrontHost, type Merchant,
+  adminRequest, args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, SAME_PRODUCT_ID, storefrontHost, type Merchant,
 } from "./helpers";
 
 let A: Merchant, B: Merchant;
@@ -123,12 +123,12 @@ describe("7. Missing resources and other-shop resources get the same safe respon
     assert.equal(none.response?.status, 404);
     assert.equal(await other.response!.text(), await none.response!.text());
   });
-  test("storefront: ratings for another shop's product id equal ratings for an unknown id", async () => {
+  test("storefront: ratings for another shop's product equal ratings for an unknown one", async () => {
     // Shop B's product exists under the SAME Shopify id in shop A, so use a shop-B-only id for the check:
     const bOnly = 9_000_000_000_777n;
     await withTenant(B.shopId, ({ db, shopId }) => db.product.create({ data: { shopId, shopifyProductId: bOnly, handle: "b-only", title: "B only", reviewCount: 3, averageRating: 4 } }));
-    const other = await (await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, "ratings", { ids: String(bOnly) })))).json();
-    const unknown = await (await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, "ratings", { ids: "9000000000999" })))).json();
+    const other = await (await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, "ratings", { handles: "b-only" })))).json();
+    const unknown = await (await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, "ratings", { handles: "no-such-product" })))).json();
     assert.deepEqual(other, { ratings: {} });
     assert.deepEqual(other, unknown);
     const list = await (await proxyList(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, `products/${bOnly}/reviews`, { summary: "1" }), { id: String(bOnly) }))).json();
@@ -139,17 +139,17 @@ describe("7. Missing resources and other-shop resources get the same safe respon
 
 describe("8. No client-supplied tenant id can override the authenticated shop", () => {
   test("storefront: same Shopify product id resolves to each shop's own data", async () => {
-    const a = await (await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, "ratings", { ids: String(SAME_PRODUCT_ID) })))).json();
+    const a = await (await proxyRatings(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, "ratings", { handles: SAME_HANDLE })))).json();
     const listA = await (await proxyList(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, `products/${SAME_PRODUCT_ID}/reviews`), { id: String(SAME_PRODUCT_ID) }))).json();
-    assert.deepEqual(a, { ratings: { [String(SAME_PRODUCT_ID)]: { c: 1, a: 5 } } });
-    assert.deepEqual(listA.reviews.map((r: { id: string }) => r.id), [A.reviewId]);
+    assert.deepEqual(a, { ratings: { [SAME_HANDLE]: [5, 1] } });
+    assert.deepEqual(listA.reviews.map((r: { body: string }) => r.body), [A.reviewBody]);
   });
   test("storefront: extra shop/tenant params (even signed) are ignored", async () => {
     const res = await proxyList(args<LoaderFunctionArgs>(proxyRequest(DOMAIN_A, `products/${SAME_PRODUCT_ID}/reviews`, { shop_id: B.shopId, shopId: B.shopId, tenant: B.shopId }), { id: String(SAME_PRODUCT_ID) }));
-    assert.deepEqual((await res.json()).reviews.map((r: { id: string }) => r.id), [A.reviewId]);
+    assert.deepEqual((await res.json()).reviews.map((r: { body: string }) => r.body), [A.reviewBody]);
   });
   test("storefront: changing the signed `shop` parameter breaks the signature → rejected", async () => {
-    const req = proxyRequest(DOMAIN_A, "ratings", { ids: String(SAME_PRODUCT_ID) });
+    const req = proxyRequest(DOMAIN_A, "ratings", { handles: SAME_HANDLE });
     const url = new URL(req.url);
     url.searchParams.set("shop", DOMAIN_B);
     const r = await run(() => proxyRatings(args<LoaderFunctionArgs>(new Request(url))));
@@ -181,7 +181,7 @@ describe("9. Unauthenticated requests cannot access merchant data", () => {
     assert.ok(r.response && !r.data);
   });
   test("storefront: unsigned proxy request → rejected", async () => {
-    const r = await run(() => proxyRatings(args<LoaderFunctionArgs>(new Request(`${process.env.SHOPIFY_APP_URL}/proxy/ratings?ids=${SAME_PRODUCT_ID}&shop=${DOMAIN_A}`))));
+    const r = await run(() => proxyRatings(args<LoaderFunctionArgs>(new Request(`${process.env.SHOPIFY_APP_URL}/proxy/ratings?handles=${SAME_HANDLE}&shop=${DOMAIN_A}`))));
     assert.ok(r.response && r.response.status >= 400 && r.response.status < 500);
   });
   test("webhook without Shopify HMAC → rejected and no tenant change", async () => {
@@ -194,7 +194,7 @@ describe("9. Unauthenticated requests cannot access merchant data", () => {
   test("uninstalled shop: storefront serves nothing (404), data retained", async () => {
     const gone = await installMerchant("proofly-test-gone.myshopify.com", "Gone");
     await markUninstalled("proofly-test-gone.myshopify.com");
-    const r = await run(() => proxyRatings(args<LoaderFunctionArgs>(proxyRequest("proofly-test-gone.myshopify.com", "ratings", { ids: String(SAME_PRODUCT_ID) }))));
+    const r = await run(() => proxyRatings(args<LoaderFunctionArgs>(proxyRequest("proofly-test-gone.myshopify.com", "ratings", { handles: SAME_HANDLE }))));
     assert.equal(r.response?.status, 404);
     assert.equal(await owner.review.count({ where: { shopId: gone.shopId } }), 1);
   });
@@ -235,11 +235,11 @@ describe("Tenant-scoped writes from the storefront", () => {
 });
 
 describe("Library: storefront aggregate reads are shop-scoped", () => {
-  test("ratingsFor with the shared Shopify id returns each shop's own aggregate", async () => {
-    const a = await withTenant(A.shopId, (t) => ratingsFor(t, [SAME_PRODUCT_ID]));
+  test("ratingsByHandle with the shared handle returns each shop's own aggregate", async () => {
+    const a = await withTenant(A.shopId, (t) => ratingsByHandle(t, [SAME_HANDLE]));
     await withTenant(B.shopId, ({ db, shopId }) => db.product.updateMany({ where: { shopId, shopifyProductId: SAME_PRODUCT_ID }, data: { reviewCount: 7, averageRating: 3 } }));
-    const b = await withTenant(B.shopId, (t) => ratingsFor(t, [SAME_PRODUCT_ID]));
-    assert.deepEqual(a, { [String(SAME_PRODUCT_ID)]: { c: 1, a: 5 } });
-    assert.deepEqual(b, { [String(SAME_PRODUCT_ID)]: { c: 7, a: 3 } });
+    const b = await withTenant(B.shopId, (t) => ratingsByHandle(t, [SAME_HANDLE]));
+    assert.deepEqual(a, { [SAME_HANDLE]: [5, 1] });
+    assert.deepEqual(b, { [SAME_HANDLE]: [3, 7] });
   });
 });

@@ -112,6 +112,20 @@ enum ReviewStatus {
   hidden
 }
 
+/// Why a review is held back from the storefront (null = not held). plan_limit = over the plan's published allowance.
+enum HoldReason {
+  moderation
+  plan_limit
+}
+
+/// Public (optimised) media state. Only `published` media is ever served on the storefront.
+enum MediaStatus {
+  published
+  storage_limited
+  processing
+  failed
+}
+
 model Product {
   id               String   @id @default(uuid()) @db.Uuid
   shopId           String   @map("shop_id") @db.Uuid
@@ -156,6 +170,7 @@ model Review {
   reviewerName      String       @map("reviewer_name")
   reviewDate        DateTime     @map("review_date")
   status            ReviewStatus @default(pending)
+  holdReason        HoldReason?  @map("hold_reason") // storefront shows only status = published AND hold_reason IS NULL
   verifiedPurchase  Boolean      @default(false) @map("verified_purchase")
   imported          Boolean      @default(false)
   flags             String[]     @default([])
@@ -183,21 +198,22 @@ model Review {
 }
 
 model ReviewImage {
-  id               String   @id @default(uuid()) @db.Uuid
-  shopId           String   @map("shop_id") @db.Uuid
-  reviewId         String   @map("review_id") @db.Uuid
-  originalFilename String   @map("original_filename")
-  storageKey       String   @map("storage_key") // private original (s/<shop>/originals/…)
-  thumbKey         String   @map("thumb_key") // public WebP 320px (s/<shop>/r/…)
-  largeKey         String   @map("large_key") // public WebP 1600px
-  originalUrl      String?  @map("original_url")
-  contentType      String   @map("content_type")
-  fileSize         Int      @map("file_size")
+  id               String      @id @default(uuid()) @db.Uuid
+  shopId           String      @map("shop_id") @db.Uuid
+  reviewId         String      @map("review_id") @db.Uuid
+  originalFilename String      @map("original_filename")
+  storageKey       String      @map("storage_key") // private original (s/<shop>/originals/…)
+  thumbKey         String      @map("thumb_key") // public WebP 320px (s/<shop>/r/…)
+  largeKey         String      @map("large_key") // public WebP 1600px
+  originalUrl      String?     @map("original_url")
+  contentType      String      @map("content_type")
+  fileSize         Int         @map("file_size")
   sha256           String
   width            Int?
   height           Int?
-  position         Int      @default(0)
-  createdAt        DateTime @default(now()) @map("created_at")
+  position         Int         @default(0)
+  mediaStatus      MediaStatus @default(published) @map("media_status")
+  createdAt        DateTime    @default(now()) @map("created_at")
 
   shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
   review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)

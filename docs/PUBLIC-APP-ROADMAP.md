@@ -219,6 +219,10 @@ and a short report. No checkpoint touches a live merchant store.
 
 **Progress:** Checkpoint 1 (multi-tenant foundation, incl. shop lifecycle, encrypted sessions and the isolation suite) complete locally — see [TENANCY.md](TENANCY.md).
 Checkpoint 2 (Shopify-managed installation + token exchange, manual login removed, onboarding, session lifecycle, V1 scopes reduced to `read_products,write_products`, order/customer code paths removed) complete locally; dev-store install verification still pending explicit authorisation.
+Checkpoint 3 (Shopify-native storefront: Review widget + Rating summary app blocks, Product card stars app embed,
+published-only / plan-limited visibility, handle-batched card ratings) complete locally — see [STOREFRONT.md](STOREFRONT.md).
+Note: the user-approved order puts the storefront extension here; roadmap rows 5–6 are largely covered by it (locales,
+proxy-path setting and multi-theme verification remain).
 
 Recommended order: 1 → 2 → 11 (isolation tests early, then kept green) → 3 → 4 → 6 → 5 → 7 → 8 → 10 → 9 → 12 → 13.
 

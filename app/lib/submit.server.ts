@@ -4,7 +4,7 @@ import type { Tenant } from "./tenant.server";
 
 type AdminContext = { graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response> } | undefined;
 
-export const LIMITS = { title: 120, body: 5000, name: 60, email: 254, images: 5, imageBytes: 10 * 1024 * 1024 };
+export const LIMITS = { title: 120, body: 5000, name: 60, images: 5, imageBytes: 10 * 1024 * 1024 };
 
 export class SubmitError extends Error {
   constructor(public field: string, message: string, public status = 400) { super(message); }
@@ -19,14 +19,11 @@ export async function parseSubmission(form: FormData) {
   const title = str(form.get("title"));
   const body = str(form.get("body"));
   const name = str(form.get("name"));
-  const email = str(form.get("email")).toLowerCase();
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new SubmitError("rating", "Choose a star rating.");
   if (title.length > LIMITS.title) throw new SubmitError("title", `Keep the title under ${LIMITS.title} characters.`);
   if (body.length < 2) throw new SubmitError("body", "Write a few words about the product.");
   if (body.length > LIMITS.body) throw new SubmitError("body", `Keep the review under ${LIMITS.body} characters.`);
   if (!name || name.length > LIMITS.name) throw new SubmitError("name", "Enter the name to show with your review.");
-  if (email && (email.length > LIMITS.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))
-    throw new SubmitError("email", "Enter a valid email or leave it blank.");
 
   const files = form.getAll("images").filter((f): f is File => typeof f !== "string" && f.size > 0);
   if (files.length > LIMITS.images) throw new SubmitError("images", `Add up to ${LIMITS.images} photos.`);
@@ -37,7 +34,7 @@ export async function parseSubmission(form: FormData) {
     if (!sniffType(buf)) throw new SubmitError("images", `Photos must be ${Object.values(ALLOWED_TYPES).join(", ").toUpperCase()}.`);
     images.push(buf);
   }
-  return { rating, title, body, name, email: email || null, images };
+  return { rating, title, body, name, images }; // no email: V1 stores no reviewer contact data
 }
 
 /**
@@ -79,7 +76,6 @@ export async function createReview(
       title: data.title,
       body: data.body,
       reviewerName: data.name,
-      reviewerEmail: data.email,
       reviewDate: new Date(),
       status: "pending", // every new review is moderated before publishing
       verifiedPurchase: false, // V1 has no order access; verified purchase is V1.1

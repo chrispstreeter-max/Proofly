@@ -1,0 +1,44 @@
+{%- comment -%}
+  Proofly — Rating Summary (app block, product pages). Pure Liquid: average, stars and review count rendered by
+  Shopify from the product's standard metafields reviews.rating / reviews.rating_count. No JavaScript, no requests.
+{%- endcomment -%}
+{%- liquid
+  assign count = product.metafields.reviews.rating_count.value | default: 0
+  assign avg = 0
+  if count > 0
+    assign avg = product.metafields.reviews.rating.value.rating | default: 0
+  endif
+  assign avg_pct = avg | times: 20
+  assign avg10 = avg | times: 10 | round | append: ''
+  assign avg_whole = avg10 | slice: 0
+  assign avg_tenth = avg10 | slice: 1
+  assign avg_display = avg_whole | append: '.' | append: avg_tenth
+  if avg10.size != 2
+    assign avg_display = '0.0'
+  endif
+-%}
+{%- if count > 0 -%}
+  <a class="pf-summary" href="#pf-reviews" aria-label="Rated {{ avg_display }} out of 5 from {{ count }} review{% if count != 1 %}s{% endif %}" {{ block.shopify_attributes }}>
+    <span class="pf-stars" style="--p:{{ avg_pct }}%" aria-hidden="true"></span>
+    {%- if block.settings.show_average %}<span class="pf-summary-avg" aria-hidden="true">{{ avg_display }}</span>{% endif -%}
+    <span class="pf-summary-count" aria-hidden="true">({{ count }} review{% if count != 1 %}s{% endif %})</span>
+  </a>
+{%- elsif block.settings.show_empty -%}
+  <a class="pf-summary" href="#pf-reviews" {{ block.shopify_attributes }}>
+    <span class="pf-stars" style="--p:0%" aria-hidden="true"></span>
+    <span class="pf-summary-count">No reviews yet</span>
+  </a>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Rating summary",
+  "target": "section",
+  "stylesheet": "proofly-stars.css",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    { "type": "checkbox", "id": "show_average", "label": "Show average rating number", "default": true },
+    { "type": "checkbox", "id": "show_empty", "label": "Show when the product has no reviews", "default": false }
+  ]
+}
+{% endschema %}

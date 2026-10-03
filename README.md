@@ -3,8 +3,8 @@
 **Proofly** is a Shopify App Store app for product reviews: bring your existing reviews with you, manage them in one
 place, and display them beautifully across your store.
 
-> Status: **Checkpoint 2 — Shopify installation, authentication and onboarding** (on top of the Checkpoint 1 multi-tenant
-> foundation). Billing, storefront redesign and import are later checkpoints; nothing is deployed, installed
+> Status: **Checkpoint 3 — Shopify-native storefront + theme app extension** (on top of Checkpoint 1 multi-tenancy and
+> Checkpoint 2 installation/authentication/onboarding). See [docs/STOREFRONT.md](docs/STOREFRONT.md). Billing, storefront redesign and import are later checkpoints; nothing is deployed, installed
 > or connected to a Shopify store. See [docs/BASELINE.md](docs/BASELINE.md).
 
 - Brand: [docs/BRAND.md](docs/BRAND.md)
@@ -21,6 +21,7 @@ cp .env.example .env                    # fill local values (TOKEN_ENCRYPTION_KE
 ./scripts/db.sh setup                   # databases + proofly_app role (no superuser, no RLS bypass)
 set -a; . ./.env; set +a; npx prisma migrate deploy   # runs as the schema owner (DIRECT_DATABASE_URL)
 npx react-router dev --port 3000
+npm run dev:seed                        # optional: fictional dev shop + reviews, then open /dev/preview
 ```
 
 The app connects as `proofly_app`, so Postgres row-level security applies to every query. Merchant data is reachable
@@ -30,6 +31,7 @@ only through `withTenant()` in `app/lib/tenant.server.ts` (enforced by lint). Se
 
 ```bash
 npm run typecheck && npm run lint && npm run build
+npm run check:theme                                   # Shopify Theme Check, theme-app-extension rules
 npm test                                              # unit, integration, tenant-isolation, security (proofly_test DB)
 npm run fixtures:generate && npm run fixtures:check   # synthetic, fictional dataset — no real merchant data
 npm run scan:merchant-data                            # fails if merchant/customer data could ship

@@ -15,6 +15,7 @@ export const DOMAIN_B = "proofly-test-b.myshopify.com";
 export const DOMAIN_C = "proofly-test-c.myshopify.com"; // installed during the lifecycle tests
 export const SAME_PRODUCT_ID = 9_000_000_000_001n; // deliberately identical in both shops
 export const SAME_SOURCE_REVIEW_ID = "fixture-review-1"; // deliberately identical in both shops
+export const SAME_HANDLE = "fixture-product"; // deliberately identical in both shops
 
 export async function resetDb() {
   await owner.$executeRawUnsafe(`TRUNCATE TABLE shops, "Session" RESTART IDENTITY CASCADE`);
@@ -25,6 +26,7 @@ export const storefrontHost = (label: string) => `store-${label.toLowerCase()}.e
 
 export interface Merchant {
   shopId: string;
+  reviewBody: string;
   domain: string;
   productId: string;
   reviewId: string;
@@ -42,7 +44,7 @@ export async function installMerchant(domain: string, label: string): Promise<Me
   await storeOfflineSession(domain, label);
   return withTenant(shop.id, async ({ db, shopId }) => {
     const product = await db.product.create({
-      data: { shopId, shopifyProductId: SAME_PRODUCT_ID, handle: `fixture-product-${label}`, title: `Fixture Product ${label}`, reviewCount: 1, averageRating: 5, rating5: 1 },
+      data: { shopId, shopifyProductId: SAME_PRODUCT_ID, handle: SAME_HANDLE, title: `Fixture Product ${label}`, reviewCount: 1, averageRating: 5, rating5: 1 },
     });
     const review = await db.review.create({
       data: {
@@ -60,7 +62,7 @@ export async function installMerchant(domain: string, label: string): Promise<Me
     await db.reviewReply.create({ data: { shopId, reviewId: review.id, reply: `Reply from store ${label}` } });
     const job = await db.importJob.create({ data: { shopId, source: "csv", status: "finished" } });
     const action = await db.moderationAction.create({ data: { shopId, reviewId: review.id, action: "approve", fromStatus: "pending", toStatus: "published", actor: "fixture" } });
-    return { shopId, domain, productId: product.id, reviewId: review.id, imageId: image.id, importJobId: job.id, moderationActionId: action.id };
+    return { shopId, reviewBody: review.body, domain, productId: product.id, reviewId: review.id, imageId: image.id, importJobId: job.id, moderationActionId: action.id };
   });
 }
 
