@@ -1,0 +1,47 @@
+# Proofly — Shopify app configuration (development baseline; per-environment configs arrive in checkpoint 2).
+# client_id / application_url are filled in by `shopify app config link` (see docs/INSTALL.md).
+client_id = ""
+name = "Proofly"
+application_url = "https://example.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
+
+[access_scopes]
+# write_products: reviews.rating / reviews.rating_count metafields
+# read_orders + read_customers: verified-purchase checks and review requests
+scopes = "read_products,write_products,read_orders,read_customers"
+
+[auth]
+redirect_urls = ["https://example.com/auth/callback"]
+
+# Storefront: https://<shop domain>/apps/proofly/* → {application_url}/proxy/*
+[app_proxy]
+url = "/proxy"
+prefix = "apps"
+subpath = "proofly"
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/scopes_update"]
+  uri = "/webhooks/app/scopes_update"
+
+  # Requires protected customer data access (Partner Dashboard → API access → Protected customer data).
+  [[webhooks.subscriptions]]
+  topics = ["orders/fulfilled"]
+  uri = "/webhooks/orders/fulfilled"
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "/webhooks/compliance"
+
+[pos]
+embedded = false

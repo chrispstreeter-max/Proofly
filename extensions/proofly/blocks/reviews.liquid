@@ -1,0 +1,180 @@
+{%- comment -%}
+  Proofly — product page widget (app block).
+  Summary + JSON-LD are server-rendered from reviews.rating / reviews.rating_count (synced from the app DB),
+  so there is no layout shift and search engines see the aggregate. The list lazy-loads via /apps/proofly.
+{%- endcomment -%}
+{%- liquid
+  assign count = product.metafields.reviews.rating_count.value | default: 0
+  assign avg = 0
+  if count > 0
+    assign avg = product.metafields.reviews.rating.value.rating | default: 0
+  endif
+  assign avg_pct = avg | times: 20
+  # One-decimal display ("5.0", "4.7") built from an integer so it renders identically everywhere.
+  assign avg10 = avg | times: 10 | round | append: ''
+  assign avg_whole = avg10 | slice: 0
+  assign avg_tenth = avg10 | slice: 1
+  assign avg_display = avg_whole | append: '.' | append: avg_tenth
+  if avg10.size != 2
+    assign avg_display = '0.0'
+  endif
+  assign customer_name = ''
+  if customer
+    # Default display name: first name + last initial (customer can edit it in the form).
+    assign last_initial = customer.last_name | slice: 0
+    assign customer_name = customer.first_name | append: ' ' | append: last_initial | strip
+  endif
+-%}
+<section
+  id="pf-reviews"
+  class="pf"
+  data-product-id="{{ product.id }}"
+  data-count="{{ count }}"
+  data-shop-name="{{ shop.name | escape }}"
+  data-customer="{{ customer_name | escape }}"
+  data-logged-in="{% if customer %}1{% endif %}"
+  {{ block.shopify_attributes }}
+>
+  <h2 class="pf-h">{{ block.settings.heading | escape }}</h2>
+
+  <div class="pf-top">
+    <div class="pf-score">
+      {%- if count > 0 -%}
+        <div class="pf-score-row">
+          <span class="pf-avg">{{ avg_display }}</span>
+          <span class="pf-stars pf-stars--lg" style="--p:{{ avg_pct }}%" role="img" aria-label="Rated {{ avg_display }} out of 5"></span>
+        </div>
+        <p class="pf-based">Based on {{ count }} review{% if count != 1 %}s{% endif %}</p>
+      {%- else -%}
+        <p class="pf-based">No reviews yet. Be the first to share your thoughts.</p>
+      {%- endif -%}
+    </div>
+
+    {%- if count > 0 -%}
+      <ul class="pf-bars" data-bars aria-label="Rating breakdown">
+        {%- for n in (1..5) reversed -%}
+          <li><button type="button" class="pf-bar" data-rating="{{ n }}" disabled>
+            <span class="pf-bar-n">{{ n }} ★</span><span class="pf-bar-track"><span class="pf-bar-fill"></span></span><span class="pf-bar-pct">&nbsp;</span>
+          </button></li>
+        {%- endfor -%}
+      </ul>
+    {%- endif -%}
+
+    <div class="pf-actions">
+      <button type="button" class="pf-btn" data-write>Write a Review</button>
+      {%- if count > 0 -%}
+        <button type="button" class="pf-chip" data-photos aria-pressed="false" hidden>
+          <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16"><path fill="currentColor" d="M4 4h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v6.6l3.3-3.3a1 1 0 0 1 1.4 0l3.3 3.3 1.3-1.3a1 1 0 0 1 1.4 0L16 12.6V6H4Zm9 3a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"/></svg>
+          With Photos
+        </button>
+      {%- endif -%}
+    </div>
+  </div>
+
+  {%- if count > 0 -%}
+    <div class="pf-toolbar">
+      <div class="pf-filters" role="group" aria-label="Filter by rating" data-filters></div>
+      <label class="pf-sort"><span class="pf-vh">Sort reviews</span>
+        <select data-sort>
+          <option value="recent">Most Recent</option>
+          <option value="highest">Highest Rated</option>
+          <option value="lowest">Lowest Rated</option>
+        </select>
+      </label>
+    </div>
+    <ol class="pf-list" data-list aria-live="polite" aria-busy="true">
+      {%- for i in (1..3) -%}<li class="pf-skel" aria-hidden="true"></li>{%- endfor -%}
+    </ol>
+    <button type="button" class="pf-more" data-more hidden>Show more reviews</button>
+  {%- endif -%}
+
+  <dialog class="pf-dialog" data-form-dialog aria-labelledby="pf-form-title">
+    <form class="pf-form" data-form novalidate>
+      <div class="pf-dialog-head">
+        <h3 id="pf-form-title">Write a review</h3>
+        <button type="button" class="pf-x" data-close aria-label="Close">×</button>
+      </div>
+      <p class="pf-form-product">{{ product.title | escape }}</p>
+      <input type="hidden" name="product_id" value="{{ product.id }}">
+      <input type="text" name="website" class="pf-hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <fieldset class="pf-rate">
+        <legend>Your rating <span aria-hidden="true">*</span></legend>
+        <div class="pf-rate-stars">
+          {%- for n in (1..5) reversed -%}
+            <input type="radio" id="pf-r{{ n }}" name="rating" value="{{ n }}" required>
+            <label for="pf-r{{ n }}" title="{{ n }} star{% if n > 1 %}s{% endif %}"><span class="pf-vh">{{ n }} star{% if n > 1 %}s{% endif %}</span></label>
+          {%- endfor -%}
+        </div>
+        <p class="pf-err" data-err="rating"></p>
+      </fieldset>
+      <label class="pf-field"><span>Review title</span>
+        <input name="title" maxlength="120" autocomplete="off">
+        <span class="pf-err" data-err="title"></span>
+      </label>
+      <label class="pf-field"><span>Your review <span aria-hidden="true">*</span></span>
+        <textarea name="body" rows="5" maxlength="5000" required></textarea>
+        <span class="pf-err" data-err="body"></span>
+      </label>
+      <label class="pf-field"><span>Name shown with your review <span aria-hidden="true">*</span></span>
+        <input name="name" maxlength="60" required autocomplete="name" value="{{ customer_name | escape }}">
+        <span class="pf-err" data-err="name"></span>
+      </label>
+      <label class="pf-field"><span>Email <span class="pf-hint">(optional, never shown)</span></span>
+        <input name="email" type="email" maxlength="254" autocomplete="email" value="{{ customer.email | escape }}">
+        <span class="pf-err" data-err="email"></span>
+      </label>
+      <label class="pf-field"><span>Photos <span class="pf-hint">(optional, up to 5)</span></span>
+        <input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+        <span class="pf-err" data-err="images"></span>
+      </label>
+      {%- unless customer -%}
+        <p class="pf-hint">Bought this product? <a href="{{ routes.account_login_url }}">Log in</a> so your review shows as a Verified Purchase.</p>
+      {%- endunless -%}
+      <p class="pf-err" data-err="form" role="alert"></p>
+      <button type="submit" class="pf-btn pf-btn--full">Submit review</button>
+    </form>
+    <div class="pf-thanks" data-thanks hidden>
+      <h3>Thank you!</h3>
+      <p>Your review has been received and will appear once it has been checked.</p>
+      <button type="button" class="pf-btn" data-close>Close</button>
+    </div>
+  </dialog>
+
+  <dialog class="pf-lightbox" data-lightbox aria-label="Review photo">
+    <button type="button" class="pf-x" data-close aria-label="Close">×</button>
+    <img alt="" data-lightbox-img>
+  </dialog>
+</section>
+
+{%- if block.settings.json_ld and count > 0 -%}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Product",
+  "name": {{ product.title | json }},
+  "url": {{ request.origin | append: product.url | json }},
+  {%- if product.featured_image %}"image": {{ product.featured_image | image_url: width: 1200 | prepend: 'https:' | json }},{% endif %}
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": {{ avg | times: 1.0 | round: 2 | json }},
+    "reviewCount": {{ count }},
+    "bestRating": 5,
+    "worstRating": 1
+  }
+}
+</script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Product reviews",
+  "target": "section",
+  "javascript": "proofly-reviews.js",
+  "stylesheet": "proofly.css",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    { "type": "text", "id": "heading", "label": "Heading", "default": "Customer Reviews" },
+    { "type": "checkbox", "id": "json_ld", "label": "Output review structured data (JSON-LD)", "default": true }
+  ]
+}
+{% endschema %}

@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Shopify OAuth session storage (from the Shopify app template).
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+enum ReviewStatus {
+  pending
+  published
+  rejected
+  hidden
+}
+
+model Product {
+  id               String   @id @default(uuid()) @db.Uuid
+  shopifyProductId BigInt   @unique @map("shopify_product_id")
+  shopifyVariantId BigInt?  @map("shopify_variant_id")
+  handle           String
+  title            String
+  image            String?
+  status           String?
+  // Aggregates over PUBLISHED reviews only. Recomputed by app/lib/aggregates.server.ts.
+  reviewCount      Int      @default(0) @map("review_count")
+  averageRating    Decimal  @default(0) @map("average_rating") @db.Decimal(3, 2)
+  rating1          Int      @default(0) @map("rating_1")
+  rating2          Int      @default(0) @map("rating_2")
+  rating3          Int      @default(0) @map("rating_3")
+  rating4          Int      @default(0) @map("rating_4")
+  rating5          Int      @default(0) @map("rating_5")
+  // Last values written to Shopify metafields reviews.rating / reviews.rating_count.
+  syncedCount      Int?     @map("synced_count")
+  syncedAverage    Decimal? @map("synced_average") @db.Decimal(3, 2)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  reviews Review[]
+
+  @@index([handle])
+  @@map("products")
+}
+
+model Review {
+  id                String       @id @default(uuid()) @db.Uuid
+  sourceReviewId    String       @unique @map("source_review_id")
+  shopifyProductId  BigInt       @map("shopify_product_id")
+  rating            Int
+  title             String       @default("")
+  body              String
+  reviewerName      String       @map("reviewer_name")
+  reviewDate        DateTime     @map("review_date")
+  status            ReviewStatus @default(pending)
+  verifiedPurchase  Boolean      @default(false) @map("verified_purchase")
+  imported          Boolean      @default(false)
+  source            String // import source key (e.g. "csv") | storefront | request
+  flags             String[]     @default([])
+  // Private: never serialised to the storefront.
+  reviewerEmail     String?      @map("reviewer_email")
+  shopifyCustomerId BigInt?      @map("shopify_customer_id")
+  shopifyOrderId    BigInt?      @map("shopify_order_id")
+  submitterIpHash   String?      @map("submitter_ip_hash")
+  sourceDateRaw     String?      @map("source_date_raw")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  product Product        @relation(fields: [shopifyProductId], references: [shopifyProductId])
+  images  ReviewImage[]
+  reply   ReviewReply?
+  request ReviewRequest?
+
+  @@index([shopifyProductId, status, reviewDate(sort: Desc)])
+  @@index([status, reviewDate(sort: Desc)])
+  @@map("reviews")
+}
+
+model ReviewImage {
+  id               String   @id @default(uuid()) @db.Uuid
+  reviewId         String   @map("review_id") @db.Uuid
+  originalFilename String   @map("original_filename")
+  storageKey       String   @map("storage_key") // private original
+  thumbKey         String   @map("thumb_key") // public WebP 320px
+  largeKey         String   @map("large_key") // public WebP 1600px
+  originalUrl      String?  @map("original_url")
+  contentType      String   @map("content_type")
+  fileSize         Int      @map("file_size")
+  sha256           String
+  width            Int?
+  height           Int?
+  position         Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, sha256])
+  @@map("review_images")
+}
+
+model ReviewReply {
+  id        String   @id @default(uuid()) @db.Uuid
+  reviewId  String   @unique @map("review_id") @db.Uuid
+  reply     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@map("review_replies")
+}
+
+model ReviewRequest {
+  id                String    @id @default(uuid()) @db.Uuid
+  shopifyCustomerId BigInt?   @map("shopify_customer_id")
+  shopifyOrderId    BigInt    @map("shopify_order_id")
+  shopifyProductId  BigInt    @map("shopify_product_id")
+  // SHA-256 of the emailed token, set when the link is issued (raw token is never stored).
+  // One token per order; one row per product in that order.
+  tokenHash         String?   @map("token_hash")
+  sentAt            DateTime? @map("sent_at")
+  completedAt       DateTime? @map("completed_at")
+  expiresAt         DateTime? @map("expires_at")
+  reviewId          String?   @unique @map("review_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  review Review? @relation(fields: [reviewId], references: [id])
+
+  @@unique([shopifyOrderId, shopifyProductId])
+  @@index([tokenHash])
+  @@map("review_requests")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actor     String // admin user id / "importer" / "system"
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId])
+  @@map("audit_log")
+}

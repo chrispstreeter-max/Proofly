@@ -1,0 +1,313 @@
+# Proofly — Shopify-Native Architecture Decision
+
+> **STATUS: ARCHITECTURE DECISION RECORD — not implemented; the commercial refactor is not authorised.**
+> No Shopify, hosting or credential changes exist. Decided on the validated prototype; carried into this repository by
+> [BASELINE.md](BASELINE.md).
+> **Commercial rules resolved 2026-10-03 (§9). Test-data policy: §10.** Awaiting approval before implementation.
+
+**Principle:** Shopify hosts and serves everything it is good at; Proofly stores and processes only what Shopify
+cannot appropriately provide. The storefront must render ratings and reviews **without depending on a Proofly server
+being reachable**; Proofly's backend handles writes, management, migration and image processing.
+
+Related: [PRODUCT-SPEC-V1.md](PRODUCT-SPEC-V1.md) · [PUBLIC-APP-ROADMAP.md](PUBLIC-APP-ROADMAP.md) · [BRAND.md](BRAND.md)
+
+---
+
+## 1. Baseline origin
+
+This architecture was decided after auditing a validated single-store prototype (kept as a private archive, not part
+of this repository). What was carried forward, excluded and generalised is recorded in [BASELINE.md](BASELINE.md).
+Findings from that audit that still shape this design: storefront card ratings and review lists depended on a backend
+request; the card-rating integration relied on one legacy theme's markup; the storefront proxy path was hard-coded;
+no billing, entitlement or tenant boundary existed yet.
+
+---
+
+## 2. Data placement — decision table
+
+Questions applied to every data type: native Shopify storage possible? appropriate? query capability sufficient?
+cross-product queries? moderation/history/audit? private? files? analytics? API/rate-limit/performance cost?
+
+| Data | Shopify-native option | Decision | Reasoning |
+|---|---|---|---|
+| Product catalogue (id, handle, title, SKUs, status, image) | Shopify products (source of truth) | **Shopify canonical**; Proofly keeps a **synced lookup copy** | Matching, filtering and analytics need joins in Proofly; kept fresh via bulk sync + `products/*` webhooks |
+| Review records (all statuses) | Metaobjects (1M entries/definition, 40 fields) | **Proofly Postgres (canonical)** | Needs cross-product filtering/sorting/search, pending/rejected states that must never be storefront-visible, moderation history, idempotent import keys, 100k-review plans; metaobject writes are rate-limited GraphQL mutations; merchant-editable Shopify content would undermine audit integrity; uninstall/redaction behaviour of app-owned entries is unproven |
+| Product rating + count | Standard metafields `reviews.rating`, `reviews.rating_count` | **Shopify (derived cache)** | Read natively by many OS 2.0 themes for cards, used by the block for server-rendered stars/JSON-LD; written only from Postgres |
+| Published-review first page per product | App-owned JSON product metafield (≤ 128 KB for new apps) | **Shopify (derived snapshot)** | Lets the block render summary, distribution and the first ~10 reviews in Liquid on Shopify's servers/CDN with zero Proofly calls; rebuilt from Postgres whenever that product's published set changes |
+| Rating distribution + photo-review count | Inside the snapshot metafield | **Shopify (derived)** | Needed for first render only |
+| Further pages, filters, sorting | Not feasible in Liquid (no ad-hoc querying) | **Proofly via app proxy** | Interactive and on demand; storefront degrades gracefully if unavailable |
+| Review submissions (shopper writes) | No anonymous Shopify write path for app data | **Proofly via app proxy** | Validation, spam/rate limits, image processing, moderation |
+| Review images: originals | Shopify Files (merchant-visible, merchant-deletable, no per-app quota) | **Proofly private object storage (R2)** | Must stay recoverable and private; quotas per plan; per-shop isolation; deletion control |
+| Review images: storefront copies | Shopify Files CDN | **Proofly public bucket + Cloudflare CDN (WebP)** | Plan storage quotas, guaranteed deletion on `shop/redact`, merchant cannot break reviews by cleaning their Files library |
+| Merchant replies | Inside snapshot for displayed reviews | **Postgres canonical**, mirrored in snapshot | Editable, audited |
+| Moderation actions / audit log | — | **Postgres** | Private history, never storefront-visible |
+| Import jobs, files, matches, reports | — | **Postgres + private storage** | Large files, background processing, private |
+| Analytics | — | **Postgres** (aggregation queries) | Cross-product, time-series |
+| Storefront appearance (colours, layout, toggles) | Theme editor block settings | **Shopify** | Native per theme; no backend needed |
+| Shop operational settings (moderation mode, submission on/off, photos on/off) | App-data metafields (`app.metafields` in theme extensions) | **Postgres canonical**, mirrored to app-data metafields | Backend enforces; Liquid reads the mirror to show/hide UI |
+| Plan entitlements needed by the storefront (e.g. photo uploads allowed) | App-data metafields + block `available_if` | **Derived mirror** of the entitlement service | Storefront gating without a server call; backend still enforces |
+| Subscription / plan state | Shopify App Pricing (Partner API) | **Shopify canonical**, cached in Postgres | Shopify bills; Proofly caches for entitlements |
+| Shopify access tokens / sessions | — | **Postgres, encrypted** | Secrets never belong in Shopify-readable storage |
+| Storefront assets (JS/CSS/Liquid) | Theme app extension assets (Shopify CDN) | **Shopify** | Already the case |
+
+**Reconciliation:** Postgres always wins. A sync job writes metafields after every change and a scheduled
+reconciliation reads Shopify's values back (bulk query) and rewrites any drift (e.g. Shopify 70 vs Proofly 68 → 68).
+A merchant-visible “Resync storefront” action runs it on demand. Shopify values are never written back into Postgres.
+
+---
+
+## 3. What can live entirely on Shopify / what cannot
+
+**Entirely on Shopify (no Proofly server at request time):**
+product catalogue · star rating + count on product pages and native-theme product cards · review summary,
+distribution and the first page of published reviews (+ replies, thumbnails) · structured data · storefront
+appearance settings · storefront feature flags (mirror) · extension assets · plan selection and billing.
+
+**Cannot live on Shopify:**
+canonical review database (all statuses) · moderation and audit history · imports (files, analysis, matching, reports)
+· original images and optimised copies with quotas · analytics · shopper submissions · secrets and sessions ·
+billing-state verification (Partner API is server-side) · GDPR processing.
+
+**PostgreSQL stays** as the canonical store. **A backend is genuinely required** — but only for admin, writes,
+migration, images, sync and compliance. Storefront display never waits on it.
+
+---
+
+## 4. Revised architecture
+
+```
+                         ┌───────────────────────────── SHOPIFY ─────────────────────────────────┐
+ Shopper ───────────────►│ Theme (any OS 2.0) + Proofly theme app extension (assets on Shopify CDN)│
+                         │  • Proofly Reviews block ── Liquid renders from product metafields:     │
+                         │      reviews.rating / reviews.rating_count (standard, cache)            │
+                         │      $app proofly.snapshot  (summary, distribution, first ~10 reviews)  │
+                         │  • Proofly Rating block ─── Liquid from reviews.* metafields            │
+                         │  • Native theme card ratings ◄─ reviews.* metafields (zero JS)          │
+                         │  • Proofly Card Ratings embed (extension; 1 batched request when needed)│
+                         │  • app-data metafields (submission/photos flags, entitlement mirror)    │
+                         │                                                                         │
+                         │ App proxy /apps/<path>/* (HMAC) — ONLY for: more pages, filter, sort,   │
+                         │   submit, fallback card ratings                                         │
+ Merchant ──────────────►│ Shopify Admin ─ embedded Proofly (App Bridge, session tokens)           │
+                         │ Shopify App Pricing (hosted plan page, billing) · Webhooks · Admin API  │
+                         └──────────────┬──────────────────────────────┬──────────────────────────┘
+                                        │ HMAC proxy / session tokens  │ webhooks, GraphQL Admin API
+                                        ▼                              ▼
+                         ┌───────────────────────── PROOFLY ───────────────────────────────────────┐
+                         │ Node service (React Router, Shopify app library) — stateless             │
+                         │   tenant resolution → repository (shop_id everywhere) → Postgres + RLS   │
+                         │ Background jobs (Postgres-backed queue, same codebase):                  │
+                         │   product sync · import/analysis · image processing (sharp) ·            │
+                         │   metafield/snapshot sync + reconciliation · plan sync (Partner API) ·   │
+                         │   GDPR deletion · usage metering (reviews, storage)                      │
+                         │ Managed PostgreSQL (canonical) · Cloudflare R2: private originals,       │
+                         │   public WebP copies behind Cloudflare CDN (keys s/<shop>/…)             │
+                         └─────────────────────────────────────────────────────────────────────────┘
+```
+
+Request paths:
+
+| Storefront action | Path | Proofly server involved? |
+|---|---|---|
+| Product page stars, count, summary, distribution, first ~10 reviews, replies, photo thumbs | Liquid ← Shopify metafields; images from Proofly CDN | **No** (CDN only for images) |
+| Product cards in themes with native rating support | Theme ← `reviews.*` metafields | **No** |
+| Product cards in themes without it | Proofly Card Ratings embed → one batched proxy request (cached) | Yes, one request per page |
+| Load more / filter / sort | App proxy | Yes, on interaction |
+| Write a review | App proxy | Yes (write) |
+
+If the Proofly backend is unavailable, product pages still show ratings and the first page of reviews; interactive
+controls show a quiet “temporarily unavailable” state.
+
+**Infrastructure actually required (V1):** one managed Node service (min 1 instance; stateless, horizontally
+scalable), the same codebase running job workers, managed PostgreSQL (backups, at-rest encryption), Cloudflare R2
+(two buckets per environment) + Cloudflare CDN, secrets manager, error monitoring. **Not required:** Redis, a separate
+queue service, multi-region, a separate frontend host, serverless edge functions.
+
+---
+
+## 5. Database model (multi-tenant)
+
+Tables: `shops`, `shop_settings`, `subscriptions` (cache of Shopify App Pricing state), `products`, `reviews`,
+`review_images`, `review_replies`, `moderation_actions`, `import_jobs`, `import_product_matches`, `audit_log`,
+`usage_counters`, `rate_limits`, `sessions` (encrypted). Every merchant-owned table carries `shop_id`; composite
+uniques `(shop_id, shopify_product_id)` and `(shop_id, source, source_review_id)`; Postgres row-level security keyed on
+a per-transaction `app.shop_id`; repository layer requires `shopId`; merge-blocking isolation tests.
+
+Scale: indexes lead with `shop_id`; review listing uses `(shop_id, product_id, status, review_date desc)`. Merchants with
+1,000 / 20,000 / 100,000 reviews share the same schema; no per-merchant tables. Partitioning by `shop_id` hash is a
+later option, not needed for V1.
+
+`reviews.status` = `pending | published | rejected | hidden`, plus `hold_reason` = `moderation | plan_limit | null`
+so plan-limit holds are distinguishable from moderation (§6.3). Image rows keep review id, product id, image id,
+original filename, original MIME type, original SHA-256, private original key and optimised asset keys.
+
+---
+
+## 6. Pricing implementation plan
+
+### 6.1 Launch plans (Shopify App Pricing, five public plans, monthly with yearly option)
+
+| Handle | Monthly | Yearly | Published-review limit | Storage | Notes |
+|---|---|---|---|---|---|
+| `free` | $0 | $0 | 100 | 500 MB | Review import (100 publishable), CSV export, photos, moderation, basic customisation |
+| `starter` | $9 | $90 | 1,000 | 2 GB | + Replies, advanced widget customisation, migration within plan allowance |
+| `growth` | $19 | $190 | 5,000 | 10 GB | “Most popular” (Proofly UI/listing copy, see §7) · + unlimited migration, advanced analytics (§6.6), priority support |
+| `pro` | $39 | $390 | 25,000 | 50 GB | + advanced customisation; API access* (reserved) |
+| `scale` | $79 | $790 | 100,000 | 250 GB | Review requests 25,000/month* |
+
+\* Reserved entitlements — not listed, not enabled and not claimed anywhere until the functionality exists (API: unscheduled;
+review requests / verified purchase: V1.1). Products are unlimited on every plan. Storage = public/optimised media
+only. Yearly ≈ 2 months free (17% saving: $90 vs $108).
+
+### 6.2 Entitlement service
+
+One config file `app/lib/plans.ts` keyed by plan handle → `{ maxPublishedReviews, importLimit, storageBytes,
+replies, advancedCustomisation, advancedAnalytics, apiAccess, reviewRequestsPerMonth, verifiedPurchase,
+prioritySupport }`. All code calls `entitlements.can(shop, feature)` / `entitlements.limit(shop, key)`. Features not
+yet built resolve to `false` regardless of plan (a `released` flag per feature), so nothing unbuilt is ever exposed. `apiAccess` exists in the config for Pro/Scale but stays `released: false` until an API
+ships. `storageBytes` is the public-media allowance (500 MB / 2 / 10 / 50 / 250 GB).
+The storefront reads a mirrored subset from app-data metafields; the backend always re-checks.
+
+### 6.3 Limit behaviour — data retention rule (owner rule, 2026-10-03)
+
+> Plan limits apply to **published/displayed review capacity, not ownership of imported data.** If a merchant imports
+> more reviews than their plan permits: never delete the excess reviews; never discard imported data; preserve the
+> complete imported dataset; mark reviews exceeding the publication allowance as unpublished/plan-limited; clearly
+> show the merchant how many reviews are currently publishable; provide an upgrade path; on upgrade, eligible reviews
+> can become publishable immediately; on downgrade, never delete reviews and reduce the published allowance according
+> to the plan.
+
+Implementation (resolved):
+
+- **Status model:** `status = pending` + `hold_reason = plan_limit` marks plan-limited reviews; `hold_reason =
+  moderation` marks reviews awaiting moderation. Plan-limited reviews are stored indefinitely, never storefront-visible,
+  never deleted.
+- **Imports:** never refused or truncated because of the plan. The complete dataset (text, metadata, original images in
+  private storage) is preserved; reviews beyond the publication allowance import as plan-limited.
+- **Merchant visibility (required UI):** Dashboard, Reviews and Plan show *published / allowance*, *plan-limited*,
+  *awaiting moderation*, *public media used / allowance* and *storage-limited media*; the import summary shows the
+  published / plan-limited / storage-limited split.
+- **Upgrade (P8b):** nothing is published automatically. After an upgrade Proofly shows “You have N eligible reviews
+  ready to publish.” with an explicit **Publish eligible reviews** action, which also processes and publishes eligible
+  storage-limited media. Eligibility = within the new allowance, oldest review date first. An automatic-publication
+  setting is out of scope for V1.
+- **Downgrade (P8a — grandfather):** reviews and media already published stay published and visible. The lower
+  allowance applies only to future publishing and import eligibility. While above the allowance: new and imported
+  reviews become plan-limited (stored, never deleted), an over-limit warning is shown, and upgrading restores capacity.
+- **Selection rule:** whenever a limit decides which reviews or media are affected, the only criterion is
+  chronological order — never rating, sentiment or any other quality signal.
+
+### 6.3a Media storage (P9 / P1)
+
+- Plan storage limits apply to **public/optimised review media** (the WebP copies served on the storefront):
+  Free 500 MB · Starter 2 GB · Growth 10 GB · Pro 50 GB · Scale 250 GB.
+- Private original images are retained as migration data and do not count toward the public allowance; they are
+  never deleted because of a plan storage limit (deleted only with their review, at `shop/redact`, or at the
+  merchant's request).
+- Import over the public allowance: review records are imported, originals preserved, media that cannot currently be
+  served is marked **storage-limited** (`review_images.media_status = storage_limited`), never silently discarded, and
+  the merchant sees why and how to upgrade. Storefront copies are generated when media becomes eligible.
+- Downgrade: already-served media stays served (grandfather); new media beyond the allowance is storage-limited.
+- `review_images.media_status` = `published | storage_limited | processing | failed`.
+- **Abuse limits (proposed defaults, configurable):** ≤ 20 MB per image, ≤ 5 images per review, CSV ≤ 50 MB,
+  images archive ≤ 2 GB per import, one running import per shop, image types JPEG/PNG/WebP only (re-encoded).
+  These bound a single import; they never delete data already imported.
+
+### 6.4 Plan state
+
+Merchant selects on Shopify's hosted page (`admin.shopify.com/store/<handle>/charges/<app_handle>/pricing_plans`) →
+Shopify redirects back with `plan_handle` → Proofly confirms via the Partner API `activeSubscription(appId, shopId)` →
+caches in `subscriptions` → entitlements update → the merchant is shown “You have N eligible reviews ready to
+publish.” (no automatic publication, §6.3). A scheduled job re-verifies
+active subscriptions (cancellations/freezes no longer arrive as webhooks), and the admin re-checks on load when the
+cache is stale. Free plan = no subscription required.
+
+### 6.5 Example under launch pricing
+
+A merchant importing ~1,150 reviews needs Growth (5,000) to publish all of them; on Starter (1,000) the remainder is
+stored as plan-limited and becomes publishable after an upgrade.
+
+### 6.6 Analytics tiers (P4)
+
+- **All plans (basic):** Dashboard metrics — total, published, pending, plan-limited, average rating, products with
+  reviews, recent activity, plan usage.
+- **Growth and above (advanced analytics, V1):** reviews over time · rating distribution · reviews by product ·
+  average rating by product · photo-review percentage · published vs pending vs plan-limited · import history ·
+  review growth · top-reviewed products. Aggregations over Postgres; no AI analytics in V1.
+
+---
+
+## 7. Shopify App Store / platform constraints discovered
+
+| Constraint | Impact |
+|---|---|
+| Theme app extensions required; no theme code edits | Already the plan |
+| Shopify App Pricing: up to **8 public plans**; free, monthly, yearly or monthly-with-yearly-discount | Five plans fit; annual via yearly option |
+| **No subscription webhooks since 28 April 2026**; state via `plan_handle` redirect + **Partner API `activeSubscription`** | Proofly needs a Partner API credential (server-side) and a reconciliation job |
+| No documented way to badge a plan “Most popular” on Shopify's hosted pricing page | Show “Most popular” in Proofly's own Plan page/listing copy; hosted page shows Shopify's standard layout |
+| Listing must describe only real functionality | API access, review requests and verified purchase are not advertised until shipped; advanced analytics advertised only once the §6.6 set is built |
+| JSON metafield writes ≤ **128 KB** for new apps (API 2026-04+) | Snapshot sized to fit (≈10 reviews + summary, text truncated if needed with full text loaded via proxy) |
+| Metaobjects: 1M entries/definition, 40 fields, 128 app definitions | Possible but unsuitable as canonical store (§2) |
+| Storefront API tokenless access cannot read metafields | Card ratings come from the Proofly theme app extension (one batched app-proxy request) where the theme does not render Shopify's standard rating fields itself |
+| App proxy path customisable per store | Path passed from Liquid to JS |
+| GraphQL Admin API only; minimal scopes | V1 scopes: `read_products`, `write_products` |
+| Honest reviews; no incentives; no fake verified badges | Already the plan |
+| Storefront app branding restricted | White-label by default |
+
+---
+
+## 8. Final Proofly architecture (summary)
+
+- **Shopify:** catalogue, rating/count cache, per-product published snapshot, storefront rendering (theme app
+  extension on Shopify CDN), storefront settings, feature-flag mirror, billing and plan selection, webhooks.
+- **Proofly:** canonical multi-tenant Postgres, moderation, imports, images (R2 + Cloudflare CDN), analytics,
+  submissions, sync/reconciliation and plan-verification jobs, GDPR, audit — one stateless Node service plus job
+  workers from the same codebase.
+- **Storefront independence:** display never waits on Proofly; only interaction and writes do.
+
+## 9. Resolved commercial decisions (2026-10-03)
+
+| # | Decision |
+|---|---|
+| P1 | Free plan public-media storage: **500 MB** |
+| P2 | Free imports store the complete dataset; excess is plan-limited (data retention rule) |
+| P3 | **Products unlimited on all plans**; no product-count limits unless later analysis proves a genuine need. “Unlimited products” is not presented as a Starter differentiator |
+| P4 | Growth+ advanced analytics = the §6.6 list; no AI analytics in V1 |
+| P5 | API access reserved in the entitlement config for Pro/Scale; **never advertised or claimed until the API exists** |
+| P6 | Product-card ratings delivered through the **Proofly theme app extension** as the primary integration, using Shopify-native rating data (`reviews.rating` / `reviews.rating_count`) where the theme renders it; no a legacy theme or merchant-specific markup; no theme code edits |
+| P7 | Snapshot = **10 most recent published reviews** per product |
+| P8a | Downgrade = **grandfather**: published reviews stay visible; lower allowance applies to future publishing/import; over-limit warning; upgrade restores capacity |
+| P8b | Upgrade = **explicit** “Publish eligible reviews” action after “You have N eligible reviews ready to publish.”; no automatic publication in V1 |
+| P9 | Storage limits apply to public/optimised media only; originals retained as migration data; over-allowance media marked storage-limited, never discarded; per-file and per-import abuse limits (§6.3a) |
+
+All limit-driven selection is chronological only — never by rating, sentiment or quality.
+
+---
+
+## 10. Test data policy and commercial acceptance
+
+Real merchant review datasets — including the private dataset used to validate the prototype — are **never** part of
+Proofly: never bundled into the application or theme extension, included in seed data or migrations, included in the App
+Store build, shown in a new merchant's account, used as a default dataset, referenced by production code (no real counts,
+product IDs, handles, domains, branding or review content as assumptions), uploaded to Proofly hosting as shared/global
+data, exposed to another merchant or uploaded to third-party CI.
+
+**Allowed uses of a private dataset:** local development, local automated runs, migration/import testing and
+development-store QA where explicitly authorised — always from storage outside this repository.
+
+**Fixtures:** CI uses the synthetic fixture generator (`scripts/fixtures/generate.ts` + `check.ts`): ~1,150 reviews,
+~90 products, ~160 images, multi-image reviews, duplicate and cross-product repeated text, missing titles, reply-like
+records, unmatched and ambiguous products, multiple states, invalid records, plan-limited and storage-limited cases —
+all obviously fictional. The local development database may hold a private dataset inside a development tenant; it is
+never copied to staging or production.
+
+**Scan:** `scripts/scan-merchant-data.ts` checks every committable file and the production build (§ BASELINE.md 5).
+
+**Commercial acceptance criteria:**
+1. A newly installed merchant starts with **0 reviews, 0 imported products/reviews, 0 images, 0 moderation records,
+   0 analytics history**, and a tenant created from the shop identity Shopify provides at installation.
+2. A merchant can independently import **their own** review dataset through the generic importer.
+3. The importer handles a dataset equivalent in size and structure to a real recovery export (the synthetic fixture in
+   CI) with 0 unexplained mismatches.
+4. No tenant can see another tenant's data (isolation suite).
+5. The merchant-data scan passes on every commit and production build.

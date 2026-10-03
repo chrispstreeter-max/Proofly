@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "proofly-dev",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "set -a; . ./.env; set +a; exec npx react-router dev --port 3000"],
+      "port": 3000
+    }
+  ]
+}
