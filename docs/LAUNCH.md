@@ -133,3 +133,47 @@ live merchant store.
     Postgres with the `proofly_app` role, `/healthz` on the host, and the hourly scheduler.
 12. **Import QA:** only where explicitly authorised, and only on a development store.
 13. **App Store submission:** listing, screenshots, demo store and reviewer walk-through ([APP-STORE.md](APP-STORE.md)).
+
+## 5. LAUNCH HANDOFF (2026-10-04)
+
+1. **Current commit:** `78df03e` (validated code; this section is documentation only). Not pushed, not deployed.
+2. **Offline gates passed:** 247/247 tests (network guard active), typecheck, lint, production build, Theme Check, 16
+   fixture checks, GraphQL 23/23 operations plus 2 input checks against 2026-10, both merchant-data scans, secret scans
+   (0 hits), lockfile unchanged.
+3. **Real-Shopify validation completed** on the development store Proofly Test
+   ([REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md)): 93 checks — 67 PASS, 0 FAIL, 7 BLOCKED, 7 UNVERIFIED,
+   12 NOT RUN. Four defects found there were fixed with regression tests and re-verified.
+4. **Remaining external validations:**
+   - uninstall → storefront dark → reinstall → projections republished; `app/uninstalled` delivery;
+   - `customers/data_request` and `customers/redact` from a real (synthetic) customer;
+   - one admin pass with the browser visible: downloads, error and loading states, app-frame console;
+   - card-stars app embed on a theme; a changed app proxy path; a locale-prefixed path;
+   - a second store confirming app-owned data is not shared;
+   - Shopify App Pricing: the five plans and test charges (upgrade, downgrade, cancel);
+   - container image build and run; `/healthz` on the host; hourly maintenance; Lighthouse on a public storefront.
+5. **Required infrastructure:**
+   - managed Node hosting running the `Dockerfile` image (web: `npm run docker-start`; scheduler: `npm run maintenance`
+     hourly from the same image, alert when it exits 1; monitor `/healthz`);
+   - managed PostgreSQL 15+ with a schema owner (`DIRECT_DATABASE_URL`, runs migrations) and the `proofly_app` role
+     (`NOSUPERUSER NOBYPASSRLS`, `DATABASE_URL`). PostgreSQL is the only storage (no S3/R2); RLS is mandatory;
+   - production secrets: `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL` (https), `SCOPES`,
+     `TOKEN_ENCRYPTION_KEY`, `IP_HASH_SALT` (32+ characters), `SHOPIFY_APP_HANDLE`; no `.env` file in the image;
+   - a separate production Shopify app (its own `shopify.app.<env>.toml`) with App Pricing plans using the handles in
+     `app/lib/plans.ts`.
+6. **Required App Store decisions** ([APP-STORE.md](APP-STORE.md)): legal entity, address, contact email and governing
+   law **[decide]**; privacy policy public URL **[decide]**; support email, page and response time **[decide]**;
+   listing copy and screenshots **[decide]**; demo store and the reviewer sample CSV for it **[decide]**; hosting
+   provider and region **[decide]**.
+7. **Known risks:** `deepmerge-ts` advisory through Prisma (production audit: 4 high; no non-breaking fix); a review
+   moderated during a large bulk publish stays private but is shown as edited outside Proofly until re-approved; two
+   overlapping publishes can double-count until the daily recount; imports run in the web process (restart → Resume,
+   nothing duplicated); the working copy sits in an iCloud-synced folder; the CI workflow change is unexercised until
+   the first push.
+8. **Recommended order of operations:**
+   1. Uninstall/reinstall and synthetic-customer checks on Proofly Test; one visible admin pass.
+   2. Owner decisions: hosting provider and region, legal and contact details, support.
+   3. Provision managed PostgreSQL (roles as above) and hosting; build the image; deploy with production secrets.
+   4. Verify `/healthz`, migrations and the hourly scheduler on the host.
+   5. Create the production Shopify app and App Pricing plans; deploy its configuration and theme extension.
+   6. Install on a demo development store with synthetic data; test charges; Lighthouse on its storefront.
+   7. Screenshots, listing and privacy policy; submit for App Store review.
