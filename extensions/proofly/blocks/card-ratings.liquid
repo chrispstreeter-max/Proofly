@@ -34,7 +34,7 @@
     {%- endfor -%}
   {%- endif -%}
 {%- endcapture -%}
-<script type="application/json" id="pf-cards" data-api="{{ api }}" data-current="{{ current | escape }}" data-selector="{{ block.settings.title_selector | escape }}" data-count="{% if block.settings.show_count %}1{% else %}0{% endif %}">{{ '{' }}{{ pf_entries | strip | remove_last: ',' }}{{ '}' }}</script>
+<script type="application/json" id="pf-cards" data-api="{{ api }}" data-current="{{ current | escape }}" data-selector="{{ block.settings.title_selector | escape }}" data-count="{% if block.settings.show_count %}1{% else %}0{% endif %}">{ {{ pf_entries | strip | remove_last: ',' }} }</script>
 
 {% schema %}
 {

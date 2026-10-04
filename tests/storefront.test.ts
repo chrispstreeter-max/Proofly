@@ -29,6 +29,17 @@ describe("Theme app extension build", () => {
     assert.deepEqual(JSON.parse(r.stdout.slice(r.stdout.indexOf("["))), []);
   });
 
+  // Real-Shopify finding (deploy, 2026-10-04): Shopify's Liquid lexer ends a tag at the first "}" — even inside a quoted
+  // string — so `{{ '}' }}` is rejected at deploy although liquidjs and Theme Check accept it.
+  test("Liquid tags contain no braces (Shopify's strict lexer rejects them, unlike liquidjs/Theme Check)", () => {
+    for (const f of files("blocks")) {
+      const src = readFileSync(ext(f), "utf8").replace(/\{%-?\s*schema\s*-?%\}[\s\S]*?\{%-?\s*endschema\s*-?%\}/, "");
+      for (const m of src.matchAll(/\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g)) {
+        assert.doesNotMatch(m[1] ?? m[2], /[{}]/, `${path.basename(f)}: ${m[0]}`);
+      }
+    }
+  });
+
   test("structure: one theme extension, three blocks with valid schemas, every referenced asset exists and is used", () => {
     assert.match(readFileSync(ext("shopify.extension.toml"), "utf8"), /^type = "theme"$/m);
     assert.deepEqual(readdirSync(EXTENSION_DIR).sort(), ["assets", "blocks", "locales", "shopify.extension.toml"]);
@@ -136,7 +147,8 @@ describe("Generic merchant rendering (Liquid)", () => {
     assert.deepEqual(JSON.parse(script[2]), { "red-scarf": [4.67, 3], "blue-hat": [0, 0], "grey-sock": [5, 12] });
     assert.match(script[1], /data-api="\/apps\/proofly"/);
     assert.match(script[1], /data-selector="(&quot;|&#34;)&gt;&lt;script&gt;/); // merchant setting is escaped
-    assert.equal((await renderBlock("card-ratings", { product: null, collection: null, search: { performed: false } })).includes(">{}</script>"), true);
+    const empty = /id="pf-cards"[^>]*>([\s\S]*?)<\/script>/.exec(await renderBlock("card-ratings", { product: null, collection: null, search: { performed: false } }))!;
+    assert.deepEqual(JSON.parse(empty[1]), {});
   });
 });
 
