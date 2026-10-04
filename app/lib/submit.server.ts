@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { admitMedia, admitReviews } from "./entitlements.server";
 import { ALLOWED_TYPES, sniffType, storeReviewImage } from "./media.server";
 import type { Tenant } from "./tenant.server";
 
@@ -67,6 +68,9 @@ export async function createReview(
 ) {
   const { db, shopId } = t;
   const { data } = input;
+  // Moderation on (default): the review waits for approval. Off: it is published at once, subject to the plan allowance.
+  const settings = await db.shopSettings.findUnique({ where: { shopId }, select: { moderationEnabled: true } });
+  const autoPublish = settings?.moderationEnabled === false;
   const review = await db.review.create({
     data: {
       shopId,
@@ -77,17 +81,21 @@ export async function createReview(
       body: data.body,
       reviewerName: data.name,
       reviewDate: new Date(),
-      status: "pending", // every new review is moderated before publishing
+      status: autoPublish ? "published" : "pending",
       verifiedPurchase: false, // V1 has no order access; verified purchase is V1.1
       imported: false,
       source: input.source,
       submitterIpHash: input.ipHash,
     },
   });
+  const imageIds: string[] = [];
   for (const [position, buf] of data.images.entries()) {
     const stored = await storeReviewImage(shopId, review.id, buf);
-    await db.reviewImage.create({ data: { shopId, reviewId: review.id, position, originalFilename: `upload-${position + 1}`, ...stored } });
+    imageIds.push((await db.reviewImage.create({ data: { shopId, reviewId: review.id, position, originalFilename: `upload-${position + 1}`, ...stored } })).id);
   }
+  // Photos count toward the public-media allowance; ones that don't fit are kept privately as storage-limited.
+  await admitMedia(t, imageIds, "storefront");
+  if (autoPublish) await admitReviews(t, [review.id], "storefront");
   await db.auditLog.create({
     data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id, details: { images: data.images.length } },
   });

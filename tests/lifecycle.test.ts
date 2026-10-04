@@ -77,7 +77,7 @@ describe("Install: a newly installed merchant starts with an empty tenant", () =
     assert.equal(c.shopName, C_IDENTITY.name);
     assert.deepEqual(c.storefrontHosts, [C_IDENTITY.host]);
     assert.equal(c.uninstalledAt, null);
-    assert.equal(c.planId, "free");
+    assert.equal((await owner.billingState.findUniqueOrThrow({ where: { shopId: c.id } })).plan, "FREE");
     assert.notEqual(c.id, A.shopId);
 
     // Every merchant-owned table is empty for C — counted WITHOUT a shop filter, so RLS alone decides visibility.

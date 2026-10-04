@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { buildClientSchema, getIntrospectionQuery, parse, validate } from "graphql";
 import { API_VERSION } from "../app/shopify-api-version";
+import { SUBSCRIPTION_STATE_QUERY } from "../app/lib/billing.server";
 import { PRODUCTS_PAGE_QUERY } from "../app/lib/products.server";
 import { CURRENT_APP_INSTALLATION_QUERY, SET_APP_METAFIELD_MUTATION } from "../app/lib/proxy-path.server";
 import { DELETE_RATINGS_MUTATION, ENABLE_DEFINITION_MUTATION, READ_RATINGS_QUERY, SET_RATINGS_MUTATION } from "../app/lib/rating-cache.server";
@@ -15,7 +16,7 @@ import { SHOP_IDENTITY_QUERY } from "../app/lib/tenant.server";
 
 const OPERATIONS = {
   SHOP_IDENTITY_QUERY, CURRENT_APP_INSTALLATION_QUERY, SET_APP_METAFIELD_MUTATION, PRODUCTS_PAGE_QUERY, PRODUCT_LOOKUP_QUERY,
-  SET_RATINGS_MUTATION, DELETE_RATINGS_MUTATION, READ_RATINGS_QUERY, ENABLE_DEFINITION_MUTATION,
+  SET_RATINGS_MUTATION, DELETE_RATINGS_MUTATION, READ_RATINGS_QUERY, ENABLE_DEFINITION_MUTATION, SUBSCRIPTION_STATE_QUERY,
 };
 
 const i = process.argv.indexOf("--schema");

@@ -156,11 +156,13 @@ dataset used locally lives in a development tenant created by a local-only scrip
   plan). Merchant selects/approves on the Shopify-hosted page
   `admin.shopify.com/store/<handle>/charges/<app_handle>/pricing_plans`; app is redirected back with `plan_handle`.
   App must not call `appSubscriptionCreate` when managed pricing is on.
-- App learns state from the `plan_handle` redirect + Partner API `activeSubscription` (no subscription webhooks since 2026-04-28) → writes
-  `subscriptions` + `shops.plan_id/subscription_status`. (Verify exact fields during CP9.)
+- **Implemented (checkpoint 5):** state comes from the shop's Admin API (`currentAppInstallation`, `planHandle`),
+  triggered by the `plan_handle` redirect, token exchange, staleness and on demand (no subscription webhooks since
+  2026-04-28) → writes `billing_state` + `subscriptions` (row-level security). Partner API optional. See
+  [BILLING.md](BILLING.md).
 - **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review
-  requests, verified purchase, each behind a `released` flag) read by `entitlements.server.ts`. All gating calls go through `can(shop, feature)` / `limit(shop, key)`; no plan names elsewhere in code.
+  requests, verified purchase, each behind a `released` flag) read by `entitlements.server.ts`. All gating calls go through the entitlement layer; no plan names, prices or allowances elsewhere in code (test-enforced).
 - Over-limit behaviour: never delete or hide genuine reviews; new reviews are stored but not auto-published past the
   limit, with an admin banner to upgrade (avoids “hiding reviews” concerns while staying fair).
 - Plans: **launch pricing** Free $0 (100) · Starter $9 / $90 yr (1,000) · Growth $19 / $190 yr (5,000) · Pro $39 / $390 yr
@@ -210,7 +212,7 @@ and a short report. No checkpoint touches a live merchant store.
 | 6 | Review storefront | Scope proxy routes to shop; inactive-shop handling; JSON-LD per block setting | Two dev stores show only their own reviews/ratings | S |
 | 7 | Review submission | Shop settings respected (photos/moderation/submission), central rate limit, no email field, verified-purchase and review-request code removed from V1 | Submission works with only `read_products`/`write_products`; no personal data beyond reviewer name stored | M |
 | 8 | Import system (migration-first onboarding) | In-app CSV importer + mapping + product matching + preview/validation/duplicate detection/report, image ZIP + SSRF-safe URL fetch, legacy-provider presets, review CSV export, onboarding flow | Equivalent-size synthetic dataset imports with 0 unexplained mismatches; where explicitly authorised, a private dataset imports locally into a fresh development tenant with 0 mismatches vs its source | L |
-| 9 | Billing | Five App Pricing plans (launch prices), Partner API verification + reconciliation job, entitlements service, limit holds/releases, Plan page | Trial/upgrade/downgrade/cancel/reinstall tested on dev store test charges | M |
+| 9 | Billing | Five App Pricing plans (launch prices), Admin API verification + reconciliation (Partner API optional), entitlements service, limit holds/releases, Plan page — **done locally as the user's checkpoint 5** | Trial/upgrade/downgrade/cancel/reinstall tested on dev store test charges | M |
 | 10 | Privacy / uninstall | Uninstall lifecycle, real `shop/redact` deletion (DB + storage), `customers/redact`, `customers/data_request` output | Deletion job verified; audit trail; storefront dark after uninstall | S |
 | 11 | Security isolation | Isolation suite in CI, RLS enabled, lint rule, dependency audit, secrets review | All isolation tests green; RLS on; no unscoped queries (lint) | M |
 | 12 | Development-store import QA | Only where explicitly required: a development store with test products; the private fixture *copy* (or synthetic data) imported through the generic importer — never via seed data, no live-store access, deleted afterwards | 0 unexplained mismatches; owner review | S |
@@ -226,6 +228,10 @@ multi-theme verification remain; the proxy-path setting landed in CP4).
 Checkpoint 4 (product catalogue sync + `products/*` webhooks, canonical aggregate, rating-cache ownership
 (`unmanaged` / `proofly_managed`), metafield sync + reconciliation, per-merchant proxy path, opaque public media ids,
 API version 2026-10) complete locally — see [ARCHITECTURE.md §11](ARCHITECTURE.md). Real-store verification remains.
+Checkpoint 5 in the user-approved sequence (= roadmap row 9, billing): Shopify App Pricing reconciliation, canonical
+plan configuration, entitlement service, plan-limited / storage-limited admission (date order only), grandfathered
+downgrades, explicit "Publish eligible reviews", Plan page, generic import core — complete locally; see
+[BILLING.md](BILLING.md).
 
 Recommended order: 1 → 2 → 11 (isolation tests early, then kept green) → 3 → 4 → 6 → 5 → 7 → 8 → 10 → 9 → 12 → 13.
 

@@ -109,6 +109,8 @@ export async function registerShop(input: { shopDomain: string; shopifyShopId: b
   const lifecycle = !existing ? "shop.installed" : existing.uninstalledAt ? "shop.reinstalled" : null;
   await withTenant(shop.id, async ({ db, shopId }) => {
     await db.shopSettings.upsert({ where: { shopId }, create: { shopId, proxyPath: DEFAULT_PROXY_PATH }, update: {} });
+    // Every merchant starts on Free (unverified until billing.server reconciles with Shopify).
+    await db.billingState.upsert({ where: { shopId }, create: { shopId, plan: "FREE" }, update: {} });
     if (lifecycle) await db.auditLog.create({ data: { shopId, actor: "shopify", action: lifecycle, entity: "shop", entityId: shopId } });
   });
   return shop;

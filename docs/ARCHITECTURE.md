@@ -46,7 +46,7 @@ cross-product queries? moderation/history/audit? private? files? analytics? API/
 | Storefront appearance (colours, layout, toggles) | Theme editor block settings | **Shopify** | Native per theme; no backend needed |
 | Shop operational settings (moderation mode, submission on/off, photos on/off) | App-data metafields (`app.metafields` in theme extensions) | **Postgres canonical**, mirrored to app-data metafields | Backend enforces; Liquid reads the mirror to show/hide UI |
 | Plan entitlements needed by the storefront (e.g. photo uploads allowed) | App-data metafields + block `available_if` | **Derived mirror** of the entitlement service | Storefront gating without a server call; backend still enforces |
-| Subscription / plan state | Shopify App Pricing (Partner API) | **Shopify canonical**, cached in Postgres | Shopify bills; Proofly caches for entitlements |
+| Subscription / plan state | Shopify App Pricing (Admin API `currentAppInstallation`; Partner API optional) | **Shopify canonical**, cached in Postgres (`billing_state`, `subscriptions`) | Shopify bills; Proofly caches for entitlements |
 | Shopify access tokens / sessions | — | **Postgres, encrypted** | Secrets never belong in Shopify-readable storage |
 | Storefront assets (JS/CSS/Liquid) | Theme app extension assets (Shopify CDN) | **Shopify** | Already the case |
 
@@ -68,7 +68,7 @@ appearance settings · storefront feature flags (mirror) · extension assets · 
 **Cannot live on Shopify:**
 canonical review database (all statuses) · moderation and audit history · imports (files, analysis, matching, reports)
 · original images and optimised copies with quotas · analytics · shopper submissions · secrets and sessions ·
-billing-state verification (Partner API is server-side) · GDPR processing.
+billing-state verification (server-side Admin API read) · GDPR processing.
 
 **PostgreSQL stays** as the canonical store. **A backend is genuinely required** — but only for admin, writes,
 migration, images, sync and compliance. Storefront display never waits on it.
@@ -100,7 +100,7 @@ migration, images, sync and compliance. Storefront display never waits on it.
                          │   tenant resolution → repository (shop_id everywhere) → Postgres + RLS   │
                          │ Background jobs (Postgres-backed queue, same codebase):                  │
                          │   product sync · import/analysis · image processing (sharp) ·            │
-                         │   metafield/snapshot sync + reconciliation · plan sync (Partner API) ·   │
+                         │   metafield/snapshot sync + reconciliation · plan sync (Admin API) ·     │
                          │   GDPR deletion · usage metering (reviews, storage)                      │
                          │ Managed PostgreSQL (canonical) · Cloudflare R2: private originals,       │
                          │   WebP copies served by /media/<opaque-id> (internal keys s/<shop>/…)    │
@@ -163,12 +163,12 @@ only. Yearly ≈ 2 months free (17% saving: $90 vs $108).
 
 ### 6.2 Entitlement service
 
-One config file `app/lib/plans.ts` keyed by plan handle → `{ maxPublishedReviews, importLimit, storageBytes,
-replies, advancedCustomisation, advancedAnalytics, apiAccess, reviewRequestsPerMonth, verifiedPurchase,
-prioritySupport }`. All code calls `entitlements.can(shop, feature)` / `entitlements.limit(shop, key)`. Features not
+**Implemented in checkpoint 5 — see [BILLING.md](BILLING.md).** One config file `app/lib/plans.ts` keyed by stable
+plan id (`FREE`…`SCALE`, mapped to Shopify plan handles) with prices, allowances and features. All code goes through
+`app/lib/entitlements.server.ts` (`can`, `getPlanStatus`, `getUsage`, admission). Features not
 yet built resolve to `false` regardless of plan (a `released` flag per feature), so nothing unbuilt is ever exposed. `apiAccess` exists in the config for Pro/Scale but stays `released: false` until an API
 ships. `storageBytes` is the public-media allowance (500 MB / 2 / 10 / 50 / 250 GB).
-The storefront reads a mirrored subset from app-data metafields; the backend always re-checks.
+Not built: a storefront mirror of entitlements. The storefront needs none in V1 (billing never reaches the storefront); the backend enforces everything.
 
 ### 6.3 Limit behaviour — data retention rule (owner rule, 2026-10-03)
 
@@ -218,11 +218,12 @@ Implementation (resolved):
 ### 6.4 Plan state
 
 Merchant selects on Shopify's hosted page (`admin.shopify.com/store/<handle>/charges/<app_handle>/pricing_plans`) →
-Shopify redirects back with `plan_handle` → Proofly confirms via the Partner API `activeSubscription(appId, shopId)` →
-caches in `subscriptions` → entitlements update → the merchant is shown “You have N eligible reviews ready to
-publish.” (no automatic publication, §6.3). A scheduled job re-verifies
-active subscriptions (cancellations/freezes no longer arrive as webhooks), and the admin re-checks on load when the
-cache is stale. Free plan = no subscription required.
+Shopify redirects back with `plan_handle` (a hint, never trusted) → Proofly reads the shop's subscription from the
+Admin API (`currentAppInstallation.activeSubscriptions`, `planHandle`) → caches in `billing_state` / `subscriptions` →
+entitlements update → the merchant is shown “You have N eligible reviews ready to publish.” (no automatic
+publication, §6.3). Re-checks run on token exchange, on return, when the admin finds the cache older than 10 minutes,
+and on demand. A scheduled job arrives with the job runner, and the Partner API `activeSubscription` is an optional
+second source for scheduled changes. Free plan = no subscription required. Details: [BILLING.md](BILLING.md).
 
 ### 6.5 Example under launch pricing
 
@@ -245,7 +246,7 @@ stored as plan-limited and becomes publishable after an upgrade.
 |---|---|
 | Theme app extensions required; no theme code edits | Already the plan |
 | Shopify App Pricing: up to **8 public plans**; free, monthly, yearly or monthly-with-yearly-discount | Five plans fit; annual via yearly option |
-| **No subscription webhooks since 28 April 2026**; state via `plan_handle` redirect + **Partner API `activeSubscription`** | Proofly needs a Partner API credential (server-side) and a reconciliation job |
+| **No subscription webhooks since 28 April 2026**; state via `plan_handle` redirect + subscription reads | Implemented with the shop's own Admin API (`currentAppInstallation`); Partner API optional (needs an org credential); pull-based reconciliation ([BILLING.md](BILLING.md)) |
 | No documented way to badge a plan “Most popular” on Shopify's hosted pricing page | Show “Most popular” in Proofly's own Plan page/listing copy; hosted page shows Shopify's standard layout |
 | Listing must describe only real functionality | API access, review requests and verified purchase are not advertised until shipped; advanced analytics advertised only once the §6.6 set is built |
 | JSON metafield writes ≤ **128 KB** for new apps (API 2026-04+) | Snapshot sized to fit (≈10 reviews + summary, text truncated if needed with full text loaded via proxy) |
@@ -406,4 +407,14 @@ There is no storage-limited review state.
 - **API version:** one constant (`app/shopify-api-version.ts`, 2026-10) is used by the Admin API client and codegen,
   and test-enforced equal to the webhook `api_version`. `npm run check:graphql` validates every Admin operation
   against Shopify's published schema.
+
+### 11.9 Billing and entitlements (checkpoint 5)
+- **Billing:** Shopify App Pricing is the billing authority. Proofly links to Shopify's hosted plan page and never
+  creates charges.
+- **Plan state:** read from the shop's own Admin API (`currentAppInstallation`, `planHandle`). An API failure or an
+  unknown handle keeps the current plan (unverified); only a confirmed ACTIVE subscription with a known handle changes it.
+- **Entitlements:** `app/lib/entitlements.server.ts`. Published-review and public-media allowances are applied at
+  admission (oldest first, date order only). Downgrades are grandfathered, upgrades require "Publish eligible reviews",
+  and storage limits affect photos only. Nothing is deleted because of a plan.
+- Full detail and verified Shopify facts: [BILLING.md](BILLING.md).
 

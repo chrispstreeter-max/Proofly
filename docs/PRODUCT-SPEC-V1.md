@@ -230,7 +230,7 @@ subscriptions, audit log, imports, analytics) → STOREFRONT EXTENSIONS
 | API | GraphQL Admin API only |
 | Scopes (V1) | `read_products` (catalogue + SKUs) and `write_products` (only for the standard rating/count fields) |
 | Product sync | Bulk operation on install; `products/create`, `products/update`, `products/delete` webhooks |
-| Webhooks | `app/uninstalled`, `app/scopes_update`, `products/*`, compliance topics (plan state via Partner API, not webhooks) |
+| Webhooks | `app/uninstalled`, `app/scopes_update`, `products/*`, compliance topics (no billing webhook: Shopify App Pricing sends none; plan state is read from the Admin API) |
 | Storefront API | App proxy, HMAC-verified per request; proxy path passed from Liquid (merchants can customise it) |
 | Environments | Development, staging, production — separate Partner apps, databases, buckets, secrets; explicit production deploys |
 
@@ -242,10 +242,13 @@ subscriptions, audit log, imports, analytics) → STOREFRONT EXTENSIONS
   shown as “Most popular” in Proofly) · Pro $39/mo or $390/yr (25,000) · Scale $79/mo or $790/yr (100,000). Yearly ≈ two
   months free (save 17%). Public/optimised media storage: 500 MB / 2 / 10 / 50 / 250 GB (Free → Scale). Products
   unlimited on all plans. API access reserved for Pro/Scale but not advertised until it exists.
-- Plan state: Shopify's hosted plan page → redirect with `plan_handle` → verified via the Partner API
-  `activeSubscription`; scheduled re-verification (Shopify App Pricing sends no subscription webhooks since
-  28 April 2026).
-- Central entitlement service (`can` / `limit`); features not yet built are never exposed regardless of plan.
+- Plan state: Shopify's hosted plan page → redirect with `plan_handle` (re-check trigger only) → verified from the
+  shop's Admin API (`currentAppInstallation.activeSubscriptions` → `planHandle`); re-checked on token exchange, on
+  return, when stale (10 min) and on demand. Shopify App Pricing sends no subscription webhooks since 28 April 2026.
+  API failures never change the plan. **Implemented in checkpoint 5:** [BILLING.md](BILLING.md).
+- Central entitlement service (`app/lib/entitlements.server.ts`); features not yet built are never exposed regardless
+  of plan. Shown today: review display, photo reviews and moderation on every plan; public replies from Starter;
+  priority support from Growth.
 - **Data retention rule (resolved):** plan limits cap published/displayed reviews and public media, never data
   ownership. Imports are never truncated; excess reviews are preserved as plan-limited and excess media as
   storage-limited, with counts shown to the merchant. **Upgrade:** explicit “Publish eligible reviews” action (no

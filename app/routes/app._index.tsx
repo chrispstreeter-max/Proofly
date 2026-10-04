@@ -3,14 +3,20 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import { recomputeAll } from "../lib/aggregates.server";
+import { reconcileIfStale } from "../lib/billing.server";
+import { getPlanStatus } from "../lib/entitlements.server";
+import { formatBytes } from "../lib/plans";
 import { syncCatalog } from "../lib/products.server";
 import { setProxyPath } from "../lib/proxy-path.server";
 import { ensureRatingDefinitions, reconcileRatingCache, syncRatingCache } from "../lib/rating-cache.server";
 import { publishShopProxyPath, withTenant } from "../lib/tenant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { shop } = await requireAdminTenant(request);
-  return withTenant(shop.id, async ({ db, shopId }) => {
+  const { shop, admin } = await requireAdminTenant(request);
+  await reconcileIfStale(shop.id, admin.graphql); // plan follows Shopify; failures keep the current plan
+  return withTenant(shop.id, async (t) => {
+    const { db, shopId } = t;
+    const planStatus = await getPlanStatus(t);
     const [settings, byStatus, total, withPhotos, verified, flagged, products, unsynced] = await Promise.all([
       db.shopSettings.findUnique({ where: { shopId } }),
       db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
@@ -32,6 +38,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return {
       stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, verified, flagged, products },
       unsynced: Number(unsynced[0]?.n ?? 0),
+      plan: {
+        name: planStatus.plan.name, allowance: planStatus.plan.publishedReviewAllowance, media: formatBytes(planStatus.plan.publicMediaBytes),
+        published: planStatus.usage.publishedReviews, planLimited: planStatus.usage.planLimitedReviews, awaiting: planStatus.usage.awaitingModeration,
+        storageLimited: planStatus.usage.storageLimitedPhotos, mediaUsed: formatBytes(planStatus.usage.publicMediaBytes),
+        over: planStatus.overReviewAllowance, room: planStatus.reviewRoom, unverified: planStatus.state.verification === "unverified",
+      },
       ratings: { managed: Number(unsynced[0]?.managed ?? 0), errors: Number(unsynced[0]?.errors ?? 0) },
       catalog: {
         status: settings?.catalogSyncStatus ?? "never", count: settings?.catalogSyncCount ?? 0,
@@ -96,7 +108,7 @@ const Stat = ({ label, value, href }: { label: string; value: number; href?: str
 );
 
 export default function Dashboard() {
-  const { stats, unsynced, onboarding, ratings, catalog, proxy } = useLoaderData<typeof loader>();
+  const { stats, unsynced, onboarding, ratings, catalog, proxy, plan } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   return (
@@ -133,6 +145,25 @@ export default function Dashboard() {
           </s-stack>
         </s-section>
       )}
+      <s-section heading={`Reviews on the ${plan.name} plan`}>
+        <s-stack gap="base">
+          <s-grid gridTemplateColumns="repeat(auto-fit, minmax(150px, 1fr))" gap="base">
+            <Stat label="Published" value={plan.published} href="/app/plan" />
+            <Stat label="Plan allowance" value={plan.allowance} href="/app/plan" />
+            <Stat label="Plan-limited" value={plan.planLimited} href="/app/plan" />
+            <Stat label="Awaiting moderation" value={plan.awaiting} href="/app/reviews?status=pending" />
+          </s-grid>
+          {plan.over && (
+            <s-banner tone="warning"><s-paragraph>
+              You&apos;re using {plan.published.toLocaleString("en-US")} published reviews on a plan that includes {plan.allowance.toLocaleString("en-US")}.
+              Your existing reviews remain visible. New reviews will be held until you upgrade.
+            </s-paragraph></s-banner>
+          )}
+          {plan.planLimited > 0 && plan.room > 0 && <s-paragraph>You have reviews ready to publish. <s-link href="/app/plan">Publish eligible reviews</s-link></s-paragraph>}
+          <s-paragraph>Public photo storage: {plan.mediaUsed} of {plan.media}{plan.storageLimited ? ` · ${plan.storageLimited} storage-limited photo${plan.storageLimited === 1 ? "" : "s"}` : ""}.{plan.unverified ? " Plan not yet confirmed with Shopify." : ""}</s-paragraph>
+        </s-stack>
+      </s-section>
+
       <s-section heading="Overview">
         <s-grid gridTemplateColumns="repeat(auto-fit, minmax(150px, 1fr))" gap="base">
           <Stat label="Total reviews" value={stats.total} href="/app/reviews" />

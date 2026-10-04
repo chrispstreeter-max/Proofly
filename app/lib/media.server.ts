@@ -92,6 +92,7 @@ export async function readDerivative(key: string): Promise<Buffer | null> {
 
 export interface StoredImage {
   publicId: string;
+  publicBytes: number;
   storageKey: string;
   thumbKey: string;
   largeKey: string;
@@ -129,6 +130,7 @@ export async function storeReviewImage(shopId: string, reviewId: string, origina
   const swap = (meta.orientation ?? 1) >= 5;
   return {
     publicId,
+    publicBytes: thumb.length + large.length,
     storageKey,
     thumbKey: `${base}-320.webp`,
     largeKey: `${base}-1600.webp`,

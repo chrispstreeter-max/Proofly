@@ -85,9 +85,19 @@ export class FakeShopify {
   calls: { op: string; variables?: Record<string, unknown> }[] = [];
   products: { legacyResourceId: string; handle: string; title: string; status: string; updatedAt: string }[] = [];
   missingProducts = new Set<string>(); // product gids Shopify no longer has
+  /** App Pricing subscriptions as Shopify reports them (newest last). Empty = no subscription (Free). */
+  subscriptions: { id: string; name: string; status: string; planHandle: string | null; interval?: "EVERY_30_DAYS" | "ANNUAL"; amount?: string; test?: boolean; createdAt?: string }[] = [];
   pageSize = 2;
   private failures: { op: string; kind: FailKind; times: number }[] = [];
   constructor(public identity?: Identity) {}
+
+  /** An AppSubscription exactly as the Admin API returns it for ProoflySubscriptionState. */
+  static subscriptionNode(x: FakeShopify["subscriptions"][number]) {
+    return {
+      id: x.id, name: x.name, status: x.status, test: x.test ?? false, trialDays: 0, createdAt: x.createdAt ?? "2026-10-01T00:00:00Z", currentPeriodEnd: null,
+      lineItems: [{ plan: { pricingDetails: { __typename: "AppRecurringPricing", planHandle: x.planHandle, interval: x.interval ?? "EVERY_30_DAYS", price: { amount: x.amount ?? "0.0", currencyCode: "USD" } } } }],
+    };
+  }
 
   failNext(op: string, kind: FailKind, times = 1) { this.failures.push({ op, kind, times }); }
   ops(op?: string) { return this.calls.filter((c) => !op || c.op === op); }
@@ -151,6 +161,13 @@ export class FakeShopify {
           data: { products: { pageInfo: { hasNextPage: next < this.products.length, endCursor: String(next) }, nodes } },
           extensions: { cost: { requestedQueryCost: 52, throttleStatus: { currentlyAvailable: 1900, restoreRate: 100 } } },
         });
+      }
+      case "ProoflySubscriptionState": {
+        const node = FakeShopify.subscriptionNode;
+        return Response.json({ data: { currentAppInstallation: {
+          activeSubscriptions: this.subscriptions.filter((x) => ["ACTIVE", "FROZEN"].includes(x.status)).map(node),
+          allSubscriptions: { nodes: [...this.subscriptions].reverse().map(node) },
+        } } });
       }
       case "ProoflyEnableRatingDefinition":
         return Response.json({ data: { standardMetafieldDefinitionEnable: { userErrors: [] } } });

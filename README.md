@@ -3,9 +3,9 @@
 **Proofly** is a Shopify App Store app for product reviews: bring your existing reviews with you, manage them in one
 place, and display them beautifully across your store.
 
-> Status: **Checkpoint 4 — Shopify product sync and rating cache** (on top of checkpoints 1–3: multi-tenancy,
-> installation/authentication/onboarding, Shopify-native storefront). Billing and import are later checkpoints; nothing
-> is deployed, installed or connected to a Shopify store. See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
+> Status: **Checkpoint 5 — Shopify billing and commercial entitlements** (on top of checkpoints 1–4: multi-tenancy,
+> installation, storefront, product sync and rating cache). The import UI is a later checkpoint; nothing is deployed,
+> installed or connected to a Shopify store. Billing: [docs/BILLING.md](docs/BILLING.md). See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
 
 - Brand: [docs/BRAND.md](docs/BRAND.md)
 - Product spec (V1): [docs/PRODUCT-SPEC-V1.md](docs/PRODUCT-SPEC-V1.md)

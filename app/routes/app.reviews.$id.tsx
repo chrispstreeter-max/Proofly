@@ -4,6 +4,10 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import { readDerivative } from "../lib/media.server";
 import { ACTIONS, moderate, moderationHistory, saveReply, type ModerationActionName } from "../lib/moderation.server";
+import { can } from "../lib/entitlements.server";
+import { PLAN_ORDER, PLANS, planHasFeature } from "../lib/plans";
+
+const REPLIES_FROM = PLANS[PLAN_ORDER.find((k) => planHasFeature(k, "replies")) ?? "STARTER"].name;
 import { syncAfterRatingChange } from "../lib/rating-cache.server";
 import { isUuid, withTenant } from "../lib/tenant.server";
 
@@ -21,10 +25,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     });
     if (!r) return null;
     const history = await moderationHistory(t, r.id);
-    return { r, history };
+    return { r, history, canReply: await can(t, "replies") };
   });
   if (!found) throw notFound();
-  const { r, history } = found;
+  const { r, history, canReply } = found;
   // The merchant sees ALL of their photos (also pending/hidden/storage-limited) as inline thumbnails, so moderation
   // never needs the public /media route — which only ever serves currently public photos.
   const thumbs = await Promise.all(r.images.map(async (i) => {
@@ -35,11 +39,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     review: {
       id: r.id, sourceId: r.sourceReviewId, source: r.source, imported: r.imported, status: r.status, rating: r.rating,
       title: r.title, body: r.body, name: r.reviewerName, date: r.reviewDate.toISOString().slice(0, 16).replace("T", " "),
-      verified: r.verifiedPurchase, flags: r.flags,
+      verified: r.verifiedPurchase, flags: r.flags, heldByPlan: r.holdReason === "plan_limit",
       product: { title: r.product.title, handle: r.product.handle, id: r.product.shopifyProductId.toString() },
       images: thumbs,
       reply: r.reply?.reply ?? "",
     },
+    canReply, repliesFrom: REPLIES_FROM,
     history: history.map((h) => ({ at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: `${h.action} (${h.fromStatus} → ${h.toStatus})` })),
   };
 };
@@ -50,14 +55,27 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const form = await request.formData();
   const intent = String(form.get("intent"));
   if (intent === "reply") {
-    const ok = await withTenant(shop.id, (t) => saveReply(t, params.id!, String(form.get("reply") ?? ""), actor));
+    const text = String(form.get("reply") ?? "");
+    // Replies are a plan feature (Starter and up). Removing an existing reply is always allowed (grandfathered replies
+    // stay public after a downgrade until the merchant removes them).
+    const ok = await withTenant(shop.id, async (t) => {
+      // Ownership first: another shop's review gets the same 404 as a missing one, whatever the plan.
+      if (!(await t.db.review.findFirst({ where: { shopId: t.shopId, id: params.id! }, select: { id: true } }))) return false;
+      return text.trim() && !(await can(t, "replies")) ? "plan" : saveReply(t, params.id!, text, actor);
+    });
+    if (ok === "plan") return { message: `Public replies are included from the ${REPLIES_FROM} plan. See Plan.` };
     if (!ok) throw notFound();
     return { message: "Reply saved." };
   }
   if (intent in ACTIONS) {
-    const n = await withTenant(shop.id, (t) => moderate(t, [params.id!], intent as ModerationActionName, actor));
-    if (!n) throw notFound();
+    const result = await withTenant(shop.id, async (t) => {
+      const n = await moderate(t, [params.id!], intent as ModerationActionName, actor);
+      const after = n ? await t.db.review.findFirst({ where: { shopId: t.shopId, id: params.id! }, select: { holdReason: true } }) : null;
+      return { n, held: after?.holdReason === "plan_limit" };
+    });
+    if (!result.n) throw notFound();
     await syncAfterRatingChange(shop.id, admin.graphql); // best effort: the canonical change above stands either way
+    if (intent === "approve" && result.held) return { message: "Approved, but currently held by your plan limit. It will appear once there is room — see Plan." };
     return { message: `Review ${ACTIONS[intent as ModerationActionName]}. Storefront rating updated.` };
   }
   return { message: "Unknown action." };
@@ -71,7 +89,8 @@ const Act = ({ intent, label, tone }: { intent: string; label: string; tone?: "c
 );
 
 export default function ReviewDetail() {
-  const { review: r, history } = useLoaderData<typeof loader>();
+  const d = useLoaderData<typeof loader>();
+  const { review: r, history } = d;
   const result = useActionData<typeof action>();
   return (
     <s-page heading={r.title || "(no title)"}>
@@ -88,6 +107,7 @@ export default function ReviewDetail() {
         <s-stack gap="base">
           <s-stack direction="inline" gap="small">
             <s-badge tone={TONE[r.status]}>{r.status}</s-badge>
+            {r.heldByPlan && <s-badge tone="warning">Held by plan limit</s-badge>}
             {r.verified && <s-badge tone="success">Verified purchase</s-badge>}
             {r.imported && <s-badge>{`Imported from ${r.source}`}</s-badge>}
             {r.flags.map((f) => <s-badge key={f} tone="caution">{f}</s-badge>)}
@@ -114,6 +134,7 @@ export default function ReviewDetail() {
         <Form method="post">
           <input type="hidden" name="intent" value="reply" />
           <s-stack gap="base">
+            {!d.canReply && <s-paragraph>Public replies are included from the {d.repliesFrom} plan. You can still remove an existing reply.</s-paragraph>}
             <s-text-area name="reply" label="Reply shown under the review as “Response from {your store name}” (leave empty to remove)" value={r.reply} rows={4} maxLength={5000} />
             <s-button type="submit">Save reply</s-button>
           </s-stack>

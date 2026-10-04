@@ -1,5 +1,6 @@
 import type { ReviewStatus } from "@prisma/client";
 import { recomputeProduct } from "./aggregates.server";
+import { admitReviews, releaseEligibleReviews } from "./entitlements.server";
 import type { Tenant } from "./tenant.server";
 
 export const ACTIONS = {
@@ -23,8 +24,13 @@ export async function moderate(t: Tenant, reviewIds: string[], action: Moderatio
   if (!reviews.length) return 0;
   const ids = reviews.map((r) => r.id);
   await db.review.updateMany({ where: { shopId, id: { in: ids } }, data: { status } });
-  // Approval ends a moderation hold. A plan-limit hold stays: only the plan allowance can release it (setPlanLimited).
-  if (action === "approve") await db.review.updateMany({ where: { shopId, id: { in: ids }, holdReason: "moderation" }, data: { holdReason: null } });
+  if (action === "approve") {
+    // Approval ends a moderation hold; then the plan decides. Reviews that were not already public are admitted
+    // oldest-first while the allowance has room — the rest stay approved but held (plan_limit), never rejected.
+    await db.review.updateMany({ where: { shopId, id: { in: ids }, holdReason: "moderation" }, data: { holdReason: null } });
+    const newlyPublic = reviews.filter((r) => r.status !== "published").map((r) => r.id);
+    await admitReviews(t, newlyPublic, actor);
+  }
   await db.moderationAction.createMany({
     data: reviews.map((r) => ({ shopId, reviewId: r.id, action, fromStatus: r.status, toStatus: status, actor })),
   });
@@ -36,17 +42,18 @@ export async function moderate(t: Tenant, reviewIds: string[], action: Moderatio
 }
 
 /**
- * Puts reviews on (or releases them from) the plan-limit hold and recomputes their products. Used by the plan
- * allowance logic (billing checkpoint); plan-limited reviews are stored, never deleted, never public. Releasing only
- * clears plan_limit holds — a moderation hold or a rejected/hidden status is untouched.
+ * Puts reviews on the plan-limit hold, or releases them — releasing goes through the plan allowance
+ * (entitlements.server releaseEligibleReviews: oldest first, only while there is room). Plan-limited reviews are stored,
+ * never deleted, never public. Releasing only clears plan_limit holds — a moderation hold or a rejected/hidden status
+ * is untouched.
  */
 export async function setPlanLimited(t: Tenant, reviewIds: string[], limited: boolean, actor: string) {
   const { db, shopId } = t;
-  const where = limited ? { shopId, id: { in: reviewIds } } : { shopId, id: { in: reviewIds }, holdReason: "plan_limit" as const };
-  const reviews = await db.review.findMany({ where, select: { id: true, productId: true } });
+  if (!limited) return (await releaseEligibleReviews(t, { reviewIds, actor })).released;
+  const reviews = await db.review.findMany({ where: { shopId, id: { in: reviewIds } }, select: { id: true, productId: true } });
   if (!reviews.length) return 0;
-  await db.review.updateMany({ where: { shopId, id: { in: reviews.map((r) => r.id) } }, data: { holdReason: limited ? "plan_limit" : null } });
-  await db.auditLog.create({ data: { shopId, actor, action: limited ? "reviews.plan_limited" : "reviews.plan_released", entity: "review", details: { count: reviews.length } } });
+  await db.review.updateMany({ where: { shopId, id: { in: reviews.map((r) => r.id) } }, data: { holdReason: "plan_limit" } });
+  await db.auditLog.create({ data: { shopId, actor, action: "reviews.plan_limited", entity: "review", details: { count: reviews.length } } });
   for (const pid of new Set(reviews.map((r) => r.productId))) await recomputeProduct(t, pid);
   return reviews.length;
 }

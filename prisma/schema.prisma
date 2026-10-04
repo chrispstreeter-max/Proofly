@@ -44,20 +44,19 @@ model Session {
 
 /// One row per Shopify store that has installed Proofly. Identity comes only from authenticated Shopify context.
 model Shop {
-  id                 String    @id @default(uuid()) @db.Uuid
-  shopifyShopId      BigInt?   @unique @map("shopify_shop_id")
-  shopDomain         String    @unique @map("shop_domain") // e.g. example.myshopify.com (from the authenticated session)
-  shopName           String?   @map("shop_name")
+  id              String    @id @default(uuid()) @db.Uuid
+  shopifyShopId   BigInt?   @unique @map("shopify_shop_id")
+  shopDomain      String    @unique @map("shop_domain") // e.g. example.myshopify.com (from the authenticated session)
+  shopName        String?   @map("shop_name")
   /// Storefront hosts of this shop (primary domain etc.), from the Admin API at install — used for the Origin check.
-  storefrontHosts    String[]  @default([]) @map("storefront_hosts")
-  planId             String    @default("free") @map("plan_id") // billing arrives in a later checkpoint
-  subscriptionStatus String    @default("none") @map("subscription_status")
-  installedAt        DateTime  @default(now()) @map("installed_at")
-  uninstalledAt      DateTime? @map("uninstalled_at")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  storefrontHosts String[]  @default([]) @map("storefront_hosts")
+  installedAt     DateTime  @default(now()) @map("installed_at")
+  uninstalledAt   DateTime? @map("uninstalled_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   settings          ShopSettings?
+  billing           BillingState?
   subscriptions     Subscription[]
   products          Product[]
   reviews           Review[]
@@ -101,18 +100,67 @@ model ShopSettings {
   @@map("shop_settings")
 }
 
-model Subscription {
-  id                    String    @id @default(uuid()) @db.Uuid
-  shopId                String    @map("shop_id") @db.Uuid
+/// Stable internal plan identifiers (app/lib/plans.ts). Never prices, never Shopify subscription ids.
+enum PlanKey {
+  FREE
+  STARTER
+  GROWTH
+  PRO
+  SCALE
+}
+
+/// Proofly's entitlement state for one shop — a cache of what Shopify App Pricing says, never the financial record.
+/// `plan` changes ONLY when billing.server reconciles a confirmed Shopify state. An API failure leaves it untouched
+/// (verification = unverified) — never an implicit upgrade or downgrade.
+model BillingState {
+  shopId                String    @id @map("shop_id") @db.Uuid
+  plan                  PlanKey   @default(FREE)
+  /// monthly | annual (null on Free)
+  interval              String?
+  /// confirmed | unverified
+  verification          String    @default("unverified")
+  /// Latest Shopify subscription status relevant to the shop: none | pending | active | frozen | cancelled | declined | expired
+  shopifyStatus         String    @default("none") @map("shopify_status")
   shopifySubscriptionId String?   @map("shopify_subscription_id")
-  planId                String    @map("plan_id")
-  status                String
+  planHandle            String?   @map("plan_handle")
+  test                  Boolean   @default(false)
+  trialDays             Int       @default(0) @map("trial_days")
   currentPeriodEnd      DateTime? @map("current_period_end")
+  verifiedAt            DateTime? @map("verified_at")
+  checkError            String?   @map("check_error")
+  planChangedAt         DateTime? @map("plan_changed_at")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
+  @@map("billing_state")
+}
+
+/// Cache of the shop's Shopify app subscriptions as last read from the Admin API (history for support/audit).
+model Subscription {
+  id                    String    @id @default(uuid()) @db.Uuid
+  shopId                String    @map("shop_id") @db.Uuid
+  shopifySubscriptionId String    @map("shopify_subscription_id")
+  /// Proofly plan the subscription maps to (null = unknown plan handle)
+  plan                  PlanKey?
+  planHandle            String?   @map("plan_handle")
+  name                  String
+  /// Shopify AppSubscriptionStatus, lower-case
+  status                String
+  interval              String?
+  priceAmount           Decimal?  @map("price_amount") @db.Decimal(10, 2)
+  currencyCode          String?   @map("currency_code")
+  test                  Boolean   @default(false)
+  trialDays             Int       @default(0) @map("trial_days")
+  currentPeriodEnd      DateTime? @map("current_period_end")
+  shopifyCreatedAt      DateTime  @map("shopify_created_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifySubscriptionId])
   @@index([shopId])
   @@map("subscriptions")
 }
@@ -245,6 +293,8 @@ model ReviewImage {
   height           Int?
   position         Int         @default(0)
   mediaStatus      MediaStatus @default(published) @map("media_status")
+  /// Bytes of the two optimised public derivatives (320 + 1600) — what counts toward the public media allowance.
+  publicBytes      Int         @default(0) @map("public_bytes")
   /// Opaque public asset id (128 random bits, hex). The ONLY identifier in public media URLs.
   publicId         String      @unique @default(dbgenerated("replace((gen_random_uuid())::text, '-'::text, ''::text)")) @map("public_id")
   createdAt        DateTime    @default(now()) @map("created_at")

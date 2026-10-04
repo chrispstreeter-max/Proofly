@@ -3,6 +3,7 @@ import { AppDistribution, shopifyApp } from "@shopify/shopify-app-react-router/s
 import prisma from "./db.server";
 import { API_VERSION } from "./shopify-api-version";
 import { EncryptedSessionStorage } from "./lib/session-storage.server";
+import { reconcileBilling } from "./lib/billing.server";
 import { upsertShopFromAuth } from "./lib/tenant.server";
 
 // Fail fast: an empty API secret would make every HMAC/JWT check forgeable, so never start without these.
@@ -15,7 +16,9 @@ if (missing.length) throw new Error(`Missing required environment variables: ${m
  * reactivates the tenant from the shop identity the Admin API reports for this session — never from request input.
  */
 export const afterAuth = async ({ session, admin }: { session: { shop: string }; admin: { graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response> } }) => {
-  await upsertShopFromAuth(session.shop, (q, o) => admin.graphql(q, o));
+  const shop = await upsertShopFromAuth(session.shop, (q, o) => admin.graphql(q, o));
+  // Entitlements follow Shopify App Pricing. Best effort: a failure leaves the plan unchanged (never a downgrade).
+  await reconcileBilling(shop.id, (q, o) => admin.graphql(q, o)).catch((e) => console.warn("billing reconcile deferred", shop.id, e));
 };
 
 const shopify = shopifyApp({
