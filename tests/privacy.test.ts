@@ -70,6 +70,19 @@ describe("Review export", () => {
 });
 
 describe("Retention (scheduled maintenance)", () => {
+  // Real-Shopify finding (dev database, 2026-10-04): a shop whose token Shopify refused (404) crashed the whole run, so
+  // no later shop got retention, recounts or projection retries.
+  test("a shop whose Shopify calls fail is skipped and reported; every other shop is still maintained", async () => {
+    await owner.auditLog.deleteMany({ where: { action: "reviews.recounted", shopId: { in: [A.shopId, B.shopId] } } });
+    const broken = { shopId: A.shopId, graphql: async () => { throw new Error("Received an error response (404) from Shopify"); } };
+    const ids = (await owner.shop.findMany({ select: { id: true }, orderBy: { id: "asc" } })).map((x) => x.id);
+    const r = await runMaintenance(new Date(), async (shopId) => (shopId === A.shopId ? broken : shopId === B.shopId ? B.api : null));
+    assert.equal(r.shops, ids.length);
+    assert.equal(r.failedShops, 1);
+    assert.equal(r.recounted, 1);
+    assert.ok(await owner.auditLog.findFirst({ where: { shopId: B.shopId, action: "reviews.recounted" } }), "B was recounted after A failed");
+  });
+
   test("import files: kept while products are unresolved; deleted 30 days after a resolved import finishes", async () => {
     const rows = [["review_id", "product_handle", "rating", "body", "reviewer_name", "review_date"], ["ret-1", SAME_HANDLE, "5", "ok", "Kim", "2025-01-01"], ["ret-2", "no-such-product", "4", "ok", "Lee", "2025-01-02"]];
     const { jobId: open } = await createImport(B.shopId, { csv: csvOf(rows), options: { publishMode: "publish" }, actor: "test" });

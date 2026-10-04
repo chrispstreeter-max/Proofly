@@ -11,4 +11,4 @@ const report = await runMaintenance(new Date(), async (shopId) => {
   return { shopId, graphql: (q, o) => admin.graphql(q, o) };
 });
 console.log(JSON.stringify({ maintenance: report, at: new Date().toISOString() }));
-process.exit(0);
+process.exit(report.failedShops ? 1 : 0); // every other shop was maintained; a non-zero exit lets the scheduler alert
