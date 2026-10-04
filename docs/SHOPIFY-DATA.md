@@ -68,6 +68,26 @@ No IP hash is stored on reviews; rate limiting stays server-side.
 
 If any of these fails, this document is updated and the owner decides before Phase 1.
 
+**Phase 0 results** (2026-10-04, Proofly Test, `scripts/spike-metaobjects.ts`, synthetic `spike-` entries):
+
+| # | Result |
+|---|---|
+| 1 | **Pass.** `fields.product:` filters correctly with a GID or a numeric id, alone or combined with `fields.status:` (20/20, 15/15). **Requires** `capabilities.adminFilterable` on those field definitions. Enabling it on existing entries takes a short indexing delay. |
+| 2 | **Pass.** `sortKey: display_name, reverse: true` returns newest first when the display-name field is a "ISO date \| id" sort key. |
+| 3 | **Pass.** `bulkOperationRunMutation` with `metaobjectUpsert`: 200 entries in 17 s, 0 row errors (about 2–3 h per 100,000, Shopify-side, one bulk operation at a time per shop). |
+| 4 | **Pass.** The definition created by the app without `$app` has `access.admin = PUBLIC_READ_WRITE` (the merchant and other apps can edit) and `storefront = NONE` (works). **It survives uninstall and reinstall:** after the owner uninstalled and reinstalled Proofly Dev, the reinstalled app saw the definition (filterable settings intact), all 230 entries, working filters and working edits. |
+| — | **Caveat:** `metaobjectsCount` reported 35 while 230 entries existed (lagging or approximate). Plan usage must count entries itself, never use that field. |
+
+**Verdict: the design holds.** Every behaviour it depends on works on a real store. Phase 1 may start, with these
+design consequences:
+- product and status fields are created admin-filterable;
+- display name is the sort key;
+- the storefront copy holds at most about 300 reviews per product;
+- no reliance on `metaobjectsCount`.
+
+The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review` definition was left in place.
+| 5 | **Pass.** 120 KB JSON metafield accepted; 130 KB rejected ("maximum size of 131072 bytes"), so about 340 reviews of typical length per product. |
+
 ## 5. Phases (each one commit, every check run, no deploy)
 
 0. **Spike:** a test script against Proofly Test proves items 1–5. Needs the new scopes deployed to the dev app and
