@@ -418,3 +418,12 @@ There is no storage-limited review state.
   and storage limits affect photos only. Nothing is deleted because of a plan.
 - Full detail and verified Shopify facts: [BILLING.md](BILLING.md).
 
+### 11.10 Reply visibility (checkpoint 6 decision)
+Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
+
+- Free does not delete imported replies, and downgrading does not delete replies: they stay stored with their review.
+- Replies become visible again as soon as the merchant's plan includes Replies (no re-import, no duplicate rows).
+- Visibility is decided server-side from the shop's own entitlement (`can(t, "replies")`); no client-supplied plan,
+  parameter or header can change it. Without the entitlement the storefront response is exactly as if the review had
+  no reply (`reply: null`) — no placeholder, no hidden-reply metadata.
+- Reviews keep their own rules: the reply entitlement never makes a held, hidden, rejected or pending review public.

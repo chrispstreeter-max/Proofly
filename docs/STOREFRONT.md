@@ -64,7 +64,8 @@ goes through the shop's own Shopify app proxy:
 - **Photos.** `<MEDIA_PUBLIC_URL>/<opaque-id>-320.webp` / `-1600.webp`. The URL carries only a random asset id, and the
   `/media` resolver serves it only while the photo is public ([ARCHITECTURE.md §11.7](ARCHITECTURE.md)).
 - **Response fields.** The response is an allow-listed JSON shape: rating, title, body, name, date, verified, images
-  (thumb, large, w, h) and reply (body, date). It has no ids, email, customer or order ids, IP hashes, status or flags.
+  (thumb, large, w, h) and reply (body, date). `reply` is included only when the shop's current plan includes Replies;
+  otherwise it is `null`, exactly as for a review without a reply (the stored reply is kept, never deleted). It has no ids, email, customer or order ids, IP hashes, status or flags.
 - **When it's requested.** The widget asks only if the product has reviews (according to the metafield count), only
   once the widget nears the viewport, and once per page or filter change. The Admin API is never called.
 

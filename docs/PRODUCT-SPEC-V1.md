@@ -248,7 +248,7 @@ subscriptions, audit log, imports, analytics) → STOREFRONT EXTENSIONS
   API failures never change the plan. **Implemented in checkpoint 5:** [BILLING.md](BILLING.md).
 - Central entitlement service (`app/lib/entitlements.server.ts`); features not yet built are never exposed regardless
   of plan. Shown today: review display, photo reviews and moderation on every plan; public replies from Starter;
-  priority support from Growth.
+  priority support from Growth. Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
 - **Data retention rule (resolved):** plan limits cap published/displayed reviews and public media, never data
   ownership. Imports are never truncated; excess reviews are preserved as plan-limited and excess media as
   storage-limited, with counts shown to the merchant. **Upgrade:** explicit “Publish eligible reviews” action (no

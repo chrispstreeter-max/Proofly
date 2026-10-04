@@ -160,6 +160,7 @@ dataset used locally lives in a development tenant created by a local-only scrip
   triggered by the `plan_handle` redirect, token exchange, staleness and on demand (no subscription webhooks since
   2026-04-28) → writes `billing_state` + `subscriptions` (row-level security). Partner API optional. See
   [BILLING.md](BILLING.md).
+Checkpoint 6 decision (reply visibility): Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
 - **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review
   requests, verified purchase, each behind a `released` flag) read by `entitlements.server.ts`. All gating calls go through the entitlement layer; no plan names, prices or allowances elsewhere in code (test-enforced).

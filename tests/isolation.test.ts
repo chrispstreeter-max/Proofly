@@ -78,7 +78,7 @@ describe("3. Merchant A cannot read Merchant B's images", () => {
     assert.equal(await asA(({ db }) => db.reviewImage.findFirst({ where: { id: B.imageId } })), null);
   });
   test("storefront: A's product list for B's product never returns B's reviews or image URLs", async () => {
-    const res = await asA((t) => listReviews(t, B.productId, parseListParams(new URL("http://x/?page=1"))));
+    const res = await asA((t) => listReviews(t, B.productId, parseListParams(new URL("http://x/?page=1")), { replies: true }));
     assert.deepEqual(res.reviews, []);
   });
   test("storage keys are namespaced per shop", async () => {

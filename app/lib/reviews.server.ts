@@ -47,9 +47,14 @@ export async function productSummary({ db, shopId }: Tenant, productId: string |
   };
 }
 
-/** Public, allow-listed shape. Never add ids, email, customer/order IDs, IP hashes, status or flags here. */
+/**
+ * Public, allow-listed shape. Never add ids, email, customer/order IDs, IP hashes, status or flags here.
+ * `replies`: whether the shop's CURRENT plan includes the Replies capability (entitlements.server `can(t, "replies")`,
+ * decided server-side). Without it a stored reply — imported, or kept after a downgrade — is omitted exactly as if the
+ * review had none (`reply: null`); it is never deleted and reappears when the plan allows.
+ */
 type ReviewRow = Prisma.ReviewGetPayload<{ include: { images: true; reply: true } }>;
-export function serializeReview(r: ReviewRow) {
+export function serializeReview(r: ReviewRow, { replies }: { replies: boolean }) {
   return {
     rating: r.rating,
     title: r.title,
@@ -61,7 +66,7 @@ export function serializeReview(r: ReviewRow) {
       .filter((i) => i.mediaStatus === "published") // also filtered in the query; never trust a caller's include
       .sort((a, b) => a.position - b.position)
       .map((i) => ({ thumb: mediaUrl(i.publicId, 320), large: mediaUrl(i.publicId, 1600), w: i.width, h: i.height })),
-    reply: r.reply ? { body: r.reply.reply, date: r.reply.createdAt.toISOString().slice(0, 10) } : null,
+    reply: replies && r.reply ? { body: r.reply.reply, date: r.reply.createdAt.toISOString().slice(0, 10) } : null,
   };
 }
 
@@ -69,6 +74,7 @@ export async function listReviews(
   { db, shopId }: Tenant,
   productId: string | null,
   { sort, rating, photos, page }: ReturnType<typeof parseListParams>,
+  visibility: { replies: boolean },
 ) {
   if (!productId) return { reviews: [], page, hasMore: false }; // unknown and other-shop products: identical response
   const where: Prisma.ReviewWhereInput = {
@@ -85,7 +91,7 @@ export async function listReviews(
     take: PAGE_SIZE + 1, // one extra row tells us whether there is another page
     include: { images: { where: PUBLIC_MEDIA }, reply: true },
   });
-  return { reviews: rows.slice(0, PAGE_SIZE).map(serializeReview), page, hasMore: rows.length > PAGE_SIZE };
+  return { reviews: rows.slice(0, PAGE_SIZE).map((r) => serializeReview(r, visibility)), page, hasMore: rows.length > PAGE_SIZE };
 }
 
 /**
