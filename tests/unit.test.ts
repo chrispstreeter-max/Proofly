@@ -4,7 +4,6 @@ import { after, test } from "node:test";
 import { Session } from "@shopify/shopify-api";
 import { decryptSecret, encryptSecret, isEncrypted } from "../app/lib/crypto.server";
 import { signProxyParams } from "../app/lib/devsign.server";
-import { shopPrefix } from "../app/lib/storage.server";
 import { parseIds } from "../app/lib/reviews.server";
 import { isUuid } from "../app/lib/tenant.server";
 import { sessionStorage } from "../app/shopify.server";
@@ -51,5 +50,4 @@ test("dev proxy signer matches Shopify's verifier for keys with underscores and 
 test("small helpers", () => {
   assert.deepEqual(parseIds("1,2,x,2,99999999999999999999999"), [1n, 2n]);
   assert.equal(isUuid("not-a-uuid"), false);
-  assert.equal(shopPrefix("11111111-1111-1111-1111-111111111111"), "s/11111111-1111-1111-1111-111111111111");
 });

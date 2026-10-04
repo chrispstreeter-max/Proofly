@@ -9,7 +9,6 @@ import prisma from "../app/db.server";
 import { moderate, moderationHistory, reviewParam, saveReply } from "../app/lib/moderation.server";
 import { getReview } from "../app/lib/review-store.server";
 import { listReviews, parseListParams, ratingsByHandle } from "../app/lib/reviews.server";
-import { importFileKey } from "../app/lib/storage.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { action as reviewAction, loader as reviewLoader } from "../app/routes/app.reviews.$id";
 import { loader as reviewsListLoader } from "../app/routes/app.reviews._index";
@@ -85,9 +84,11 @@ describe("3. Merchant A cannot read Merchant B's reviews or stored files", () =>
     const shared = await listReviews(A.api, SAME_PRODUCT_ID, parseListParams(new URL("http://x/?page=1")), { replies: true });
     assert.deepEqual(shared.reviews.map((r) => r.body), [A.reviewBody]);
   });
-  test("stored import files are namespaced per shop", () => {
-    for (const m of [A, B]) assert.ok(importFileKey(m.shopId, m.importJobId).startsWith(`s/${m.shopId}/imports/`));
-    assert.notEqual(importFileKey(A.shopId, "same-job"), importFileKey(B.shopId, "same-job"));
+  test("stored import files (CSV in the database) are row-level isolated per shop", async () => {
+    await owner.importFile.createMany({ data: [A, B].map((m) => ({ shopId: m.shopId, importJobId: m.importJobId, data: new Uint8Array(Buffer.from(`csv of ${m.shopId}`)) })), skipDuplicates: true });
+    const seenByA = await withTenant(A.shopId, ({ db }) => db.importFile.findMany({ select: { shopId: true } })); // no shop filter: RLS alone
+    assert.deepEqual([...new Set(seenByA.map((f) => f.shopId))], [A.shopId]);
+    await assert.rejects(withTenant(A.shopId, ({ db }) => db.importFile.create({ data: { shopId: B.shopId, importJobId: B.importJobId, data: new Uint8Array(1) } })));
   });
 });
 

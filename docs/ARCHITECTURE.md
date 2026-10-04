@@ -455,7 +455,7 @@ column; the ZIP reader and the SSRF-safe image fetcher are gone), photo display 
 the public media route and resolver, the public bucket, `sharp`, media allowances and storage-limited admission, the
 "allow photos" setting, and the schema (`review_images`, `MediaStatus`, `products.photo_review_count`,
 `shop_settings.photo_reviews_enabled`, `import_jobs.images_key`; migration `20261010090000_remove_review_photos`).
-Proofly now stores only one kind of file: merchants' import CSVs, privately (`app/lib/storage.server.ts`). Prices and
+Proofly now stores only one kind of file: merchants' import CSVs, privately (since Phase 4 in the database, §11.19). Prices and
 review allowances are unchanged.
 
 ### 11.17 Reviews stored in Shopify (Phase 1, 2026-10-04)
@@ -475,6 +475,14 @@ every change to a product's public reviews: summary + newest public reviews, all
 when entitled ([SHOPIFY-DATA.md §8](SHOPIFY-DATA.md)). The first pages need no request to Proofly; the app proxy
 serves the rest. `app/lib/projection.server.ts` is the only writer; failed writes are retried
 (`products.projection_stale_since`).
+
+### 11.19 Server slimming (Phase 4, 2026-10-04)
+- No file storage: import CSVs live in the `import_files` table (RLS, cascade with their import and shop), the S3
+  client and every `S3_*`/`MEDIA_*` setting are gone, and the orphan sweep is unnecessary (a file can't outlive its
+  import).
+- **RLS stays.** The design doc's Phase 4 proposed dropping it; the validation brief forbids loosening tenant
+  isolation, and what remains in Postgres (shops, settings, product cache, billing, imports, audit log) is still
+  per-shop data, so every table keeps its policy.
 
 ### 11.12 Product matching for imports (locked, checkpoint 6)
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →

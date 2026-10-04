@@ -1,6 +1,7 @@
 // Checkpoint 6: import engine + CSV importer. Numbers refer to the checkpoint's required test list.
 // Offline: Shopify is FakeShopify; tests/no-network.ts blocks real network access; data is fictional.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -12,7 +13,6 @@ import { getPlanStatus, releaseEligibleReviews } from "../app/lib/entitlements.s
 import {
   analyseRecords, cancelImport, createImport, fallbackId, getImport, IMPORT_LIMITS, ImportError, parseReviewDate, runImport, skuLookupFromAdmin,
 } from "../app/lib/import.server";
-import { listObjects } from "../app/lib/storage.server";
 import { reviewHandle, type StoredReview } from "../app/lib/review-store.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { action as importsAction, loader as importsLoader } from "../app/routes/app.imports._index";
@@ -44,7 +44,7 @@ async function importNow(m: Merchant, rows: Record<string, string>[], o: { publi
   return (await getImport(m.shopId, jobId))!;
 }
 const C = (j: { counts: unknown }) => j.counts as Record<string, number>;
-const listObjectsOf = async (m: Merchant) => (await listObjects(`s/${m.shopId}/`)).map((o) => o.key);
+const importFilesOf = async (m: Merchant) => (await owner.importFile.findMany({ where: { shopId: m.shopId }, select: { importJobId: true } })).map((f) => f.importJobId);
 const A = (j: { analysis: unknown }) => j.analysis as Record<string, number> & { problems: { record: number; code: string | null; warnings: string[] }[] };
 const reviewsOf = async (m: Merchant) => (await reviewsIn(m.api)).sort((a, b) => (a.sourceReviewId < b.sourceReviewId ? -1 : 1));
 const publishedIds = async (m: Merchant) => (await reviewsIn(m.api)).filter((r) => r.isPublic).map((r) => r.sourceReviewId).sort();
@@ -381,7 +381,7 @@ describe("Photos are not supported (product decision 2026-10-04)", () => {
     assert.equal(j.status, "completed");
     assert.deepEqual([C(j).imported, C(j).published], [2, 2]);
     assert.ok(!/image|photo|media/i.test(JSON.stringify({ analysis: j.analysis, counts: j.counts })));
-    assert.deepEqual(await listObjectsOf(m), [`s/${m.shopId}/imports/${j.id}/source.csv`]); // only the CSV itself
+    assert.deepEqual(await importFilesOf(m), [j.id]); // only the CSV itself
   });
 });
 
@@ -391,6 +391,20 @@ describe("Limits, privacy, aggregates and the rating cache", () => {
     const m = await emptyShop("aa");
     await assert.rejects(createImport(m.shopId, { csv: Buffer.alloc(IMPORT_LIMITS.csvBytes + 1, 0x61), options: { publishMode: "publish" }, actor: "x" }), (e: unknown) => e instanceof ImportError && e.code === "csv_too_large");
     assert.equal(await owner.importJob.count({ where: { shopId: m.shopId } }), 0);
+  });
+
+  test("a CSV near the 50 MB limit is stored with its import (in the database) and read back byte for byte", async () => {
+    const m = await emptyShop("az");
+    const body = "é".repeat(9_000); // ~18 KB per row, multi-byte
+    const lines = ["review_id,product_id,rating,body,reviewer_name,review_date"];
+    let bytes = 0;
+    for (let i = 0; bytes < IMPORT_LIMITS.csvBytes - 100_000; i++) { const l = `big-${i},9800000000001,5,${body},Pat,2025-01-01`; lines.push(l); bytes += Buffer.byteLength(l) + 1; }
+    const csv = Buffer.from(lines.join("\n"));
+    assert.ok(csv.length > 45 * 1024 * 1024 && csv.length <= IMPORT_LIMITS.csvBytes);
+    const { jobId } = await createImport(m.shopId, { csv, options: { publishMode: "publish" }, actor: "x" });
+    const stored = await owner.importFile.findUniqueOrThrow({ where: { importJobId: jobId } });
+    assert.equal(createHash("sha256").update(stored.data).digest("hex"), createHash("sha256").update(csv).digest("hex"));
+    await owner.importJob.update({ where: { id: jobId }, data: { status: "cancelled" } });
   });
 
   test("49 + 50. no reviewer email and no customer/order identity is ever stored or reported", async () => {

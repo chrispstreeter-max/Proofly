@@ -120,7 +120,8 @@ describe("Title is never an automatic product-matching key", () => {
     assert.equal(stored.status, "unmatched");
     assert.equal((stored.candidates as Cand[]).length, 1);
     const job = await owner.importJob.findUniqueOrThrow({ where: { id: j.id } });
-    assert.ok(job.fileKey && job.fileKey.includes(`/imports/${j.id}/`)); // the source rows stay retrievable privately
+    assert.ok(await owner.importFile.findFirst({ where: { shopId: A.shopId, importJobId: j.id } })); // the source rows stay retrievable privately
+    assert.ok(job.id);
     assert.ok(((job.analysis as { problems: { code: string }[] }).problems).some((p) => p.code === "product_unmatched"));
     const bMug = await owner.product.findFirstOrThrow({ where: { shopId: B.shopId, shopifyProductId: MUG.id } });
     await assert.rejects(importModule.resolveProductMatch(A.shopId, j.id, stored.sourceProductRef, bMug.id, "x"), /Choose one of your store's products/);

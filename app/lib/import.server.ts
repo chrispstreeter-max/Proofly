@@ -6,7 +6,6 @@ import { BULK_MAX_BYTES } from "./bulk.server";
 import { bumpStats, bumpStatsMany, can, releaseEligibleReviews } from "./entitlements.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
 import { createReview, findByHandles, finishBulkCreate, reviewHandle, scanReviews, startBulkCreate, updateReview, type ReviewInput, type ShopApi, type StoredReview } from "./review-store.server";
-import { importFileKey, readPrivate, storePrivateFile } from "./storage.server";
 import { isShopActive, withTenant, type Tenant } from "./tenant.server";
 
 /**
@@ -293,21 +292,20 @@ export async function createImport(shopId: string, input: { csv: Buffer; options
 
   const analysis = summarise(rows, matches);
   const jobId = randomUUID();
-  const fileKey = importFileKey(shopId, jobId);
-  await storePrivateFile(fileKey, input.csv, "text/csv");
 
   return withTenant(shopId, async (t) => {
     const { db } = t;
     await lockImports(t);
     const busy = await db.importJob.findFirst({ where: { shopId, status: { in: ACTIVE }, OR: [{ status: "queued" }, { heartbeatAt: { gt: new Date(Date.now() - STALE_MS) } }] } });
     if (busy) throw new ImportError("import_in_progress", "Another import is already in progress for this store.");
-    await db.importJob.create({ data: { id: jobId, shopId, source: options.source!, status: "queued", options: options as object, fileKey, analysis: analysis as object, totalRows: rows.length, actor: input.actor } });
+    await db.importJob.create({ data: { id: jobId, shopId, source: options.source!, status: "queued", options: options as object, analysis: analysis as object, totalRows: rows.length, actor: input.actor } });
+    await db.importFile.create({ data: { shopId, importJobId: jobId, data: new Uint8Array(input.csv) } });
     for (const [ref, m] of matches) {
       await db.importProductMatch.create({ data: { shopId, importJobId: jobId, sourceProductRef: ref, status: m.status, method: m.method, productId: m.productId, reason: m.reason, candidates: m.candidates, rows: rows.filter((r) => r.ref === ref).length } });
     }
     await db.auditLog.create({ data: { shopId, actor: input.actor, action: "import.created", entity: "import", entityId: jobId, details: { totalRows: rows.length, validRows: analysis.validRows } } });
     return { jobId, analysis };
-  });
+  }, { timeoutMs: 120_000 }); // the CSV (≤ 50 MB) is stored with the job, in the same transaction
 }
 
 function summarise(rows: Analysed[], matches: Map<string, MatchResult>) {
@@ -363,7 +361,7 @@ export async function runImport(api: ShopApi, jobId: string, opts: RunOptions = 
 
   try {
     const options = job.options as unknown as ImportOptions;
-    const csv = await readPrivate(job.fileKey!);
+    const csv = await importFile(shopId, jobId);
     if (!csv) throw new ImportError("file_missing", "The uploaded file is no longer available.");
     const { rows } = analyseRecords(csv.toString("utf8"), options, +job.createdAt);
     const { matches, shopifyIds } = await withTenant(shopId, async ({ db }) => ({
@@ -620,12 +618,17 @@ export async function resolveProductMatch(shopId: string, jobId: string, sourceP
   });
 }
 
+/** The import's uploaded CSV (this shop's only), or null once retention deleted it. */
+async function importFile(shopId: string, jobId: string) {
+  const f = await withTenant(shopId, ({ db }) => db.importFile.findFirst({ where: { shopId, importJobId: jobId }, select: { data: true } }));
+  return f ? Buffer.from(f.data) : null;
+}
+
 /** Re-computes a queued job's analysis after manual matching (so counts and the Start button reflect it). */
 export async function refreshAnalysis(shopId: string, jobId: string) {
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
-  if (!job?.fileKey) return null;
-  const csv = await readPrivate(job.fileKey);
-  if (!csv) return null;
+  const csv = job && await importFile(shopId, jobId);
+  if (!job || !csv) return null;
   const { rows } = analyseRecords(csv.toString("utf8"), job.options as unknown as ImportOptions, +job.createdAt);
   const stored = await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }));
   const matches = new Map(stored.map((m) => [m.sourceProductRef, { status: m.status as MatchResult["status"], method: m.method as MatchResult["method"], productId: m.productId, reason: m.reason, candidates: m.candidates as MatchResult["candidates"] }]));
@@ -642,7 +645,7 @@ export async function refreshAnalysis(shopId: string, jobId: string) {
 export async function reimportFromJob(shopId: string, jobId: string, actor: string, skuLookup: SkuLookup | null = null) {
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
   if (!job) throw new ImportError("not_found", "Import not found.");
-  const csv = job.fileKey ? await readPrivate(job.fileKey) : null;
+  const csv = await importFile(shopId, jobId);
   if (!csv) throw new ImportError("file_missing", "The original file is no longer kept (import files are deleted 30 days after an import finishes). Upload it again — rows already imported are skipped.");
   return createImport(shopId, { csv, options: job.options as unknown as ImportOptions, actor, skuLookup });
 }
@@ -650,9 +653,8 @@ export async function reimportFromJob(shopId: string, jobId: string, actor: stri
 /** Every row that was not (fully) imported, with a plain-English reason — as CSV. Never includes review text. */
 export async function importProblemReport(shopId: string, jobId: string) {
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
-  if (!job?.fileKey) return null;
-  const csv = await readPrivate(job.fileKey);
-  if (!csv) return null;
+  const csv = job && await importFile(shopId, jobId);
+  if (!job || !csv) return null;
   const { rows } = analyseRecords(csv.toString("utf8"), job.options as unknown as ImportOptions, +job.createdAt);
   const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
   const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);

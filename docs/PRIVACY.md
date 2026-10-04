@@ -11,7 +11,7 @@ no orders and no customers, and the storefront form asks for no email address.
 | Products (id, handle, title, status) | `products` | No | `shop/redact` (deleted products: soft-deleted) |
 | Reviews and replies: rating, title, body, display name, date, status, reply | **the merchant's own Shopify store** (metaobject type `proofly_review`, merchant-owned, no storefront access) | Reviewer's chosen display name | The merchant's data in their store: it stays when Proofly is uninstalled; the merchant can hide, reject or delete reviews |
 | Review counts (cache) | `shop_settings.review_stats` | No | `shop/redact` |
-| Import source files (CSV) | private storage `s/<shop>/imports/<job>/` | Whatever the merchant's export contains | **30 days after the import finishes**, unless products are still unresolved (see below) |
+| Import source files (CSV) | database table `import_files` (RLS, never served) | Whatever the merchant's export contains | **30 days after the import finishes**, unless products are still unresolved (see below) |
 | Import analysis, match decisions, problem summaries | `import_jobs`, `import_product_matches`, `product_match_confirmations` | No review text | `shop/redact` |
 | Audit log (moderation, settings, exports, compliance events) | `audit_log` | No (staff ids, counts; never a customer id) | `shop/redact` |
 | Rate-limit counters | `rate_limits` | No (SHA-256 of shop + IP hash) | 1 day |
@@ -28,8 +28,8 @@ Plan limits never delete anything (ARCHITECTURE §6.3). Retention below is the o
   the file is kept until the merchant resolves them (or the shop is redacted). The import page then says the file was
   deleted; imported reviews are unaffected, and re-uploading is safe (rows already imported are skipped).
 - **Stalled imports** (no heartbeat for 10 minutes) are marked failed with a resume prompt — never restarted silently.
-- **Orphaned files** — anything under the shop's storage prefix that no import references, older than 24 hours
-  (e.g. an upload whose import was refused) — are deleted.
+- **No orphaned files:** a file is stored in the same transaction as its import and belongs to it (a refused upload
+  stores nothing); it is deleted with its import or shop. Proofly uses no file storage outside the database.
 - **Rate-limit counters** older than a day are deleted.
 
 ## Compliance webhooks
@@ -42,7 +42,7 @@ for, and nothing outside it is read or changed.
 - `customers/redact` — nothing to unlink; recorded the same way. Review text and display name are the merchant's
   published content in their own store and carry no contact data.
 - `shop/redact` (48 hours after uninstall) — if the shop is still uninstalled, **everything Proofly holds** is deleted:
-  every stored file under its prefix, its sessions, and the `shops` row, which cascades through every Proofly table.
+  its sessions and the `shops` row, which cascades through every Proofly table (import files included).
   The reviews themselves are the merchant's data in their own Shopify store and stay with the store. A `shop_deletions` record keeps only a SHA-256 of the domain and row counts as proof of deletion; the app role
   can insert into it but not change or delete it. A reinstalled shop is not deleted; redelivery is a no-op.
 

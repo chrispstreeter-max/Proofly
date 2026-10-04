@@ -225,7 +225,6 @@ model ImportJob {
   status            String    @default("queued")
   /// publishMode, column mapping — never a shop or tenant id
   options           Json      @default("{}")
-  fileKey           String?   @map("file_key")
   /// validation + matching result computed before any review is written
   analysis          Json      @default("{}")
   counts            Json      @default("{}")
@@ -247,6 +246,7 @@ model ImportJob {
 
   shop    Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
   matches ImportProductMatch[]
+  file    ImportFile?
 
   @@unique([shopId, id])
   @@index([shopId, createdAt(sort: Desc)])
@@ -256,6 +256,21 @@ model ImportJob {
 /// How one source product reference in an import resolved: matched (by id / handle / sku), unmatched or ambiguous.
 /// Title is never an automatic key: exact-title products appear only in `candidates` as suggestions. Manual
 /// confirmation (checkpoint 8) will set product_id + method = manual.
+/// An import's uploaded CSV, kept privately in the database while the import may need it (run/resume, unresolved
+/// products, problem report). Deleted by the 30-day retention (app/lib/maintenance.server.ts) or with the shop.
+/// No route ever serves it.
+model ImportFile {
+  importJobId String   @id @map("import_job_id") @db.Uuid
+  shopId      String   @map("shop_id") @db.Uuid
+  data        Bytes
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  importJob ImportJob @relation(fields: [shopId, importJobId], references: [shopId, id], onDelete: Cascade)
+
+  @@unique([shopId, importJobId])
+  @@map("import_files")
+}
+
 model ImportProductMatch {
   id               String   @id @default(uuid()) @db.Uuid
   shopId           String   @map("shop_id") @db.Uuid

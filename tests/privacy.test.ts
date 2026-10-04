@@ -1,16 +1,13 @@
 // Checkpoint 9: privacy, retention and export — review export (CSV), shop/redact deletion, compliance webhooks,
-// import-file retention, orphan storage sweep, stale imports, rate-limit purge. Offline; network guard.
+// import-file retention, import files only in the database, stale imports, rate-limit purge. Offline; network guard.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, utimes, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { exportReviewsCsv } from "../app/lib/export.server";
 import { createImport, getImport, resolveProductMatch, runImport } from "../app/lib/import.server";
 import { runMaintenance } from "../app/lib/maintenance.server";
-import { localDir, readPrivate, storePrivateFile } from "../app/lib/storage.server";
 import { markUninstalled, redactShop, withTenant } from "../app/lib/tenant.server";
 import { loader as exportLoader } from "../app/routes/app.reviews.export";
 import { action as complianceWebhook } from "../app/routes/webhooks.compliance";
@@ -24,13 +21,8 @@ before(async () => {
 });
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
-const file = (key: string) => path.join(localDir(), "private", key);
-async function putFile(key: string, ageMs = 0) {
-  await mkdir(path.dirname(file(key)), { recursive: true });
-  await writeFile(file(key), "x");
-  if (ageMs) { const t = new Date(Date.now() - ageMs); await utimes(file(key), t, t); }
-}
-const exists = (key: string) => import("node:fs/promises").then((fs) => fs.access(file(key)).then(() => true, () => false));
+/** Whether an import's uploaded CSV is still stored (in the database — Proofly has no file storage). */
+const hasFile = async (jobId: string) => !!(await owner.importFile.findUnique({ where: { importJobId: jobId }, select: { importJobId: true } }));
 const csvOf = (rows: string[][]) => Buffer.from(rows.map((r) => r.join(",")).join("\n"));
 const DAY = 86_400_000;
 
@@ -87,35 +79,30 @@ describe("Retention (scheduled maintenance)", () => {
     const { jobId: recent } = await createImport(B.shopId, { csv: csvOf(rows.slice(0, 2).map((r, i) => (i ? ["ret-4", ...r.slice(1)] : r))), options: { publishMode: "publish" }, actor: "test" });
     await runImport(B.api, recent);
     await owner.importJob.updateMany({ where: { id: { in: [open, clean] } }, data: { finishedAt: new Date(Date.now() - 31 * DAY) } });
-    const keyOf = async (id: string) => (await owner.importJob.findUniqueOrThrow({ where: { id } })).fileKey!;
-    const [openKey, cleanKey, recentKey] = [await keyOf(open), await keyOf(clean), await keyOf(recent)];
+    assert.deepEqual([await hasFile(open), await hasFile(clean), await hasFile(recent)], [true, true, true]);
 
-    await runMaintenance();
+    const r = await runMaintenance();
+    assert.equal(r.importFilesDeleted, 1);
     const after1 = await owner.importJob.findUniqueOrThrow({ where: { id: clean } });
-    assert.deepEqual([after1.fileKey, !!after1.filesDeletedAt], [null, true]);
-    assert.equal(await readPrivate(cleanKey), null);
-    assert.ok(await readPrivate(openKey), "unresolved product: rows exist only in the file — kept");
-    assert.ok(await readPrivate(recentKey), "finished less than 30 days ago — kept");
+    assert.deepEqual([await hasFile(clean), !!after1.filesDeletedAt], [false, true]);
+    assert.ok(await hasFile(open), "unresolved product: rows exist only in the file — kept");
+    assert.ok(await hasFile(recent), "finished less than 30 days ago — kept");
     assert.equal((await reviewsIn(B.api)).filter((r) => ["ret-1", "ret-3"].includes(r.sourceReviewId)).length, 2, "reviews are never touched");
 
     const ref = (await owner.importProductMatch.findFirstOrThrow({ where: { importJobId: open, status: "unmatched" } })).sourceProductRef;
     await resolveProductMatch(B.shopId, open, ref, null, "test"); // merchant skips → nothing left to resolve
     await runMaintenance();
-    assert.equal(await readPrivate(openKey), null);
+    assert.equal(await hasFile(open), false);
     const page = (await getImport(B.shopId, open))!;
     assert.ok(page.filesDeletedAt);
   });
 
-  test("orphan sweep: unreferenced objects older than 24 h are deleted; referenced or fresh ones are kept", async () => {
+  test("no orphan files exist: a file belongs to its import (same shop) and goes with it; no file storage is used", async () => {
     const { jobId } = await createImport(A.shopId, { csv: csvOf([["review_id", "product_handle", "rating", "body", "reviewer_name", "review_date"], ["orph-1", SAME_HANDLE, "5", "ok", "Kim", "2025-01-01"]]), options: { publishMode: "publish" }, actor: "test" });
-    const referenced = (await owner.importJob.findUniqueOrThrow({ where: { id: jobId } })).fileKey!;
-    await utimes(file(referenced), new Date(Date.now() - 3 * DAY), new Date(Date.now() - 3 * DAY));
-    const oldOrphan = `s/${A.shopId}/imports/gone-1/source.csv`, freshOrphan = `s/${A.shopId}/imports/gone-2/source.csv`;
-    await putFile(oldOrphan, 2 * DAY);
-    await putFile(freshOrphan);
-    const r = await runMaintenance();
-    assert.ok(r.orphanObjectsDeleted >= 1);
-    assert.deepEqual([await exists(referenced), await exists(oldOrphan), await exists(freshOrphan)], [true, false, true]);
+    assert.ok(await hasFile(jobId));
+    // Without its import (or with another shop's import) a file can't exist.
+    await assert.rejects(owner.importFile.create({ data: { shopId: A.shopId, importJobId: "00000000-0000-4000-8000-000000000000", data: new Uint8Array(1) } }));
+    await assert.rejects(owner.importFile.create({ data: { shopId: B.shopId, importJobId: A.importJobId, data: new Uint8Array(1) } }));
     await owner.importJob.update({ where: { id: jobId }, data: { status: "cancelled" } });
   });
 
@@ -167,8 +154,7 @@ describe("shop/redact — permanent deletion", () => {
   });
 
   test("after uninstall: every row and stored object of the shop is deleted; the other shop is untouched", async () => {
-    await storePrivateFile(`s/${A.shopId}/imports/x/source.csv`, Buffer.from("a"), "text/csv");
-    await putFile(`s/${B.shopId}/imports/keep/source.csv`);
+    await owner.importFile.createMany({ data: [A, B].map((m) => ({ shopId: m.shopId, importJobId: m.importJobId, data: new Uint8Array(Buffer.from("a")) })), skipDuplicates: true });
     const bRows = (await reviewsIn(B.api)).length;
     await markUninstalled(A.domain);
     const res = await complianceWebhook(args<ActionFunctionArgs>(webhookRequest(A.domain, "shop/redact", "/webhooks/compliance", { shop_domain: A.domain })));
@@ -181,12 +167,12 @@ describe("shop/redact — permanent deletion", () => {
     assert.ok(left.length >= 6);
     assert.deepEqual(left.filter((x) => x.n > 0n), []);
     assert.equal(await owner.session.count({ where: { shop: A.domain } }), 0);
-    assert.equal(await exists(`s/${A.shopId}/imports/x/source.csv`), false);
+    assert.equal(await hasFile(A.importJobId), false); // its import files too (counted in the loop above)
 
     assert.equal((await reviewsIn(B.api)).length, bRows);
     // The merchant's reviews are its data in its own Shopify store: shop/redact deletes Proofly's records, not the store's.
     assert.equal((await reviewsIn(A.api)).length > 0, true);
-    assert.equal(await exists(`s/${B.shopId}/imports/keep/source.csv`), true);
+    assert.equal(await hasFile(B.importJobId), true);
 
     const del = await owner.shopDeletion.findFirstOrThrow({ where: { domainHash: createHash("sha256").update(A.domain).digest("hex") } });
     assert.ok(!JSON.stringify(del).includes(A.domain), "the deletion record holds no shop domain");

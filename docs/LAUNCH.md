@@ -20,10 +20,8 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
   - `DATABASE_URL` (the `proofly_app` role).
   - `IP_HASH_SALT` (at least 32 characters).
   - `SHOPIFY_APP_HANDLE`.
-  - `MEDIA_DRIVER=s3`, with a private `S3_BUCKET_PRIVATE` bucket (import CSVs only), plus `S3_ACCESS_KEY_ID` and
-    `S3_SECRET_ACCESS_KEY`.
   - An `https` app URL.
-- Optional: `S3_ENDPOINT` and `S3_REGION`, for R2 or another S3-compatible store.
+- No file storage: Proofly uses no S3/R2 bucket (import CSVs are kept in the database while needed).
 
 **Database:** Postgres 15 or later.
 1. Create the schema owner, which runs migrations.
@@ -32,10 +30,9 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
 3. Run migrations. They enable RLS, add the composite foreign keys, and make `shop_deletions` insert-only for the app
    role.
 
-**Storage:**
-- One private bucket, never public. It holds only merchants' import CSVs. Proofly has no review photos and serves no
-  stored file to anyone.
-- Do not add lifecycle rules that delete objects: retention is done by `npm run maintenance`.
+**Storage:** none besides Postgres. Merchants' import CSVs are stored in the `import_files` table (RLS, deleted by
+`npm run maintenance` 30 days after an import finishes, and with the shop on `shop/redact`). Size the database for up
+to 50 MB per import in progress.
 
 **Partner Dashboard:**
 - Link the configuration with `shopify app config link`, which fills in `client_id` and the URLs.
@@ -118,7 +115,7 @@ live merchant store.
    through Shopify's proxy.
 8. **Webhooks:** `app/uninstalled`, `app/scopes_update`, the compliance topics (including `shop/redact` timing), and
    HMAC verification with the real secret.
-9. **Storage:** the private S3 or R2 bucket for import CSVs, and maintenance list and delete against it.
+9. **Import files:** a large CSV (tens of MB) stored and read back from managed Postgres within the request limits.
 10. **Performance:** Lighthouse and Web Vitals on a product page with the widget, within the storefront budget.
 11. **Deployment:** building the container image (Docker was not available locally), migrations against managed
     Postgres with the `proofly_app` role, `/healthz` on the host, and the hourly scheduler.

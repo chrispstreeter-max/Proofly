@@ -1,7 +1,6 @@
 import type { Prisma, Shop } from "@prisma/client";
 import { createHash } from "node:crypto";
 import prisma from "../db.server";
-import { deleteShopObjects } from "./storage.server";
 import { DEFAULT_PROXY_PATH, publishAppMetafields, publishProxyPath, STOREFRONT_SETTINGS_METAFIELD } from "./proxy-path.server";
 
 /**
@@ -27,7 +26,7 @@ export const isUuid = (s: string | null | undefined): s is string => !!s && UUID
 
 export async function withTenant<T>(shopId: string, fn: (t: Tenant) => Promise<T>, opts: { timeoutMs?: number } = {}): Promise<T> {
   if (!isUuid(shopId)) throw new Error("withTenant: invalid shop id");
-  // ponytail: one interactive transaction per tenant operation; move long network work (S3, Shopify API) outside
+  // ponytail: one interactive transaction per tenant operation; move long network work (Shopify API) outside
   // the transaction if connection-pool pressure shows up.
   return prisma.$transaction(
     async (db) => {
@@ -138,14 +137,14 @@ export async function redactShop(domain: string) {
     reviewsInStore: Number(((await db.shopSettings.findUnique({ where: { shopId: shop.id }, select: { reviewStats: true } }))?.reviewStats as { total?: number } | null)?.total ?? 0),
     products: await db.product.count({ where: { shopId: shop.id } }),
     imports: await db.importJob.count({ where: { shopId: shop.id } }),
+    importFiles: await db.importFile.count({ where: { shopId: shop.id } }),
   }));
-  const objects = await deleteShopObjects(shop.id);
   await prisma.$transaction([
     prisma.session.deleteMany({ where: { shop: shop.shopDomain } }),
     prisma.shop.delete({ where: { id: shop.id } }), // cascades through every merchant table
   ]);
-  await prisma.shopDeletion.create({ data: { domainHash: createHash("sha256").update(shop.shopDomain).digest("hex"), details: { ...counts, objects } } });
-  return { deleted: true as const, counts, objects };
+  await prisma.shopDeletion.create({ data: { domainHash: createHash("sha256").update(shop.shopDomain).digest("hex"), details: counts } });
+  return { deleted: true as const, counts };
 }
 
 /** Every shop id (maintenance only — iterates tenants, never reads their data outside withTenant). */

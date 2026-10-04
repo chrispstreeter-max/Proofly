@@ -136,7 +136,7 @@ The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review
 - **Still open:**
   - ~~Phase 2: the storefront reads from a product JSON projection~~ — built, §8.
   - ~~Phase 3: bulk mutations for large imports~~ — built, §9.
-  - Phase 4: remove the remaining server-side caches where possible.
+  - ~~Phase 4: server slimming~~ — built, §10.
 
 ## 8. Phase 2 — built (2026-10-04)
 
@@ -200,3 +200,16 @@ right after approval.
   with one review already public: 99 published (oldest first), 171 plan-limited, 30 pending; the product aggregate,
   the storefront projection (99 reviews, complete) and the cached counts all matched a full recount from Shopify.
   Large releases (> 100) in bulk are covered offline only so far.
+
+## 10. Phase 4 — built (2026-10-04)
+
+- **No file storage.** Import CSVs are stored in the `import_files` table in the same transaction as their import
+  (RLS; cascade with the import and the shop; 30-day retention unchanged). The S3 client dependency, `storage.server`,
+  the `S3_*`/`MEDIA_*` settings and the orphan sweep are gone; production needs only Postgres.
+- **Kept on purpose:**
+  - **RLS** on every remaining table (the validation brief forbids loosening tenant isolation; what remains is still
+    per-shop data).
+  - The **product cache** (proxy product lookups, card ratings by handle, rating ownership, projection retries) and the
+    **review-count cache** (plan usage) — small, and recounted daily from Shopify.
+- Server state is now: sessions (encrypted tokens), shops and settings, product cache, billing cache, import jobs
+  with their CSV while needed, audit log, rate limits, deletion records.
