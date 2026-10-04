@@ -10,6 +10,7 @@ import { reviewParam } from "../app/lib/moderation.server";
 import { getReview } from "../app/lib/review-store.server";
 import { publishStorefrontSettings } from "../app/lib/tenant.server";
 import { loader as productsLoader } from "../app/routes/app.products";
+import { loader as reviewDetailLoader } from "../app/routes/app.reviews.$id";
 import { action as bulkAction, loader as reviewsLoader } from "../app/routes/app.reviews._index";
 import { action as settingsAction, loader as settingsLoader } from "../app/routes/app.settings";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
@@ -76,6 +77,19 @@ describe("Bulk moderation", () => {
       assert.match((res.data as { message: string }).message, /Choose an action|Select at least one/);
     }
     assert.ok(await getReview(A.api, A.reviewId));
+  });
+});
+
+describe("Review detail", () => {
+  // Real-Shopify finding (Proofly Test admin, 2026-10-04): a storefront submission's history entry has no details, and
+  // the detail page crashed on it — every review a shopper submitted failed to open in the admin.
+  test("a review submitted on the storefront opens, with its submission in the history", async () => {
+    assert.equal((await submit(A, "MA", { body: "Detail page check." })).status, 201);
+    const r = (await reviewsIn(A.api)).find((x) => x.body === "Detail page check.")!;
+    const res = await run(() => reviewDetailLoader(args<LoaderFunctionArgs>(adminRequest(A.domain, `/app/reviews/${reviewParam(r.id)}`), { id: reviewParam(r.id) })));
+    const d = res.data as { review: { body: string }; history: { action: string }[] };
+    assert.equal(d.review.body, "Detail page check.");
+    assert.deepEqual(d.history.map((h) => h.action), ["review.submitted"]);
   });
 });
 

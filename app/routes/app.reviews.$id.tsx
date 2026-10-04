@@ -36,7 +36,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
     canReply, repliesFrom: REPLIES_FROM,
     history: history.map((h) => {
-      const d = h.details as { from?: string; to?: string };
+      const d = (h.details ?? {}) as { from?: string; to?: string }; // e.g. review.submitted carries no details
       return { at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: `${h.action}${d.from ? ` (${d.from} → ${d.to})` : ""}` };
     }),
   };
