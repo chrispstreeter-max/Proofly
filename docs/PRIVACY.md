@@ -1,6 +1,6 @@
 # Proofly — Privacy, retention and data export (Checkpoint 9)
 
-Proofly stores the minimum needed to show product reviews. It has no review photos (product decision, 2026-10-04): shoppers cannot upload them and imports ignore photo columns. V1 requests only `read_products,write_products`; it reads
+Proofly stores the minimum needed to show product reviews. It has no review photos (product decision, 2026-10-04): shoppers cannot upload them and imports ignore photo columns. V1 requests only product and custom-data (metaobject) scopes; it reads
 no orders and no customers, and the storefront form asks for no email address.
 
 ## What Proofly stores
@@ -9,10 +9,8 @@ no orders and no customers, and the storefront form asks for no email address.
 |---|---|---|---|
 | Shop identity, encrypted offline access token | `shops`, `Session` | No (merchant's store) | `shop/redact` |
 | Products (id, handle, title, status) | `products` | No | `shop/redact` (deleted products: soft-deleted) |
-| Reviews: rating, title, body, display name, date, status | `reviews` | Reviewer's chosen display name | `shop/redact` (the merchant can hide or reject a review at any time) |
-| Hashed submitter IP (salted SHA-256, abuse control) | `reviews.submitter_ip_hash` | Pseudonymous | `customers/redact` for a linked customer, or `shop/redact` |
-| Shopify customer id | `reviews.shopify_customer_id` | Yes — never set by V1; only legacy/V1.1 | `customers/redact` (unlinked) or `shop/redact` |
-| Replies | `review_replies` | No | Reply removed by the merchant, or `shop/redact` |
+| Reviews and replies: rating, title, body, display name, date, status, reply | **the merchant's own Shopify store** (metaobject type `proofly_review`, merchant-owned, no storefront access) | Reviewer's chosen display name | The merchant's data in their store: it stays when Proofly is uninstalled; the merchant can hide, reject or delete reviews |
+| Review counts (cache) | `shop_settings.review_stats` | No | `shop/redact` |
 | Import source files (CSV) | private storage `s/<shop>/imports/<job>/` | Whatever the merchant's export contains | **30 days after the import finishes**, unless products are still unresolved (see below) |
 | Import analysis, match decisions, problem summaries | `import_jobs`, `import_product_matches`, `product_match_confirmations` | No review text | `shop/redact` |
 | Audit log (moderation, settings, exports, compliance events) | `audit_log` | No (staff ids, counts; never a customer id) | `shop/redact` |
@@ -39,13 +37,13 @@ Plan limits never delete anything (ARCHITECTURE §6.3). Retention below is the o
 All three arrive at `/webhooks/compliance`, HMAC-verified by `authenticate.webhook`; the shop is the one Shopify signed
 for, and nothing outside it is read or changed.
 
-- `customers/data_request` — V1 stores no customer identity. The audit log records how many reviews are linked to that
-  customer id (normally 0) — never the id itself. The merchant answers the request from that.
-- `customers/redact` — reviews linked to the customer id are unlinked (`shopify_customer_id` and IP hash cleared). The
-  review text and display name stay: they are the merchant's published content and carry no contact data.
-- `shop/redact` (48 hours after uninstall) — if the shop is still uninstalled, **everything** is deleted: every stored
-  object under its prefix (both buckets), its sessions, and the `shops` row, which cascades through every merchant
-  table. A `shop_deletions` record keeps only a SHA-256 of the domain and row counts as proof of deletion; the app role
+- `customers/data_request` — Proofly stores no customer identity anywhere (reviews carry only the display name the
+  reviewer typed: no customer id, email, order or IP). The request is recorded in the audit log without the id.
+- `customers/redact` — nothing to unlink; recorded the same way. Review text and display name are the merchant's
+  published content in their own store and carry no contact data.
+- `shop/redact` (48 hours after uninstall) — if the shop is still uninstalled, **everything Proofly holds** is deleted:
+  every stored file under its prefix, its sessions, and the `shops` row, which cascades through every Proofly table.
+  The reviews themselves are the merchant's data in their own Shopify store and stay with the store. A `shop_deletions` record keeps only a SHA-256 of the domain and row counts as proof of deletion; the app role
   can insert into it but not change or delete it. A reinstalled shop is not deleted; redelivery is a no-op.
 
 ## Export

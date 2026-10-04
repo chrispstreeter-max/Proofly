@@ -66,7 +66,10 @@ goes through the shop's own Shopify app proxy:
 
 - **Tenant.** Shopify signs each request (HMAC). The tenant is the signed shop plus its stored session, and the signed
   `path_prefix` must be that shop's configured proxy path. An unknown or uninstalled shop, or a wrong path, gets a 404.
-- **Data.** Postgres returns 10 public reviews per page, never for deleted products.
+- **Data.** 10 public reviews per page, read from the shop's own Shopify store through its offline session
+  (`app/lib/review-store.server.ts`), never for deleted products. "Recent" pages through Shopify newest first;
+  rating sorts read up to 2,000 of the product's public reviews. A review changed outside Proofly (in Shopify admin)
+  is never shown until it is approved again in Proofly.
 - **Response fields.** The response is an allow-listed JSON shape: rating, title, body, name, date, verified and reply
   (body, date). `reply` is included only when the shop's current plan includes Replies;
   otherwise it is `null`, exactly as for a review without a reply (the stored reply is kept, never deleted). It has no ids, email, customer or order ids, IP hashes, status or flags.
@@ -89,13 +92,7 @@ aggregates, metafields and card ratings. The following never reach the storefron
 - Card stars stay absent rather than showing wrong data.
 - Products with no reviews show an empty state and make no request.
 
-## Local preview
+## Preview
 
-```bash
-npm run dev:seed      # fictional dev shop (DEV_SHOP_DOMAIN) with every review state; local *_dev DB only
-npx react-router dev  # then open /dev/preview[?handle=…]
-```
-
-The preview renders the real block Liquid with liquidjs and simulates the metafields (rating and the proxy-path
-app metafield) from the database. Locally
-signed app-proxy requests exercise the real HMAC verification.
+There is no local storefront simulation: reviews live in Shopify, so the blocks are previewed on a development store
+(Theme Editor), and `tests/storefront.test.ts` renders the real block Liquid with liquidjs.

@@ -14,7 +14,7 @@ import { localDir, readPrivate, storePrivateFile } from "../app/lib/storage.serv
 import { markUninstalled, redactShop, withTenant } from "../app/lib/tenant.server";
 import { loader as exportLoader } from "../app/routes/app.reviews.export";
 import { action as complianceWebhook } from "../app/routes/webhooks.compliance";
-import { adminRequest, args, installMerchant, owner, resetDb, run, SAME_HANDLE, webhookRequest, type Merchant } from "./helpers";
+import { adminRequest, args, installMerchant, owner, resetDb, reviewsIn, run, SAME_HANDLE, SAME_PRODUCT_ID, seedReview, storeOf, webhookRequest, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 before(async () => {
@@ -36,13 +36,13 @@ const DAY = 86_400_000;
 
 describe("Review export", () => {
   test("all of the shop's reviews, any status, with reply and plan-limit flag; formula cells neutralised", async () => {
-    await withTenant(A.shopId, ({ db, shopId }) => db.review.create({ data: {
-      shopId, productId: A.productId, source: "csv", sourceReviewId: "exp-2", rating: 2, title: "=HYPERLINK(\"http://x\")", body: "+cmd, \"quoted\"\nline",
-      reviewerName: "@Kim", reviewDate: new Date("2025-02-01T00:00:00Z"), status: "hidden", holdReason: "plan_limit",
-    } }));
-    const csv = await withTenant(A.shopId, (t) => exportReviewsCsv(t));
+    await seedReview(A.api, {
+      productId: SAME_PRODUCT_ID, source: "csv", sourceReviewId: "exp-2", rating: 2, title: "=HYPERLINK(\"http://x\")", body: "+cmd, \"quoted\"\nline",
+      reviewerName: "@Kim", reviewDate: new Date("2025-02-01T00:00:00Z"), status: "hidden", held: true,
+    });
+    const csv = await exportReviewsCsv(A.api);
     const lines = csv.trim().split("\n");
-    assert.equal(lines[0], "review_id,product_id,product_handle,product_title,rating,title,body,reviewer_name,review_date,status,plan_limited,reply,source,imported,verified_purchase");
+    assert.equal(lines[0], "review_id,product_id,product_handle,product_title,rating,title,body,reviewer_name,review_date,status,plan_limited,reply,source,imported,verified_purchase,edited_outside_proofly");
     assert.match(csv, /Reply from store PA/);
     assert.match(csv, /exp-2,9000000000001,fixture-product,.*,2,"'=HYPERLINK\(""http:\/\/x""\)","'\+cmd, ""quoted""\nline",'@Kim,2025-02-01T00:00:00.000Z,hidden,yes,/);
     assert.doesNotMatch(csv, /PB/); // never another shop's data
@@ -67,13 +67,13 @@ describe("Review export", () => {
   });
 
   test("the export re-imports into the same store without duplicating reviews from that source", async () => {
-    const csv = await withTenant(A.shopId, (t) => exportReviewsCsv(t));
-    const before = await owner.review.count({ where: { shopId: A.shopId } });
+    const csv = await exportReviewsCsv(A.api);
+    const before = (await reviewsIn(A.api)).length;
     const { jobId } = await createImport(A.shopId, { csv: Buffer.from(csv), options: { publishMode: "publish" }, actor: "test" });
-    await runImport(A.shopId, jobId);
+    await runImport(A.api, jobId);
     const j = (await getImport(A.shopId, jobId))!;
     assert.equal((j.counts as { imported: number }).imported, 0);
-    assert.equal(await owner.review.count({ where: { shopId: A.shopId } }), before);
+    assert.equal((await reviewsIn(A.api)).length, before);
   });
 });
 
@@ -81,11 +81,11 @@ describe("Retention (scheduled maintenance)", () => {
   test("import files: kept while products are unresolved; deleted 30 days after a resolved import finishes", async () => {
     const rows = [["review_id", "product_handle", "rating", "body", "reviewer_name", "review_date"], ["ret-1", SAME_HANDLE, "5", "ok", "Kim", "2025-01-01"], ["ret-2", "no-such-product", "4", "ok", "Lee", "2025-01-02"]];
     const { jobId: open } = await createImport(B.shopId, { csv: csvOf(rows), options: { publishMode: "publish" }, actor: "test" });
-    await runImport(B.shopId, open);
+    await runImport(B.api, open);
     const { jobId: clean } = await createImport(B.shopId, { csv: csvOf(rows.slice(0, 2).map((r, i) => (i ? ["ret-3", ...r.slice(1)] : r))), options: { publishMode: "publish" }, actor: "test" });
-    await runImport(B.shopId, clean);
+    await runImport(B.api, clean);
     const { jobId: recent } = await createImport(B.shopId, { csv: csvOf(rows.slice(0, 2).map((r, i) => (i ? ["ret-4", ...r.slice(1)] : r))), options: { publishMode: "publish" }, actor: "test" });
-    await runImport(B.shopId, recent);
+    await runImport(B.api, recent);
     await owner.importJob.updateMany({ where: { id: { in: [open, clean] } }, data: { finishedAt: new Date(Date.now() - 31 * DAY) } });
     const keyOf = async (id: string) => (await owner.importJob.findUniqueOrThrow({ where: { id } })).fileKey!;
     const [openKey, cleanKey, recentKey] = [await keyOf(open), await keyOf(clean), await keyOf(recent)];
@@ -96,7 +96,7 @@ describe("Retention (scheduled maintenance)", () => {
     assert.equal(await readPrivate(cleanKey), null);
     assert.ok(await readPrivate(openKey), "unresolved product: rows exist only in the file — kept");
     assert.ok(await readPrivate(recentKey), "finished less than 30 days ago — kept");
-    assert.equal(await owner.review.count({ where: { shopId: B.shopId, sourceReviewId: { in: ["ret-1", "ret-3"] } } }), 2, "reviews are never touched");
+    assert.equal((await reviewsIn(B.api)).filter((r) => ["ret-1", "ret-3"].includes(r.sourceReviewId)).length, 2, "reviews are never touched");
 
     const ref = (await owner.importProductMatch.findFirstOrThrow({ where: { importJobId: open, status: "unmatched" } })).sourceProductRef;
     await resolveProductMatch(B.shopId, open, ref, null, "test"); // merchant skips → nothing left to resolve
@@ -135,9 +135,8 @@ describe("Retention (scheduled maintenance)", () => {
 });
 
 describe("Compliance webhooks", () => {
-  test("customers/data_request and customers/redact: audited without storing the customer id", async () => {
+  test("customers/data_request and customers/redact: audited without storing the customer id (Proofly holds none)", async () => {
     const id = 7_123_456_789;
-    await withTenant(A.shopId, ({ db }) => db.review.update({ where: { id: A.reviewId }, data: { shopifyCustomerId: BigInt(id), submitterIpHash: "h" } }));
     for (const [topic, p] of [["customers/data_request", "/webhooks/compliance"], ["customers/redact", "/webhooks/compliance"]]) {
       const res = await complianceWebhook(args<ActionFunctionArgs>(webhookRequest(A.domain, topic, p, { shop_domain: A.domain, customer: { id, email: "kim@example.com" } })));
       assert.equal(res.status, 200);
@@ -145,8 +144,9 @@ describe("Compliance webhooks", () => {
     const logs = await owner.auditLog.findMany({ where: { shopId: A.shopId, action: { in: ["customer.data_request", "customer.redact"] } } });
     assert.equal(logs.length, 2);
     for (const l of logs) assert.ok(!JSON.stringify(l).includes(String(id)) && !JSON.stringify(l).includes("example.com"));
-    const r = await owner.review.findUniqueOrThrow({ where: { id: A.reviewId } });
-    assert.deepEqual([r.shopifyCustomerId, r.submitterIpHash], [null, null]);
+    for (const l of logs) assert.deepEqual(Object.values(l.details as object).filter((v) => typeof v === "number" && v > 0), []); // nothing linked
+    const raw = [...storeOf(A.domain).metaobjects.values()].flatMap((m) => [...m.fields.keys()]);
+    assert.deepEqual(raw.filter((k) => /customer|email|order|ip/i.test(k)), []); // no customer data in the stored reviews either
   });
 
   test("a compliance webhook without a valid HMAC changes nothing", async () => {
@@ -163,13 +163,13 @@ describe("shop/redact — permanent deletion", () => {
     const res = await complianceWebhook(args<ActionFunctionArgs>(webhookRequest(A.domain, "shop/redact", "/webhooks/compliance", { shop_domain: A.domain })));
     assert.equal(res.status, 200);
     assert.ok(await owner.shop.findUnique({ where: { id: A.shopId } }));
-    assert.equal(await owner.review.count({ where: { shopId: A.shopId } }) > 0, true);
+    assert.ok((await reviewsIn(A.api)).length > 0);
   });
 
   test("after uninstall: every row and stored object of the shop is deleted; the other shop is untouched", async () => {
     await storePrivateFile(`s/${A.shopId}/imports/x/source.csv`, Buffer.from("a"), "text/csv");
     await putFile(`s/${B.shopId}/imports/keep/source.csv`);
-    const bRows = await owner.review.count({ where: { shopId: B.shopId } });
+    const bRows = (await reviewsIn(B.api)).length;
     await markUninstalled(A.domain);
     const res = await complianceWebhook(args<ActionFunctionArgs>(webhookRequest(A.domain, "shop/redact", "/webhooks/compliance", { shop_domain: A.domain })));
     assert.equal(res.status, 200);
@@ -178,12 +178,14 @@ describe("shop/redact — permanent deletion", () => {
     const left = await owner.$queryRawUnsafe<{ t: string; n: bigint }[]>(`
       SELECT c.relname AS t, (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM %I WHERE shop_id = %L', c.relname, '${A.shopId}'), false, true, '')))[1]::text::bigint AS n
       FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'shop_id' WHERE c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace`);
-    assert.ok(left.length > 10);
+    assert.ok(left.length >= 6);
     assert.deepEqual(left.filter((x) => x.n > 0n), []);
     assert.equal(await owner.session.count({ where: { shop: A.domain } }), 0);
     assert.equal(await exists(`s/${A.shopId}/imports/x/source.csv`), false);
 
-    assert.equal(await owner.review.count({ where: { shopId: B.shopId } }), bRows);
+    assert.equal((await reviewsIn(B.api)).length, bRows);
+    // The merchant's reviews are its data in its own Shopify store: shop/redact deletes Proofly's records, not the store's.
+    assert.equal((await reviewsIn(A.api)).length > 0, true);
     assert.equal(await exists(`s/${B.shopId}/imports/keep/source.csv`), true);
 
     const del = await owner.shopDeletion.findFirstOrThrow({ where: { domainHash: createHash("sha256").update(A.domain).digest("hex") } });

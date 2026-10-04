@@ -13,9 +13,10 @@ import {
   analyseRecords, cancelImport, createImport, fallbackId, getImport, IMPORT_LIMITS, ImportError, parseReviewDate, runImport, skuLookupFromAdmin,
 } from "../app/lib/import.server";
 import { listObjects } from "../app/lib/storage.server";
+import { reviewHandle, type StoredReview } from "../app/lib/review-store.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { action as importsAction, loader as importsLoader } from "../app/routes/app.imports._index";
-import { adminRequest, args, FakeShopify, installMerchant, owner, resetDb, run, type Merchant } from "./helpers";
+import { adminRequest, args, clearReviews, FakeShopify, installMerchant, owner, resetDb, reviewsIn, run, storeOf, type Merchant } from "./helpers";
 
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
@@ -23,7 +24,7 @@ after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 let n = 0;
 async function emptyShop(label: string): Promise<Merchant> {
   const m = await installMerchant(`proofly-test-${label}.myshopify.com`, label);
-  await owner.review.deleteMany({ where: { shopId: m.shopId } });
+  await clearReviews(m);
   await owner.product.deleteMany({ where: { shopId: m.shopId } });
   await owner.importJob.deleteMany({ where: { shopId: m.shopId } });
   return m;
@@ -39,14 +40,15 @@ const csvOf = (rows: Record<string, string>[]) => {
 const row = (o: Record<string, string> = {}) => ({ review_id: `r${++n}`, product_id: "9800000000001", rating: "5", title: "Fine", body: `Body ${n}`, reviewer_name: "Pat Example", review_date: "2025-01-01T10:00:00Z", ...o });
 async function importNow(m: Merchant, rows: Record<string, string>[], o: { publishMode?: "publish" | "moderate"; shopify?: FakeShopify; source?: string; batchRows?: number } = {}) {
   const { jobId } = await createImport(m.shopId, { csv: csvOf(rows), options: { publishMode: o.publishMode ?? "publish", source: o.source }, actor: "test", skuLookup: o.shopify ? skuLookupFromAdmin(o.shopify.graphql) : null });
-  await runImport(m.shopId, jobId, { batchRows: o.batchRows });
+  await runImport(m.api, jobId, { batchRows: o.batchRows });
   return (await getImport(m.shopId, jobId))!;
 }
 const C = (j: { counts: unknown }) => j.counts as Record<string, number>;
 const listObjectsOf = async (m: Merchant) => (await listObjects(`s/${m.shopId}/`)).map((o) => o.key);
 const A = (j: { analysis: unknown }) => j.analysis as Record<string, number> & { problems: { record: number; code: string | null; warnings: string[] }[] };
-const reviewsOf = (m: Merchant) => owner.review.findMany({ where: { shopId: m.shopId }, orderBy: { sourceReviewId: "asc" } });
-const publishedIds = async (m: Merchant) => (await owner.review.findMany({ where: { shopId: m.shopId, status: "published", holdReason: null }, select: { sourceReviewId: true } })).map((r) => r.sourceReviewId).sort();
+const reviewsOf = async (m: Merchant) => (await reviewsIn(m.api)).sort((a, b) => (a.sourceReviewId < b.sourceReviewId ? -1 : 1));
+const publishedIds = async (m: Merchant) => (await reviewsIn(m.api)).filter((r) => r.isPublic).map((r) => r.sourceReviewId).sort();
+const countIn = async (m: Merchant, pred: (r: StoredReview) => boolean = () => true) => (await reviewsIn(m.api)).filter(pred).length;
 const setPlan = (m: Merchant, handle: string | null) => { const s = new FakeShopify(); if (handle) s.subscriptions = [{ id: `gid://shopify/AppSubscription/${handle}`, name: handle, status: "ACTIVE", planHandle: handle }]; return reconcileBilling(m.shopId, s.graphql); };
 const P1: P = { id: 9_800_000_000_001n, handle: "alpha-example-mug", title: "Alpha Example Mug" };
 const P2: P = { id: 9_800_000_000_002n, handle: "beta-sample-tote", title: "Beta Sample Tote" };
@@ -58,7 +60,7 @@ before(async () => { await resetDb(); });
 describe("Basics", () => {
   test("1. a new merchant starts empty (no reviews, imports or matches)", async () => {
     const m = await emptyShop("j");
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 0);
+    assert.equal(await countIn(m), 0);
     assert.equal(await owner.importJob.count({ where: { shopId: m.shopId } }), 0);
     assert.equal(await owner.importProductMatch.count({ where: { shopId: m.shopId } }), 0);
   });
@@ -70,7 +72,7 @@ describe("Basics", () => {
     assert.equal(j.status, "completed");
     assert.deepEqual([C(j).imported, C(j).published, C(j).planLimited], [3, 3, 0]);
     const rs = await reviewsOf(m);
-    assert.ok(rs.every((r) => r.imported && r.importJobId === j.id && r.source === "csv" && !r.verifiedPurchase));
+    assert.ok(rs.every((r) => r.imported && r.importJobId === j.id && r.source === "csv" && !r.verified));
   });
 
   test("3. missing optional fields: no id (deterministic fallback), no title, no name, no status column", async () => {
@@ -97,7 +99,7 @@ describe("Basics", () => {
     await addProducts(m, [P1]);
     const j = await importNow(m, [row({ rating: "9" }), row({ review_date: "02/03/2024" }), row()]);
     assert.deepEqual([C(j).imported, A(j).invalidRows], [1, 2]);
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 1);
+    assert.equal(await countIn(m), 1);
   });
 
   test("6. status mapping: known states kept, unknown/malformed never public, published still goes through Proofly", async () => {
@@ -107,7 +109,7 @@ describe("Basics", () => {
       row({ review_id: "s-pub", status: "Approved" }), row({ review_id: "s-pen", status: "pending" }), row({ review_id: "s-rej", status: "spam" }),
       row({ review_id: "s-hid", status: "archived" }), row({ review_id: "s-unk", status: "featured???" }), row({ review_id: "s-mal", status: "pub lished" }),
     ]);
-    const by = Object.fromEntries((await reviewsOf(m)).map((r) => [r.sourceReviewId, [r.status, r.holdReason, r.flags.includes("unknown_source_status")]]));
+    const by = Object.fromEntries((await reviewsOf(m)).map((r) => [r.sourceReviewId, [r.status, r.held ? "plan_limit" : null, r.flags.includes("unknown_source_status")]]));
     assert.deepEqual(by, {
       "s-pub": ["published", null, false], "s-pen": ["pending", null, false], "s-rej": ["rejected", null, false], "s-hid": ["hidden", null, false],
       "s-unk": ["pending", null, true], "s-mal": ["pending", null, true],
@@ -139,8 +141,7 @@ describe("Idempotency, retry and resume", () => {
     const first = await importNow(m, rows);
     const snap = async () => ({
       reviews: await reviewsOf(m), // entire rows, including updatedAt: a re-import must not touch them
-      replies: await owner.reviewReply.findMany({ where: { shopId: m.shopId }, orderBy: { reviewId: "asc" } }),
-      moderation: await owner.moderationAction.count({ where: { shopId: m.shopId } }),
+      moderation: await owner.auditLog.count({ where: { shopId: m.shopId, action: { startsWith: "review." } } }), // replies live on the entries above
       usage: (await withTenant(m.shopId, (t) => getPlanStatus(t))).usage,
     });
     const before = await snap();
@@ -155,14 +156,14 @@ describe("Idempotency, retry and resume", () => {
     await addProducts(m, [P1]);
     const rows = Array.from({ length: 9 }, (_, i) => row({ review_id: `res-${i}`, rating: i === 4 ? "x" : "4" }));
     const { jobId } = await createImport(m.shopId, { csv: csvOf(rows), options: { publishMode: "publish" }, actor: "test" });
-    await assert.rejects(runImport(m.shopId, jobId, { batchRows: 2, failAfterBatches: 2 }), /simulated process failure/);
+    await assert.rejects(runImport(m.api, jobId, { batchRows: 2, failAfterBatches: 2 }), /simulated process failure/);
     let j = (await getImport(m.shopId, jobId))!;
     assert.deepEqual([j.status, j.processedRows, C(j).imported], ["failed", 4, 4]);
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId, status: "published", holdReason: null } }), 0); // not finalized yet
-    await runImport(m.shopId, jobId, { batchRows: 2 });
+    assert.equal(await countIn(m, (r) => r.isPublic), 0); // not finalized yet
+    await runImport(m.api, jobId, { batchRows: 2 });
     j = (await getImport(m.shopId, jobId))!;
     assert.deepEqual([j.status, C(j).imported, C(j).published, A(j).invalidRows], ["completed_with_warnings", 8, 8, 1]);
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 8);
+    assert.equal(await countIn(m), 8);
   });
 
   test("9. re-uploading after a partial failure adopts the unfinished rows: same final state as a clean import", async () => {
@@ -171,11 +172,11 @@ describe("Idempotency, retry and resume", () => {
     await setPlan(m, null); // Free: 100
     const rows = Array.from({ length: 120 }, (_, i) => row({ review_id: `ad-${String(i).padStart(3, "0")}`, review_date: new Date(Date.UTC(2024, 0, 1, i)).toISOString() }));
     const { jobId } = await createImport(m.shopId, { csv: csvOf([...rows].reverse()), options: { publishMode: "publish" }, actor: "test" });
-    await assert.rejects(runImport(m.shopId, jobId, { batchRows: 40, failAfterBatches: 1 }));
+    await assert.rejects(runImport(m.api, jobId, { batchRows: 40, failAfterBatches: 1 }));
     const j2 = await importNow(m, rows); // fresh upload, different row order
     assert.deepEqual([C(j2).imported, C(j2).adopted, C(j2).published, C(j2).planLimited], [80, 40, 100, 20]);
     assert.deepEqual(await publishedIds(m), rows.slice(0, 100).map((r) => r.review_id).sort()); // oldest 100
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 120);
+    assert.equal(await countIn(m), 120);
   });
 
   test("10 + 23. final publication is identical regardless of CSV row order — including equal timestamps", async () => {
@@ -191,8 +192,9 @@ describe("Idempotency, retry and resume", () => {
     }
     assert.equal(results[0].length, 100);
     for (const r of results.slice(1)) assert.deepEqual(r, results[0]);
-    // The tie-break on equal dates is the stable source id, never row position or rating.
-    const sameDay = rows.filter((r) => r.review_date === rows[99].review_date).map((r) => r.review_id).sort();
+    // The tie-break on equal dates is the review's stable handle (a hash of source + source id) — never row position
+    // or rating.
+    const sameDay = rows.filter((r) => r.review_date === rows[99].review_date).map((r) => r.review_id).sort((x, y) => (reviewHandle("csv", x) < reviewHandle("csv", y) ? -1 : 1));
     const cut = sameDay.filter((id) => results[0].includes(id));
     assert.deepEqual(cut, sameDay.slice(0, cut.length));
   });
@@ -211,13 +213,13 @@ describe("Product matching (ID → handle → SKU; never guessed)", () => {
   });
   const matchOf = async (r: Record<string, string>) => {
     const j = await importNow(m, [{ ...row(), product_id: "", ...r }], { shopify });
-    return { j, match: j.matches[0], stored: await owner.review.findFirst({ where: { shopId: m.shopId, importJobId: j.id } }) };
+    return { j, match: j.matches[0], stored: (await reviewsIn(m.api)).find((x) => x.importJobId === j.id) ?? null };
   };
 
   test("17. by Shopify product id", async () => {
     const { match, stored } = await matchOf({ product_id: String(P2.id) });
     assert.deepEqual([match.status, match.method], ["matched", "id"]);
-    assert.equal(stored!.productId, (await owner.product.findFirstOrThrow({ where: { shopId: m.shopId, shopifyProductId: P2.id } })).id);
+    assert.equal(stored!.productId, P2.id);
   });
   test("18. by handle (case-insensitive)", async () => {
     const { match } = await matchOf({ product_handle: P3.handle.toUpperCase() });
@@ -267,20 +269,20 @@ describe("Tenant isolation", () => {
     const shopifyB = new FakeShopify(); shopifyB.skus.set("SHARED-SKU", [P2.id]);
     const rows = [row({ review_id: "same-1" }), row({ review_id: "same-2", product_id: "", product_handle: P2.handle }), row({ review_id: "same-3", product_id: "", sku: "SHARED-SKU" })];
     await importNow(a, rows, { shopify: shopifyA });
-    const bBefore = await owner.review.count({ where: { shopId: b.shopId } });
+    const bBefore = await countIn(b);
     await importNow(b, rows, { shopify: shopifyB });
-    const prodOf = async (s: Merchant, srid: string) => (await owner.product.findUniqueOrThrow({ where: { id: (await owner.review.findFirstOrThrow({ where: { shopId: s.shopId, sourceReviewId: srid } })).productId } }));
-    for (const s of [a, b]) for (const id of ["same-1", "same-2", "same-3"]) assert.equal((await prodOf(s, id)).shopId, s.shopId);
-    assert.equal((await prodOf(a, "same-3")).shopifyProductId, P1.id);
-    assert.equal((await prodOf(b, "same-3")).shopifyProductId, P2.id);
-    assert.equal(await owner.review.count({ where: { shopId: b.shopId } }), bBefore + 3);
+    // Each shop's rows went into its OWN store, matched against its OWN catalogue.
+    const prodOf = async (s: Merchant, srid: string) => (await reviewsIn(s.api)).find((r) => r.sourceReviewId === srid)!.productId;
+    assert.equal(await prodOf(a, "same-3"), P1.id);
+    assert.equal(await prodOf(b, "same-3"), P2.id);
+    assert.equal(await countIn(b), bBefore + 3);
   });
 
   test("33 + 34. shop A cannot read or cancel shop B's import (library and admin route)", async () => {
     const { jobId } = await createImport(b.shopId, { csv: csvOf([row({ review_id: "b-q" })]), options: { publishMode: "publish" }, actor: "test" });
     assert.equal(await getImport(a.shopId, jobId), null);
     await assert.rejects(cancelImport(a.shopId, jobId, "a"), (e: unknown) => e instanceof ImportError && e.code === "not_found");
-    await assert.rejects(runImport(a.shopId, jobId), (e: unknown) => e instanceof ImportError && e.code === "not_found");
+    await assert.rejects(runImport(a.api, jobId), (e: unknown) => e instanceof ImportError && e.code === "not_found");
     const listed = await run(() => importsLoader(args<LoaderFunctionArgs>(adminRequest(a.domain, "/app/imports"))));
     assert.ok(!JSON.stringify(listed.data).includes(jobId));
     const fd = new FormData(); fd.set("intent", "cancel"); fd.set("jobId", jobId);
@@ -292,22 +294,22 @@ describe("Tenant isolation", () => {
 
   test("35 + 36. tenant ids in the request or the file are ignored; another shop's identifiers never cross over", async () => {
     const bProduct = await owner.product.findFirstOrThrow({ where: { shopId: b.shopId, shopifyProductId: P1.id } });
-    const bReview = await owner.review.findFirstOrThrow({ where: { shopId: b.shopId } });
+    const [bReview] = await reviewsIn(b.api);
     const fd = new FormData();
     fd.set("intent", "upload"); fd.set("shopId", b.shopId); fd.set("shop_id", b.shopId); fd.set("publishMode", "publish");
     fd.set("csv", new File([csvOf([
       row({ review_id: "x-1", shop_id: b.shopId, shop: b.domain }),
       row({ review_id: bReview.sourceReviewId, product_id: "", product_handle: "", product_title: "", sku: bProduct.id }), // B's internal ids
     ])], "r.csv", { type: "text/csv" }));
-    const before = await owner.review.findMany({ where: { shopId: b.shopId }, orderBy: { id: "asc" } });
+    const before = await reviewsIn(b.api);
     const res = await run(() => importsAction(args<ActionFunctionArgs>(adminRequest(a.domain, "/app/imports", { method: "POST", body: fd }))));
     const job = await owner.importJob.findFirstOrThrow({ where: { shopId: a.shopId }, orderBy: { createdAt: "desc" } });
     assert.equal(res.response?.status, 302);
     assert.equal(res.response?.headers.get("Location"), `/app/imports/${job.id}`); // analysed, waiting for the merchant
     assert.equal(job.shopId, a.shopId);
-    await runImport(a.shopId, job.id);
-    assert.deepEqual(await owner.review.findMany({ where: { shopId: b.shopId }, orderBy: { id: "asc" } }), before);
-    assert.ok(await owner.review.findFirst({ where: { shopId: a.shopId, sourceReviewId: "x-1" } }));
+    await runImport(a.api, job.id);
+    assert.deepEqual(await reviewsIn(b.api), before);
+    assert.ok((await reviewsIn(a.api)).find((r) => r.sourceReviewId === "x-1"));
   });
 
   test("32. an uninstalled shop cannot import", async () => {
@@ -323,7 +325,7 @@ describe("Tenant isolation", () => {
     const { jobId } = await createImport(s.shopId, { csv: csvOf([row()]), options: { publishMode: "publish" }, actor: "x" });
     await assert.rejects(createImport(s.shopId, { csv: csvOf([row()]), options: { publishMode: "publish" }, actor: "x" }), (e: unknown) => e instanceof ImportError && e.code === "import_in_progress");
     await owner.importJob.update({ where: { id: jobId }, data: { status: "running", heartbeatAt: new Date() } });
-    await assert.rejects(runImport(s.shopId, jobId), (e: unknown) => e instanceof ImportError && e.code === "not_runnable");
+    await assert.rejects(runImport(s.api, jobId), (e: unknown) => e instanceof ImportError && e.code === "not_runnable");
   });
 });
 
@@ -336,7 +338,7 @@ describe("Plan limits on import (date order only)", () => {
       const rows = Array.from({ length: 140 }, (_, i) => row({ review_id: `f-${label}-${String(999 - i).padStart(3, "0")}`, rating: i < 100 ? oldRating : newRating, body: i < 100 ? "Old review" : "New review", review_date: new Date(Date.UTC(2022, 0, 1, i)).toISOString() }));
       const j = await importNow(m, [...rows].reverse());
       assert.deepEqual([C(j).published, C(j).planLimited], [100, 40]);
-      const pub = await owner.review.findMany({ where: { shopId: m.shopId, status: "published", holdReason: null } });
+      const pub = (await reviewsIn(m.api)).filter((r) => r.isPublic);
       assert.ok(pub.every((r) => r.body === "Old review" && String(r.rating) === oldRating), label);
     }
   });
@@ -361,9 +363,9 @@ describe("Plan limits on import (date order only)", () => {
     assert.deepEqual([C(j).imported, C(j).published, C(j).planLimited], [260, 100, 160]);
     await setPlan(m, "starter");
     assert.equal((await publishedIds(m)).length, 100); // no automatic publication
-    const r = await withTenant(m.shopId, (t) => releaseEligibleReviews(t, { actor: "merchant" }));
+    const r = await releaseEligibleReviews(m.api, { actor: "merchant" });
     assert.deepEqual(r, { released: 160, stillHeld: 0 });
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 260);
+    assert.equal(await countIn(m), 260);
   });
 });
 
@@ -396,8 +398,8 @@ describe("Limits, privacy, aggregates and the rating cache", () => {
     await addProducts(m, [P1]);
     const j = await importNow(m, [row({ email: "reviewer@example.com", customer_email: "c@example.com", customer_id: "12345", order_id: "98765", phone: "+1 555 0100" })]);
     const [r] = await reviewsOf(m);
-    assert.equal(r.shopifyCustomerId, null);
-    assert.equal(r.shopifyOrderId, null);
+    const raw = storeOf(m.domain).metaobjects.get(r.id)!;
+    assert.deepEqual([...raw.fields.keys()].filter((k) => /customer|email|order|phone/i.test(k)), []);
     const all = JSON.stringify({ r, j, audits: await owner.auditLog.findMany({ where: { shopId: m.shopId } }) }, (_k, v) => (typeof v === "bigint" ? String(v) : v));
     for (const s of ["reviewer@example.com", "c@example.com", "12345", "98765", "555 0100"]) assert.ok(!all.includes(s), s);
   });
@@ -405,18 +407,18 @@ describe("Limits, privacy, aggregates and the rating cache", () => {
   test("45 + 47 + 48. aggregates use the one aggregate path; the Proofly-managed cache is synced; unmanaged ratings are untouched", async () => {
     const m = await emptyShop("ac");
     await addProducts(m, [P1, P2]);
-    const shopify = new FakeShopify();
+    const shopify = storeOf(m.domain); // the shop's own Shopify store: reviews AND rating metafields
     shopify.setRating(P2.id, "4.41", 68); // another app's rating on P2
     const { jobId } = await createImport(m.shopId, { csv: csvOf([row({ rating: "5" }), row({ rating: "3" }), row({ product_id: String(P2.id), status: "pending" })]), options: { publishMode: "publish" }, actor: "x", skuLookup: null });
-    await runImport(m.shopId, jobId, { graphql: shopify.graphql });
+    await runImport(m.api, jobId);
     const p1 = await owner.product.findFirstOrThrow({ where: { shopId: m.shopId, shopifyProductId: P1.id } });
-    const agg = await withTenant(m.shopId, (t) => computeAggregate(t, p1.id));
+    const agg = await computeAggregate(m.api, P1.id);
     assert.deepEqual([p1.reviewCount, Number(p1.averageRating)], [agg.reviewCount, agg.averageRating]);
     assert.deepEqual([agg.reviewCount, agg.averageRating], [2, 4]);
     assert.equal(p1.ratingOwnership, "proofly_managed");
     assert.deepEqual(shopify.rating(P1.id), { average: "4.00", count: 2 });
     assert.deepEqual(shopify.rating(P2.id), { average: "4.41", count: 68 }); // pending only → still unmanaged
-    assert.ok(!shopify.calls.some((c) => JSON.stringify(c.variables ?? {}).includes(`Product/${P2.id}`)));
+    assert.ok(!shopify.calls.filter((c) => /Ratings$/.test(c.op)).some((c) => JSON.stringify(c.variables ?? {}).includes(`Product/${P2.id}`)));
   });
 
   test("51. the network guard is active for the whole suite", async () => {
@@ -436,7 +438,7 @@ describe("Synthetic fixture end to end (~1,150 reviews, 90 products)", () => {
     const shopify = new FakeShopify();
     for (const p of catalogue) for (const s of p.skus) shopify.skus.set(s, [BigInt(p.id)]);
     const { jobId } = await createImport(m.shopId, { csv: await readFile(path.join(dir, "reviews.csv")), options: { publishMode: "publish", source: "synthetic" }, actor: "test", skuLookup: skuLookupFromAdmin(shopify.graphql) });
-    await runImport(m.shopId, jobId);
+    await runImport(m.api, jobId);
     const j = (await getImport(m.shopId, jobId))!;
     assert.equal(j.status, "completed_with_warnings");
     assert.equal(A(j).totalRows, exp.reviews);
@@ -450,7 +452,7 @@ describe("Synthetic fixture end to end (~1,150 reviews, 90 products)", () => {
     const titleOnly = j.matches.filter((x) => x.reason === "title_only_needs_confirmation");
     assert.equal(titleOnly.length, 9); // 8 unique titles + 1 shared title
     assert.ok(titleOnly.every((x) => x.status === "unmatched" && x.productId === null));
-    assert.ok(await owner.review.count({ where: { shopId: m.shopId, flags: { has: "cross_product_repeat" } } }) >= exp.cross_product_rows - 5);
-    assert.ok(await owner.review.count({ where: { shopId: m.shopId, flags: { has: "possible_duplicate" } } }) >= exp.duplicate_same_product_extra_rows);
+    assert.ok(await countIn(m, (r) => r.flags.includes("cross_product_repeat")) >= exp.cross_product_rows - 5);
+    assert.ok(await countIn(m, (r) => r.flags.includes("possible_duplicate")) >= exp.duplicate_same_product_extra_rows);
   });
 });

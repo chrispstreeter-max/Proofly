@@ -4,7 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import { recomputeAll } from "../lib/aggregates.server";
 import { reconcileIfStale } from "../lib/billing.server";
-import { getPlanStatus } from "../lib/entitlements.server";
+import { getPlanStatus, readStats, recountStats } from "../lib/entitlements.server";
 import { syncCatalog } from "../lib/products.server";
 import { ensureRatingDefinitions, reconcileRatingCache, syncRatingCache } from "../lib/rating-cache.server";
 import { withTenant } from "../lib/tenant.server";
@@ -16,11 +16,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { db, shopId } = t;
     const planStatus = await getPlanStatus(t);
     const lastImport = await db.importJob.findFirst({ where: { shopId }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, counts: true, analysis: true } });
-    const [settings, byStatus, total, flagged, products, unsynced] = await Promise.all([
+    const [settings, counts, products, unsynced] = await Promise.all([
       db.shopSettings.findUnique({ where: { shopId } }),
-      db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
-      db.review.count({ where: { shopId } }),
-      db.review.count({ where: { shopId, NOT: { flags: { isEmpty: true } } } }),
+      readStats(t), // cached counts of the reviews in this shop's Shopify store
       db.product.count({ where: { shopId, reviewCount: { gt: 0 } } }),
       db.$queryRaw<{ n: bigint; managed: bigint; errors: bigint }[]>`select
           count(*) filter (where synced_count is distinct from review_count or synced_average is distinct from average_rating) as n,
@@ -31,9 +29,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // decides whether to save. The app never edits theme files.
     const editor = `https://${shop.shopDomain}/admin/themes/current/editor`;
     const key = process.env.SHOPIFY_API_KEY;
-    const status = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
     return {
-      stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, flagged, products },
+      stats: { total: counts.total, published: counts.published, pending: counts.pending, rejected: counts.rejected, hidden: counts.hidden, flagged: counts.flagged, products },
       unsynced: Number(unsynced[0]?.n ?? 0),
       lastImport: lastImport && {
         id: lastImport.id,
@@ -63,11 +60,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, actor, shop } = await requireAdminTenant(request);
+  const { admin, api, actor, shop } = await requireAdminTenant(request);
   const form = await request.formData();
   const intent = form.get("intent");
   if (intent === "sync") {
-    await withTenant(shop.id, (t) => recomputeAll(t));
+    await recountStats(api);
+    await recomputeAll(api);
     await ensureRatingDefinitions(admin.graphql);
     const r = await syncRatingCache(shop.id, admin.graphql);
     await withTenant(shop.id, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor, action: "ratings.sync", entity: "products", details: r } }));

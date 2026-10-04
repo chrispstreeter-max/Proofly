@@ -458,6 +458,17 @@ the public media route and resolver, the public bucket, `sharp`, media allowance
 Proofly now stores only one kind of file: merchants' import CSVs, privately (`app/lib/storage.server.ts`). Prices and
 review allowances are unchanged.
 
+### 11.17 Reviews stored in Shopify (Phase 1, 2026-10-04)
+Owner decision: reviews live in each merchant's own Shopify store as entries of the merchant-owned metaobject type
+`proofly_review` ([SHOPIFY-DATA.md](SHOPIFY-DATA.md)).
+- `app/lib/review-store.server.ts` is the only code that touches review data.
+- Tenant isolation for reviews is Shopify-native: the shop's own Admin API client.
+- An entry edited outside Proofly is never public until it is re-approved; Proofly signs the fields it owns.
+- Proofly's database keeps only settings, products cache, billing, imports, audit and a review-count cache; review
+  tables are dropped (migration `20261011090000_reviews_in_shopify`).
+- Every passage in §1–§10 and §11.1–§11.16 that places reviews, replies or moderation history in Postgres is
+  superseded by this section.
+
 ### 11.12 Product matching for imports (locked, checkpoint 6)
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
 merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation

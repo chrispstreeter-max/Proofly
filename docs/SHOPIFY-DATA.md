@@ -1,6 +1,6 @@
 # Proofly — Reviews stored in Shopify (design, 2026-10-04)
 
-**Status: design, approved direction, not built.** Owner decisions on 2026-10-04:
+**Status: Phase 0 verified; Phase 1 built (reviews live in Shopify; see §7).** Owner decisions on 2026-10-04:
 - "Work solely on Shopify servers".
 - Reviews are stored in Shopify, in a **merchant-owned** custom data type.
 - A small Proofly server remains for the parts Shopify cannot do.
@@ -108,3 +108,32 @@ The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review
   detects edits it didn't make (an `updated_at` and checksum field) and marks them in admin, but cannot prevent them.
 - "Plan limits never delete" and "upgrade never auto-publishes": unchanged, enforced by Proofly when it publishes the
   projection.
+
+
+## 7. Phase 1 — built (2026-10-04)
+
+- **Review store module.** `app/lib/review-store.server.ts` is the only code that reads or writes reviews.
+  - Definition: merchant-owned, storefront access NONE, 20 fields (10 admin-filterable).
+  - Handles are a hash of (source, source review id), so a review is never written twice.
+  - Proofly signs the fields it owns: an entry edited outside Proofly is never public and is flagged in the admin
+    until it is approved again.
+- **Moving parts switched to the store:**
+  - storefront list and submissions;
+  - moderation and replies;
+  - plan admission (oldest first by "date | handle");
+  - aggregates;
+  - export;
+  - import writes (single upserts, batched existence checks by handle);
+  - dashboard, reviews list and review detail.
+- **Proofly's database** dropped `reviews`, `review_replies`, `review_requests` and `moderation_actions`.
+  - Moderation history is the audit log.
+  - Counts are a per-shop cache (`shop_settings.review_stats`), recounted daily by maintenance.
+- **Feature changes:**
+  - Admin search is by reviewer name (Shopify has no full-text search on custom data).
+  - The products page no longer shows "stored reviews" per product.
+  - Duplicate-text flags are computed within an import file.
+  - Local dev preview routes were removed (use a development store).
+- **Still open:**
+  - Phase 2: the storefront reads from a product JSON projection, with no server round trip for the first page.
+  - Phase 3: bulk mutations for large imports.
+  - Phase 4: remove the remaining server-side caches where possible.

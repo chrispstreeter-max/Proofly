@@ -51,8 +51,9 @@ review allowances are unchanged.
 
 ## 3. Entitlement model (`app/lib/entitlements.server.ts`)
 
-- **Published-review usage:** reviews currently public (`status = published AND hold_reason IS NULL`), from every
-  source.
+- **Published-review usage:** reviews currently public (published and not held), from every source. Reviews live in
+  the merchant's Shopify store; usage comes from Proofly's per-shop count cache, kept current by Proofly's own writes
+  and recounted daily by maintenance.
 - **Review room** = allowance − usage. Usage can exceed the allowance after a
   downgrade (grandfathering).
 - **Admission:** a review about to become public is first held (`plan_limit`), then released oldest first while there
@@ -63,7 +64,7 @@ review allowances are unchanged.
   - the merchant action "Publish eligible reviews".
 - **Not admitted:** reviews that don't fit stay approved and held. They are never rejected, deleted or reported as
   failed. The admin says "Approved, but currently held by your plan limit."
-- **Fairness:** date order only: `reviewDate`, then the stable source identity (`source`, `sourceReviewId`).
+- **Fairness:** date order only: `reviewDate`, then the review's stable handle (a hash of source + source review id).
   Regression tests fail if any other ordering is introduced or if a high rating could jump the queue.
 - **Concurrency:** decisions are serialised per shop (`pg_advisory_xact_lock`), so two approvals can't both take the
   last slot.

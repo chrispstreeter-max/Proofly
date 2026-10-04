@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { admitReviews } from "./entitlements.server";
-import type { Tenant } from "./tenant.server";
+import { recomputeProduct } from "./aggregates.server";
+import { admitReviews, bumpStats } from "./entitlements.server";
+import { createReview as storeCreate, type ShopApi } from "./review-store.server";
+import { withTenant, type Tenant } from "./tenant.server";
 
 type AdminContext = { graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response> } | undefined;
 
@@ -47,40 +49,23 @@ export async function ensureProduct({ db, shopId }: Tenant, admin: AdminContext,
   });
 }
 
-export async function createReview(
-  t: Tenant,
-  input: {
-    productId: string; // internal products.id of this shop
-    data: Awaited<ReturnType<typeof parseSubmission>>;
-    source: "storefront";
-    ipHash: string;
-  },
-) {
-  const { db, shopId } = t;
+export async function createReview(api: ShopApi, input: { shopifyProductId: bigint; data: Awaited<ReturnType<typeof parseSubmission>> }) {
   const { data } = input;
   // Moderation on (default): the review waits for approval. Off: it is published at once, subject to the plan allowance.
-  const settings = await db.shopSettings.findUnique({ where: { shopId }, select: { moderationEnabled: true } });
+  const settings = await withTenant(api.shopId, ({ db, shopId }) => db.shopSettings.findUnique({ where: { shopId }, select: { moderationEnabled: true } }));
   const autoPublish = settings?.moderationEnabled === false;
-  const review = await db.review.create({
-    data: {
-      shopId,
-      productId: input.productId,
-      sourceReviewId: `pf_${randomBytes(9).toString("hex")}`,
-      rating: data.rating,
-      title: data.title,
-      body: data.body,
-      reviewerName: data.name,
-      reviewDate: new Date(),
-      status: autoPublish ? "published" : "pending",
-      verifiedPurchase: false, // V1 has no order access; verified purchase is V1.1
-      imported: false,
-      source: input.source,
-      submitterIpHash: input.ipHash,
-    },
+  const review = await storeCreate(api, {
+    productId: input.shopifyProductId, sourceReviewId: `pf_${randomBytes(9).toString("hex")}`, source: "storefront",
+    rating: data.rating, title: data.title, body: data.body, reviewerName: data.name, reviewDate: new Date(),
+    status: autoPublish ? "published" : "pending", held: autoPublish, // auto-published reviews enter held; admission decides
+    verified: false, // V1 has no order access; verified purchase is V1.1
   });
-  if (autoPublish) await admitReviews(t, [review.id], "storefront");
-  await db.auditLog.create({
-    data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id, },
-  });
+  if (!review) throw new SubmitError("form", "Something went wrong. Please try again.", 500); // random id collision
+  await bumpStats(api.shopId, null, review);
+  if (autoPublish) {
+    await admitReviews(api, [review], "storefront");
+    await recomputeProduct(api, input.shopifyProductId);
+  }
+  await withTenant(api.shopId, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id } }));
   return review;
 }

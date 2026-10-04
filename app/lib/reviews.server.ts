@@ -1,92 +1,79 @@
-import type { Prisma } from "@prisma/client";
+import { pageReviews, scanReviews, type ShopApi, type StoredReview } from "./review-store.server";
 import type { Tenant } from "./tenant.server";
 
 export const PAGE_SIZE = 10;
-
-/**
- * The ONLY definition of "publicly visible": published and not held (pending, rejected, hidden and plan-limited
- * reviews never reach the storefront). Aggregates, metafields, lists and card ratings all use it.
- */
-export const PUBLIC_REVIEW = { status: "published", holdReason: null } as const satisfies Prisma.ReviewWhereInput;
+/** Rating sorts read the product's public reviews in memory; beyond this many only the newest are considered. */
+export const RATING_SORT_LIMIT = 2_000;
 export type Sort = "recent" | "highest" | "lowest";
-
-const ORDER: Record<Sort, Prisma.ReviewOrderByWithRelationInput[]> = {
-  recent: [{ reviewDate: "desc" }, { id: "desc" }],
-  highest: [{ rating: "desc" }, { reviewDate: "desc" }, { id: "desc" }],
-  lowest: [{ rating: "asc" }, { reviewDate: "desc" }, { id: "desc" }],
-};
 
 export function parseListParams(url: URL) {
   const sort = (["recent", "highest", "lowest"] as const).find((s) => s === url.searchParams.get("sort")) ?? "recent";
   const ratingRaw = Number(url.searchParams.get("rating"));
   const rating = Number.isInteger(ratingRaw) && ratingRaw >= 1 && ratingRaw <= 5 ? ratingRaw : undefined;
-  const page = Math.min(Math.max(1, Number(url.searchParams.get("page")) || 1), 1000);
+  const page = Math.min(Math.max(1, Number(url.searchParams.get("page")) || 1), 200);
   return { sort, rating, page };
 }
 
-/** This shop's product for a Shopify product id, or null (unknown and other-shop products look the same). */
+/** This shop's live product for a Shopify product id, or null (unknown and other-shop products look the same). */
 export function findProduct({ db, shopId }: Tenant, shopifyProductId: bigint) {
   return db.product.findFirst({ where: { shopId, shopifyProductId, deletedAt: null } });
 }
 
 const EMPTY_SUMMARY = { count: 0, average: 0, distribution: [0, 0, 0, 0, 0] };
 
-export async function productSummary({ db, shopId }: Tenant, productId: string | null) {
-  if (!productId) return EMPTY_SUMMARY;
-  const p = await db.product.findFirst({ where: { shopId, id: productId } });
+/** Summary from the canonical aggregate (app/lib/aggregates.server.ts), cached per product. */
+export async function productSummary({ db, shopId }: Tenant, shopifyProductId: bigint | null) {
+  if (!shopifyProductId) return EMPTY_SUMMARY;
+  const p = await db.product.findFirst({ where: { shopId, shopifyProductId, deletedAt: null } });
   if (!p) return EMPTY_SUMMARY;
-  return {
-    count: p.reviewCount,
-    average: Number(p.averageRating),
-    distribution: [p.rating1, p.rating2, p.rating3, p.rating4, p.rating5],
-  };
+  return { count: p.reviewCount, average: Number(p.averageRating), distribution: [p.rating1, p.rating2, p.rating3, p.rating4, p.rating5] };
 }
 
 /**
- * Public, allow-listed shape. Never add ids, email, customer/order IDs, IP hashes, status or flags here.
- * `replies`: whether the shop's CURRENT plan includes the Replies capability (entitlements.server `can(t, "replies")`,
- * decided server-side). Without it a stored reply — imported, or kept after a downgrade — is omitted exactly as if the
- * review had none (`reply: null`); it is never deleted and reappears when the plan allows.
+ * Public, allow-listed shape. Never add ids, handles, status, flags, source fields or anything private here.
+ * `replies`: whether the shop's CURRENT plan includes Replies (entitlements `can(t, "replies")`, decided server-side).
+ * Without it a stored reply is omitted exactly as if the review had none (`reply: null`); it is never deleted.
  */
-type ReviewRow = Prisma.ReviewGetPayload<{ include: { reply: true } }>;
-export function serializeReview(r: ReviewRow, { replies }: { replies: boolean }) {
+export function serializeReview(r: StoredReview, { replies }: { replies: boolean }) {
   return {
     rating: r.rating,
     title: r.title,
     body: r.body,
     name: r.reviewerName,
     date: r.reviewDate.toISOString().slice(0, 10),
-    verified: r.verifiedPurchase,
-    reply: replies && r.reply ? { body: r.reply.reply, date: r.reply.createdAt.toISOString().slice(0, 10) } : null,
+    verified: r.verified,
+    reply: replies && r.reply ? { body: r.reply, date: (r.replyDate ?? r.reviewDate).toISOString().slice(0, 10) } : null,
   };
 }
 
-export async function listReviews(
-  { db, shopId }: Tenant,
-  productId: string | null,
-  { sort, rating, page }: ReturnType<typeof parseListParams>,
-  visibility: { replies: boolean },
-) {
-  if (!productId) return { reviews: [], page, hasMore: false }; // unknown and other-shop products: identical response
-  const where: Prisma.ReviewWhereInput = {
-    shopId,
-    productId,
-    ...PUBLIC_REVIEW,
-    ...(rating ? { rating } : {}),
-  };
-  const rows = await db.review.findMany({
-    where,
-    orderBy: ORDER[sort],
-    skip: (page - 1) * PAGE_SIZE,
-    take: PAGE_SIZE + 1, // one extra row tells us whether there is another page
-    include: { reply: true },
-  });
-  return { reviews: rows.slice(0, PAGE_SIZE).map((r) => serializeReview(r, visibility)), page, hasMore: rows.length > PAGE_SIZE };
+/**
+ * Public reviews of one of this shop's live products. `isPublic` is re-checked on every entry (the Shopify filter
+ * is an index, not a guarantee: an entry edited outside Proofly is never shown).
+ */
+export async function listReviews(api: ShopApi, shopifyProductId: bigint | null, { sort, rating, page }: ReturnType<typeof parseListParams>, visibility: { replies: boolean }) {
+  if (!shopifyProductId) return { reviews: [], page, hasMore: false }; // unknown and other-shop products: identical response
+  const q = { productIds: [shopifyProductId], isPublic: true, ...(rating ? { rating } : {}) };
+  const want = page * PAGE_SIZE + 1; // one extra row tells us whether there is another page
+  let rows: StoredReview[] = [];
+  if (sort === "recent") {
+    let after: string | null = null;
+    while (rows.length < want) {
+      const p: Awaited<ReturnType<typeof pageReviews>> = await pageReviews(api, q, { first: Math.min(250, want - rows.length + 5), after });
+      rows.push(...p.reviews.filter((r) => r.isPublic));
+      if (!(after = p.next)) break;
+    }
+  } else {
+    for await (const r of scanReviews(api, q)) { if (r.isPublic) rows.push(r); if (rows.length >= RATING_SORT_LIMIT) break; }
+    const dir = sort === "highest" ? -1 : 1;
+    rows = rows.sort((a, b) => dir * (a.rating - b.rating) || +b.reviewDate - +a.reviewDate || (a.handle < b.handle ? 1 : -1));
+  }
+  const slice = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  return { reviews: slice.map((r) => serializeReview(r, visibility)), page, hasMore: rows.length > page * PAGE_SIZE };
 }
 
 /**
  * Batched card ratings for this shop by product handle: { "<handle>": [average, count] }. Handles of other shops,
- * unknown handles and products without public reviews are simply absent. Reads the aggregates (published, not held).
+ * unknown handles and products without public reviews are simply absent. Reads the aggregate cache.
  */
 export async function ratingsByHandle({ db, shopId }: Tenant, handles: string[]) {
   const rows = await db.product.findMany({

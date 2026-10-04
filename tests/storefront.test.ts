@@ -13,10 +13,11 @@ import { recomputeProduct } from "../app/lib/aggregates.server";
 import { syncRatingCache } from "../app/lib/rating-cache.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { parseHandles } from "../app/lib/reviews.server";
+import { updateReview, type ReviewInput } from "../app/lib/review-store.server";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { loader as proxyRatings } from "../app/routes/proxy.ratings";
 import { blockSchema, EXTENSION_DIR, liquidProduct, renderBlock } from "../scripts/lib/extension-liquid";
-import { args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, type Merchant } from "./helpers";
+import { args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, SAME_HANDLE, seedReview, storeOf, type Merchant } from "./helpers";
 
 const ext = (...p: string[]) => path.join(EXTENSION_DIR, ...p);
 const files = (dir: string) => readdirSync(ext(dir)).map((f) => path.join(dir, f));
@@ -157,33 +158,33 @@ describe("Generic merchant rendering (Liquid)", () => {
 const VIS_ID = 9_000_000_000_123n;
 const VIS_HANDLE = "visibility-product";
 const PAGED_ID = 9_000_000_000_124n;
-const PRIVATE = { shopifyCustomerId: 4_242_424_242n, shopifyOrderId: 5_353_535_353n, submitterIpHash: "f".repeat(64), flags: ["spam_suspected"] };
+const PRIVATE = { flags: ["spam_suspected"], source: "csv" };
 let A: Merchant, B: Merchant;
 
 async function seedVisibility(m: Merchant, label: string) {
-  return withTenant(m.shopId, async (t) => {
-    const { db, shopId } = t;
-    const product = await db.product.create({ data: { shopId, shopifyProductId: VIS_ID, handle: VIS_HANDLE, title: `Visibility ${label}` } });
-    let day = 0;
-    const mk = (rating: number, body: string, extra: object = {}) =>
-      db.review.create({ data: { shopId, productId: product.id, source: "csv", sourceReviewId: `${label}-${body}`, rating, body, reviewerName: `Name ${label}`, reviewDate: new Date(Date.UTC(2026, 0, ++day)), status: "published", ...PRIVATE, ...extra } });
-    const r5 = await mk(5, `public-5-${label}`);
-    await mk(4, `public-4a-${label}`);
-    await mk(4, `public-4b-${label}`);
-    await mk(1, `pending-${label}`, { status: "pending", holdReason: "moderation" });
-    await mk(1, `rejected-${label}`, { status: "rejected" });
-    await mk(2, `hidden-${label}`, { status: "hidden" });
-    await mk(1, `planlimited-pending-${label}`, { status: "pending", holdReason: "plan_limit" });
-    await mk(3, `planlimited-published-${label}`, { holdReason: "plan_limit" }); // defence in depth: still never public
-    await db.reviewReply.create({ data: { shopId, reviewId: r5.id, reply: `Reply ${label}` } });
+  await withTenant(m.shopId, async ({ db, shopId }) => {
+    await db.product.create({ data: { shopId, shopifyProductId: VIS_ID, handle: VIS_HANDLE, title: `Visibility ${label}` } });
     await db.product.create({ data: { shopId, shopifyProductId: 9_000_000_000_125n, handle: "zero-product", title: "Zero" } });
-    await recomputeProduct(t, product.id);
-    // A second product with 12 public reviews for pagination.
-    const paged = await db.product.create({ data: { shopId, shopifyProductId: PAGED_ID, handle: "paged-product", title: "Paged" } });
-    for (let i = 0; i < 12; i++) await db.review.create({ data: { shopId, productId: paged.id, source: "csv", sourceReviewId: `${label}-p${i}`, rating: 5, body: `paged ${i}`, reviewerName: "P", reviewDate: new Date(Date.UTC(2026, 1, i + 1)), status: "published" } });
-    await recomputeProduct(t, paged.id);
-    return product.id;
+    await db.product.create({ data: { shopId, shopifyProductId: PAGED_ID, handle: "paged-product", title: "Paged" } });
   });
+  let day = 0;
+  const mk = (rating: number, body: string, extra: Partial<ReviewInput> = {}) =>
+    seedReview(m.api, { productId: VIS_ID, sourceReviewId: `${label}-${body}`, rating, body, reviewerName: `Name ${label}`, reviewDate: new Date(Date.UTC(2026, 0, ++day)), status: "published", held: false, ...PRIVATE, ...extra });
+  await mk(5, `public-5-${label}`, { reply: `Reply ${label}` });
+  await mk(4, `public-4a-${label}`);
+  await mk(4, `public-4b-${label}`);
+  await mk(1, `pending-${label}`, { status: "pending" });
+  await mk(1, `rejected-${label}`, { status: "rejected" });
+  await mk(2, `hidden-${label}`, { status: "hidden" });
+  await mk(1, `planlimited-pending-${label}`, { status: "pending", held: true });
+  await mk(3, `planlimited-published-${label}`, { held: true }); // defence in depth: still never public
+  // Edited in Shopify admin after Proofly published it (a merchant turning 2★ into 5★): never public until re-approved.
+  const edited = await mk(2, `edited-${label}`);
+  storeOf(m.domain).editOutside(edited.id, { rating: "5", body: `edited-${label} (now glowing)` });
+  await recomputeProduct(m.api, VIS_ID);
+  // A second product with 12 public reviews for pagination.
+  for (let i = 0; i < 12; i++) await seedReview(m.api, { productId: PAGED_ID, sourceReviewId: `${label}-p${i}`, rating: 5, body: `paged ${i}`, reviewerName: "P", reviewDate: new Date(Date.UTC(2026, 1, i + 1)) });
+  await recomputeProduct(m.api, PAGED_ID);
 }
 
 const list = async (domain: string, id: bigint, q: Record<string, string> = {}) =>
@@ -198,11 +199,8 @@ describe("Storefront data", () => {
     await seedVisibility(A, "A");
     await seedVisibility(B, "B");
     // B's copy gets a different rating so cross-shop leakage would be visible.
-    await withTenant(B.shopId, async (t) => {
-      const p = await t.db.product.findFirstOrThrow({ where: { shopId: t.shopId, handle: VIS_HANDLE } });
-      await t.db.review.updateMany({ where: { shopId: t.shopId, productId: p.id, status: "published", holdReason: null }, data: { rating: 2 } });
-      await recomputeProduct(t, p.id);
-    });
+    for (const r of (await reviewsIn(B.api)).filter((x) => x.productId === VIS_ID && x.isPublic)) await updateReview(B.api, r, { rating: 2 });
+    await recomputeProduct(B.api, VIS_ID);
   });
   after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
@@ -297,12 +295,12 @@ describe("Storefront data", () => {
       assert.deepEqual(Object.keys(r).sort(), ["body", "date", "name", "rating", "reply", "title", "verified"]);
       if (r.reply) assert.deepEqual(Object.keys(r.reply).sort(), ["body", "date"]);
     }
-    for (const s of ["email", String(PRIVATE.shopifyCustomerId), String(PRIVATE.shopifyOrderId), PRIVATE.submitterIpHash, "spam_suspected", "plan_limit"]) {
+    for (const s of ["email", "spam_suspected", "plan_limit", "held", "edited-A"]) {
       assert.ok(!text.includes(s), `leaked ${s}`);
     }
     // No internal id anywhere.
-    const ids = await owner.review.findMany({ where: { shopId: A.shopId }, select: { id: true, productId: true, sourceReviewId: true } });
-    for (const s of [A.shopId, String(A.shopId).slice(0, 8), ...ids.flatMap((r) => [r.id, r.productId, r.sourceReviewId]), String(VIS_ID), "s/"]) {
+    const ids = await reviewsIn(A.api);
+    for (const s of [A.shopId, String(A.shopId).slice(0, 8), ...ids.flatMap((r) => [r.id, r.handle, r.sourceReviewId, `Metaobject/${r.id.split("/").pop()}`]), String(VIS_ID), "s/", "gid://", "integrity", "sort_key"]) {
       assert.ok(!text.includes(s), `leaked ${s}`);
     }
     const r = await (await ratings(DOMAIN_A, VIS_HANDLE)).text();

@@ -49,14 +49,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, admin, actor } = await requireAdminTenant(request);
+  const { shop, admin, api, actor } = await requireAdminTenant(request);
   const intent = (await request.formData()).get("intent");
   if (intent === "refresh") {
     const r = await reconcileBilling(shop.id, admin.graphql, { actor });
     return { message: r.outcome === "confirmed" ? `Plan confirmed with Shopify: ${PLANS[r.plan].name}.` : "Shopify couldn't be reached. Your current plan stays in place; try again shortly." };
   }
   if (intent === "publish_eligible") {
-    const r = await withTenant(shop.id, (t) => releaseEligibleReviews(t, { actor }));
+    const r = await releaseEligibleReviews(api, { actor });
     await syncAfterRatingChange(shop.id, admin.graphql);
     return { message: r.released ? `Published ${r.released} review${r.released === 1 ? "" : "s"}${r.stillHeld ? `; ${r.stillHeld} still held by your plan limit` : ""}.` : "No room in your current plan to publish more reviews." };
   }

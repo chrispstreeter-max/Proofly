@@ -130,8 +130,9 @@ export async function redactShop(domain: string) {
   const shop = await shopByDomain(domain);
   if (!shop) return { deleted: false as const, reason: "unknown_or_already_deleted" };
   if (!shop.uninstalledAt) return { deleted: false as const, reason: "reinstalled" };
+  // Reviews are the merchant's data in their own Shopify store and stay with the store; only Proofly's records go.
   const counts = await withTenant(shop.id, async ({ db }) => ({
-    reviews: await db.review.count({ where: { shopId: shop.id } }),
+    reviewsInStore: Number(((await db.shopSettings.findUnique({ where: { shopId: shop.id }, select: { reviewStats: true } }))?.reviewStats as { total?: number } | null)?.total ?? 0),
     products: await db.product.count({ where: { shopId: shop.id } }),
     imports: await db.importJob.count({ where: { shopId: shop.id } }),
   }));

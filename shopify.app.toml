@@ -7,12 +7,11 @@ embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [access_scopes]
 # V1 needs products only: product lookups + reviews.rating / reviews.rating_count metafields.
 # No order or customer scopes (verified purchase / review requests are V1.1 and will ask for them then).
-scopes = "read_products,write_products"
+scopes = "read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects"
 # Shopify-managed installation: Shopify installs the app and grants scopes; the app then obtains tokens by
 # token exchange. There is no OAuth redirect flow and no manual shop-domain login.
 use_legacy_install_flow = false

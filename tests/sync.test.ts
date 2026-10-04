@@ -7,8 +7,10 @@ import { readFileSync } from "node:fs";
 import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
-import { recomputeProduct } from "../app/lib/aggregates.server";
-import { moderate, setPlanLimited } from "../app/lib/moderation.server";
+import { recomputeProduct, recomputeProducts } from "../app/lib/aggregates.server";
+import { moderate } from "../app/lib/moderation.server";
+import { bumpStats, releaseEligibleReviews } from "../app/lib/entitlements.server";
+import { getReview, updateReview, type ShopApi, type StoredReview } from "../app/lib/review-store.server";
 import { syncCatalog } from "../app/lib/products.server";
 import { DEFAULT_PROXY_PATH, parseProxyPath, setProxyPath } from "../app/lib/proxy-path.server";
 import { reconcileRatingCache, syncRatingCache } from "../app/lib/rating-cache.server";
@@ -20,8 +22,8 @@ import { action as productsWebhook } from "../app/routes/webhooks.products";
 import { API_VERSION } from "../app/shopify-api-version";
 import { renderBlock, liquidProduct } from "../scripts/lib/extension-liquid";
 import {
-  args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, SAME_PRODUCT_ID,
-  webhookRequest, type Merchant,
+  args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, SAME_HANDLE, SAME_PRODUCT_ID,
+  seedReview, webhookRequest, type Merchant,
 } from "./helpers";
 
 const noSleep = async () => {};
@@ -40,12 +42,24 @@ let seq = 0;
 async function product(t: Tenant, shopifyProductId: bigint, handle: string) {
   return t.db.product.create({ data: { shopId: t.shopId, shopifyProductId, handle, title: handle, status: "active", lastSeenAt: new Date() } });
 }
+const apiFor = (shopId: string) => (shopId === A.shopId ? A.api : B.api);
+/** A review (in the shop's Shopify store) for the cached product row `productId`. */
 async function review(t: Tenant, productId: string, rating: number, o: { status?: "published" | "pending" | "hidden" | "rejected"; hold?: "plan_limit" | "moderation" } = {}) {
-  const r = await t.db.review.create({
-    data: { shopId: t.shopId, productId, source: "csv", sourceReviewId: `s4-${++seq}`, rating, body: `body ${seq}`, reviewerName: "Fixture", reviewDate: new Date(Date.UTC(2026, 0, 1 + seq)), status: o.status ?? "published", holdReason: o.hold ?? null },
-  });
-  return r;
+  const p = await t.db.product.findFirstOrThrow({ where: { id: productId } });
+  return seedReview(apiFor(t.shopId), { productId: p.shopifyProductId, sourceReviewId: `s4-${++seq}`, rating, body: `body ${seq}`, reviewerName: "Fixture", reviewDate: new Date(Date.UTC(2026, 0, 1 + seq)), status: o.status ?? "published", held: o.hold === "plan_limit" });
 }
+async function recompute(t: Tenant, productId: string) {
+  const p = await t.db.product.findFirstOrThrow({ where: { id: productId } });
+  return recomputeProduct(apiFor(t.shopId), p.shopifyProductId);
+}
+/** Puts reviews on the plan-limit hold, or releases them through the allowance (oldest first). */
+async function setHeld(api: ShopApi, ids: string[], held: boolean) {
+  const reviews = (await Promise.all(ids.map((id) => getReview(api, id)))).filter((r): r is StoredReview => !!r);
+  if (!held) return releaseEligibleReviews(api, { reviews });
+  for (const r of reviews) await bumpStats(api.shopId, r, await updateReview(api, r, { held: true }));
+  await recomputeProducts(api, reviews.map((r) => r.productId));
+}
+const reviewsOfProduct = async (api: ShopApi, shopifyProductId: bigint) => (await reviewsIn(api)).filter((r) => r.productId === shopifyProductId);
 const list = async (domain: string, id: bigint, q: Record<string, string> = {}) =>
   (await proxyList(args<LoaderFunctionArgs>(proxyRequest(domain, `products/${id}/reviews`, q), { id: String(id) }))).json();
 const productWebhook = (domain: string, topic: string, payload: unknown) =>
@@ -65,7 +79,7 @@ describe("Configuration: one API version, V1 scopes, product webhooks", () => {
   test("products/create|update|delete subscribed with minimal fields; scopes unchanged", () => {
     const toml = readFileSync("shopify.app.toml", "utf8");
     assert.match(toml, /topics = \["products\/create", "products\/update", "products\/delete"\]\n\s+uri = "\/webhooks\/products"\n\s+include_fields = \["id", "handle", "title", "status", "updated_at"\]/);
-    assert.match(toml, /^scopes = "read_products,write_products"$/m);
+    assert.match(toml, /^scopes = "read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects"$/m);
   });
 });
 
@@ -106,7 +120,7 @@ describe("Initial catalogue sync", () => {
     // Sweep: not in Shopify → deleted, reviews kept. The fixture product (never seen either) is swept too.
     const goneRow = await owner.product.findUniqueOrThrow({ where: { id: gone.id } });
     assert.ok(goneRow.deletedAt);
-    assert.equal(await owner.review.count({ where: { productId: gone.id } }), 1);
+    assert.equal((await reviewsOfProduct(A.api, goneRow.shopifyProductId)).length, 1);
     // Catalogue sync never touches rating metafields.
     assert.equal(second.calls.filter((c) => c.op !== "ProoflyProductsPage").length, 0);
     // Restore the fixture product for later tests (it exists in "Shopify" for the isolation suites).
@@ -189,7 +203,7 @@ describe("Canonical aggregation — every public review counts; held, pending an
       r.hidden = await review(t, p.id, 1, { status: "hidden" });
       r.pending = await review(t, p.id, 2, { status: "pending", hold: "moderation" });
       r.fourB = await review(t, p.id, 4);
-      await recomputeProduct(t, p.id);
+      await recompute(t, p.id);
     });
   });
 
@@ -225,7 +239,7 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
   const gidsWritten = () => shopify.ops("ProoflySetRatings").flatMap((c) => (c.variables!.metafields as { ownerId: string }[]).map((m) => m.ownerId));
 
   test("1. product with a third-party rating and no Proofly reviews → untouched by sync AND reconciliation", async () => {
-    await asA((t) => recomputeProduct(t, p2.id));
+    await asA((t) => recompute(t, p2.id));
     assert.equal((await owner.product.findUniqueOrThrow({ where: { id: p2.id } })).ratingOwnership, "unmanaged");
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     const report = await reconcileRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
@@ -241,7 +255,7 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
   test("2. first public Proofly review → product becomes Proofly-managed and Proofly's rating is written", async () => {
     first = await asA((t) => review(t, p2.id, 5));
     await asA((t) => review(t, p2.id, 2, { status: "pending" })); // not public: never counted
-    await asA((t) => recomputeProduct(t, p2.id));
+    await asA((t) => recompute(t, p2.id));
     const row = await owner.product.findUniqueOrThrow({ where: { id: p2.id } });
     assert.equal(row.ratingOwnership, "proofly_managed");
     assert.ok(row.ratingManagedAt);
@@ -251,7 +265,7 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
   });
 
   test("3. Proofly-managed rating updates on review changes; re-syncing an unchanged aggregate writes nothing", async () => {
-    await asA(async (t) => { await review(t, p2.id, 3); await recomputeProduct(t, p2.id); });
+    await asA(async (t) => { await review(t, p2.id, 3); await recompute(t, p2.id); });
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.deepEqual(shopify.rating(P2), { average: "4.00", count: 2 });
     const before = shopify.ops("ProoflySetRatings").length;
@@ -260,31 +274,31 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
   });
 
   test("moderation and plan limits change the aggregate through the same pathway", async () => {
-    await asA((t) => moderate(t, [first.id], "hide", "test"));
+    await moderate(A.api, [first.id], "hide", "test");
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.deepEqual(shopify.rating(P2), { average: "3.00", count: 1 });
-    await asA((t) => moderate(t, [first.id], "approve", "test")); // restore → publish again
-    const others = await owner.review.findMany({ where: { productId: p2.id, status: "published", rating: 3 } });
-    await asA((t) => setPlanLimited(t, others.map((x) => x.id), true, "test"));
+    await moderate(A.api, [first.id], "approve", "test"); // restore → publish again
+    const others = (await reviewsOfProduct(A.api, P2)).filter((x) => x.status === "published" && x.rating === 3);
+    await setHeld(A.api, others.map((x) => x.id), true);
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.deepEqual(shopify.rating(P2), { average: "5.00", count: 1 });
-    await asA((t) => setPlanLimited(t, others.map((x) => x.id), false, "test")); // made publishable again
+    await setHeld(A.api, others.map((x) => x.id), false); // made publishable again
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.deepEqual(shopify.rating(P2), { average: "4.00", count: 2 });
   });
 
   test("a Proofly-managed product with no public reviews left: count 0 and Proofly's own rating removed", async () => {
-    const ids = (await owner.review.findMany({ where: { productId: p2.id, status: "published" } })).map((x) => x.id);
-    await asA((t) => moderate(t, ids, "hide", "test"));
+    const ids = (await reviewsOfProduct(A.api, P2)).filter((x) => x.status === "published").map((x) => x.id);
+    await moderate(A.api, ids, "hide", "test");
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.deepEqual(shopify.rating(P2), { average: null, count: 0 });
-    await asA((t) => moderate(t, ids, "approve", "test"));
+    await moderate(A.api, ids, "approve", "test");
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.deepEqual(shopify.rating(P2), { average: "4.00", count: 2 });
   });
 
   test("4. reconciliation repairs wrong, stale and missing Proofly-owned values — and never touches reviews", async () => {
-    const reviewsBefore = await owner.review.findMany({ where: { shopId: A.shopId }, orderBy: { id: "asc" } });
+    const reviewsBefore = await reviewsIn(A.api);
     const aggBefore = await owner.product.findUniqueOrThrow({ where: { id: p2.id } });
     shopify.setRating(P2, "4.39", 67); // drift (e.g. edited in Shopify, or a lost write)
     let report = await reconcileRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
@@ -298,7 +312,7 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
     assert.deepEqual(shopify.rating(P2), { average: "4.00", count: 2 });
     report = await reconcileRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
     assert.equal(report.missing + report.incorrect, 0);
-    assert.deepEqual(await owner.review.findMany({ where: { shopId: A.shopId }, orderBy: { id: "asc" } }), reviewsBefore);
+    assert.deepEqual(await reviewsIn(A.api), reviewsBefore); // entire entries, updatedAt included
     const aggAfter = await owner.product.findUniqueOrThrow({ where: { id: p2.id } });
     assert.deepEqual([aggAfter.reviewCount, Number(aggAfter.averageRating)], [aggBefore.reviewCount, Number(aggBefore.averageRating)]);
   });
@@ -311,7 +325,7 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
   });
 
   test("failed Shopify write: canonical data unchanged, product stays dirty with the error; a retry repairs it", async () => {
-    await asA(async (t) => { await review(t, p2.id, 1); await recomputeProduct(t, p2.id); });
+    await asA(async (t) => { await review(t, p2.id, 1); await recompute(t, p2.id); });
     const canonical = await owner.product.findUniqueOrThrow({ where: { id: p2.id } });
     shopify.failNext("ProoflySetRatings", "userError");
     const r1 = await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
@@ -332,12 +346,12 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
   test("6/7. deleting a product keeps its reviews and touches nothing in Shopify (own or third-party ratings)", async () => {
     const callsBefore = shopify.calls.length;
     const touches = (from: number, gid: string) => shopify.calls.slice(from).some((c) => JSON.stringify(c.variables ?? {}).includes(gid));
-    const reviews = await owner.review.count({ where: { productId: p2.id } });
+    const reviews = (await reviewsOfProduct(A.api, P2)).length;
     for (let i = 0; i < 2; i++) await productWebhook(DOMAIN_A, "products/delete", { id: Number(P2) }); // duplicate delivery
     await productWebhook(DOMAIN_A, "products/delete", { id: Number(P3) });
     const row = await owner.product.findUniqueOrThrow({ where: { id: p2.id } });
     assert.ok(row.deletedAt);
-    assert.equal(await owner.review.count({ where: { productId: p2.id } }), reviews);
+    assert.equal((await reviewsOfProduct(A.api, P2)).length, reviews);
     assert.equal(shopify.calls.length, callsBefore);
     const mark = shopify.calls.length;
     await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
@@ -357,15 +371,15 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
     const fresh = (await rowA(NEW))!;
     assert.notEqual(fresh.id, p2.id);
     assert.equal(fresh.ratingOwnership, "unmanaged");
-    assert.equal(await owner.review.count({ where: { productId: fresh.id } }), 0);
+    assert.equal((await reviewsOfProduct(A.api, NEW)).length, 0);
     assert.deepEqual(await asA((t) => ratingsByHandle(t, ["owned-later"])), {}); // handle no longer resolves to the old reviews
     assert.deepEqual((await list(DOMAIN_A, NEW, { summary: "1" })).summary.count, 0);
-    assert.ok(await owner.review.count({ where: { productId: p2.id } })); // old history kept on the deleted product
+    assert.ok((await reviewsOfProduct(A.api, P2)).length); // old history kept on the deleted product
   });
 
   test("10. merchant A cannot read, sync, reconcile or change ownership of merchant B's ratings", async () => {
     const bp = await asB((t) => product(t, 9_600_000_000_900n, "b-owned"));
-    await asB(async (t) => { await review(t, bp.id, 4); await recomputeProduct(t, bp.id); });
+    await asB(async (t) => { await review(t, bp.id, 4); await recompute(t, bp.id); });
     const bShopify = new FakeShopify();
     await syncRatingCache(B.shopId, bShopify.graphql, { sleep: noSleep });
     const aShopify = new FakeShopify();
@@ -376,7 +390,7 @@ describe("Rating-cache ownership, sync and reconciliation", () => {
     // Through A's tenant context, B's product is invisible and unchangeable.
     assert.equal(await asA(({ db }) => db.product.count({ where: { id: bp.id } })), 0);
     assert.equal((await asA(({ db }) => db.product.updateMany({ where: { id: bp.id }, data: { ratingOwnership: "unmanaged", syncedCount: 0 } }))).count, 0);
-    assert.equal(await asA((t) => recomputeProduct(t, bp.id)).then((a) => a.reviewCount), 0); // computes over A's rows only
+    assert.equal((await recomputeProduct(A.api, 9_600_000_000_900n)).reviewCount, 0); // A's store has no reviews for B's product
     const b = await owner.product.findUniqueOrThrow({ where: { id: bp.id } });
     assert.deepEqual([b.ratingOwnership, b.reviewCount, b.syncedCount], ["proofly_managed", 1, 1]);
   });

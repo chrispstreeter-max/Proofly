@@ -9,6 +9,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import * as shopifyServer from "../app/shopify.server";
 import { afterAuth } from "../app/shopify.server";
+import { reviewParam } from "../app/lib/moderation.server";
 import { activeShopByDomain, withTenant } from "../app/lib/tenant.server";
 import { action as dashboardAction, loader as dashboardLoader } from "../app/routes/app._index";
 import { loader as reviewsListLoader } from "../app/routes/app.reviews._index";
@@ -18,12 +19,12 @@ import { loader as proxyRatings } from "../app/routes/proxy.ratings";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import { action as uninstalledWebhook } from "../app/routes/webhooks.app.uninstalled";
 import {
-  adminRequest, args, DOMAIN_A, DOMAIN_C, fakeAdmin, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, SAME_PRODUCT_ID,
-  storeOfflineSession, webhookRequest, type Merchant,
+  adminRequest, apiOf, args, DOMAIN_A, DOMAIN_C, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, SAME_HANDLE, SAME_PRODUCT_ID,
+  storeOf, storeOfflineSession, webhookRequest, type Merchant,
 } from "./helpers";
 
 const C_IDENTITY = { myshopifyDomain: DOMAIN_C, id: 9_200_000_000_003n, name: "Fixture Store C", host: "store-c.example.com" };
-const TENANT_TABLES = ["product", "review", "reviewReply", "reviewRequest", "moderationAction", "importJob", "subscription"] as const;
+const TENANT_TABLES = ["product", "importJob", "subscription", "auditLog"] as const;
 
 let A: Merchant;
 before(async () => {
@@ -32,7 +33,9 @@ before(async () => {
 });
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
-const install = (identity = C_IDENTITY) => afterAuth({ session: { shop: DOMAIN_C }, admin: fakeAdmin(identity) });
+/** C's own (fake) Shopify store answers the hook's Admin API calls — the same store its admin and storefront use. */
+const install = (identity = C_IDENTITY) => { const s = storeOf(DOMAIN_C); s.identity = identity; return afterAuth({ session: { shop: DOMAIN_C }, admin: s }); };
+const reviewsOfC = async () => reviewsIn(apiOf(DOMAIN_C, (await shopC()).id));
 const shopC = () => owner.shop.findUniqueOrThrow({ where: { shopDomain: DOMAIN_C } });
 const audit = async (shopId: string) => (await owner.auditLog.findMany({ where: { shopId }, orderBy: { createdAt: "asc" } })).map((a) => a.action);
 
@@ -42,10 +45,9 @@ async function snapshotA() {
   return {
     shop: await owner.shop.findUniqueOrThrow({ where: { id: A.shopId } }),
     settings: await owner.shopSettings.findUniqueOrThrow({ where }),
-    reviews: await owner.review.findMany({ where, orderBy: { id: "asc" } }),
-    replies: await owner.reviewReply.findMany({ where }),
+    reviews: await reviewsIn(A.api), // A's reviews in A's own Shopify store (replies included), entire entries
     jobs: await owner.importJob.findMany({ where }),
-    moderation: await owner.moderationAction.findMany({ where }),
+    audit: await owner.auditLog.findMany({ where, orderBy: { createdAt: "asc" } }),
     sessions: await owner.session.findMany({ where: { shop: DOMAIN_A } }),
   };
 }
@@ -79,9 +81,12 @@ describe("Install: a newly installed merchant starts with an empty tenant", () =
     assert.equal((await owner.billingState.findUniqueOrThrow({ where: { shopId: c.id } })).plan, "FREE");
     assert.notEqual(c.id, A.shopId);
 
-    // Every merchant-owned table is empty for C — counted WITHOUT a shop filter, so RLS alone decides visibility.
+    // C's Shopify store holds no reviews (the review type was created, empty); every Proofly table is empty for C —
+    // counted WITHOUT a shop filter, so RLS alone decides visibility (the audit log holds only the install record).
+    assert.deepEqual(await reviewsOfC(), []);
+    assert.ok(storeOf(DOMAIN_C).definitions.has("proofly_review"));
     await withTenant(c.id, async ({ db }) => {
-      for (const table of TENANT_TABLES) assert.equal(await (db[table] as { count: () => Promise<number> }).count(), 0, table);
+      for (const table of TENANT_TABLES.filter((t) => t !== "auditLog")) assert.equal(await (db[table] as { count: () => Promise<number> }).count(), 0, table);
       const settings = await db.shopSettings.findMany();
       assert.equal(settings.length, 1);
       assert.equal(settings[0].onboardingCompletedAt, null);
@@ -147,13 +152,15 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
       db.product.create({ data: { shopId, shopifyProductId: SAME_PRODUCT_ID, handle: "fixture-product-c", title: "Fixture Product C", status: "active" } }));
     const res = await submitC("Fictional lifecycle review.");
     assert.equal(res.status, 201);
-    const rows = await owner.review.findMany({ where: { shopId: c.id } });
+    const rows = await reviewsOfC();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, "pending");
-    assert.equal(rows[0].shopifyCustomerId, null);
-    assert.equal(rows[0].shopifyOrderId, null);
-    assert.equal(rows[0].verifiedPurchase, false);
-    cReviewId = rows[0].id;
+    assert.equal(rows[0].verified, false);
+    // No customer identity anywhere in the stored entry (only the display name the reviewer typed).
+    const raw = [...storeOf(DOMAIN_C).metaobjects.values()][0];
+    assert.deepEqual([...raw.fields.keys()].filter((k) => /customer|email|order|ip/i.test(k)), []);
+    assert.deepEqual(await reviewsIn(A.api).then((x) => x.filter((r) => r.body === "Fictional lifecycle review.")), []);
+    cReviewId = reviewParam(rows[0].id);
     const list = await run(() => reviewsListLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_C, "/app/reviews"))));
     assert.deepEqual((list.data as { rows: { id: string }[] }).rows.map((x) => x.id), [cReviewId]);
   });
@@ -173,7 +180,7 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
     assert.equal(await owner.session.count({ where: { shop: DOMAIN_A } }), 1);
 
     // Data is retained (deletion happens only on shop/redact — tests/privacy.test.ts).
-    assert.equal(await owner.review.count({ where: { shopId: c.id } }), 1);
+    assert.equal((await reviewsOfC()).length, 1);
   });
 
   test("uninstall webhook redelivery is idempotent; an unknown shop's uninstall creates nothing", async () => {
@@ -216,12 +223,12 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
 describe("Production install/auth configuration", () => {
   const toml = readFileSync("shopify.app.toml", "utf8");
 
-  test("V1 requests only product scopes; no order/customer scopes or order webhooks", () => {
+  test("V1 requests only product and custom-data (metaobject) scopes; no order/customer scopes or order webhooks", () => {
     const scopes = /^scopes = "([^"]*)"/m.exec(toml)?.[1];
-    assert.equal(scopes, "read_products,write_products");
+    assert.equal(scopes, "read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects"); // reviews live in Shopify metaobjects
     assert.doesNotMatch(toml, /orders|customers"/);
     assert.match(toml, /^use_legacy_install_flow = false$/m);
-    for (const f of [".env.example", ".env.test"]) assert.match(readFileSync(f, "utf8"), /^SCOPES=read_products,write_products$/m, f);
+    for (const f of [".env.example", ".env.test"]) assert.match(readFileSync(f, "utf8"), /^SCOPES=read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects$/m, f);
     assert.equal(existsSync("app/routes/webhooks.orders.fulfilled.tsx"), false);
   });
 

@@ -11,7 +11,7 @@ import { createImport, getImport, matchProduct, runImport } from "../app/lib/imp
 import { withTenant } from "../app/lib/tenant.server";
 import { action as importsAction } from "../app/routes/app.imports._index";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
-import { adminRequest, args, installMerchant, owner, proxyRequest, resetDb, run, type Merchant } from "./helpers";
+import { adminRequest, args, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 const MUG = { id: 9_850_000_000_001n, handle: "north-example-mug", title: "North Example Mug" };
@@ -26,7 +26,7 @@ const csv = (rows: Record<string, string>[]) => {
 const row = (o: Record<string, string>) => ({ review_id: `t${++n}`, rating: "5", body: `Body ${n}`, reviewer_name: "Kim Example", review_date: "2025-03-01", ...o });
 async function importRows(m: Merchant, rows: Record<string, string>[]) {
   const { jobId } = await createImport(m.shopId, { csv: csv(rows), options: { publishMode: "publish" }, actor: "test" });
-  await runImport(m.shopId, jobId);
+  await runImport(m.api, jobId);
   return (await getImport(m.shopId, jobId))!;
 }
 type Cand = { productId: string; title: string; handle: string; via: string };
@@ -51,7 +51,7 @@ describe("Title is never an automatic product-matching key", () => {
     const c = m.candidates as Cand[];
     assert.deepEqual(c.map((x) => [x.handle, x.via]), [[MUG.handle, "title"]]);
     assert.ok((await productIdsOf(A)).has(c[0].productId));
-    assert.equal(await owner.review.count({ where: { shopId: A.shopId, importJobId: j.id } }), 0);
+    assert.equal((await reviewsIn(A.api)).filter((r) => r.importJobId === j.id).length, 0);
   });
 
   test("2. several exact title matches → unmatched with every candidate (all this shop's), none selected", async () => {
@@ -63,7 +63,7 @@ describe("Title is never an automatic product-matching key", () => {
     assert.deepEqual(c.map((x) => x.handle).sort(), [TWIN1.handle, TWIN2.handle]);
     const mine = await productIdsOf(A);
     assert.ok(c.every((x) => mine.has(x.productId)));
-    assert.equal(await owner.review.count({ where: { shopId: A.shopId, importJobId: j.id } }), 0);
+    assert.equal((await reviewsIn(A.api)).filter((r) => r.importJobId === j.id).length, 0);
   });
 
   test("3. a title never overrides a stronger identifier: handle → MUG wins over title → TOTE", async () => {
@@ -72,12 +72,12 @@ describe("Title is never an automatic product-matching key", () => {
     assert.deepEqual([m.status, m.method], ["matched", "handle"]);
     const mug = await owner.product.findFirstOrThrow({ where: { shopId: A.shopId, shopifyProductId: MUG.id } });
     assert.equal(m.productId, mug.id);
-    const r = await owner.review.findFirstOrThrow({ where: { shopId: A.shopId, importJobId: j.id } });
-    assert.equal(r.productId, mug.id);
+    const r = (await reviewsIn(A.api)).find((x) => x.importJobId === j.id)!;
+    assert.equal(r.productId, MUG.id); // the review references the Shopify product the handle matched
     // And a failed or ambiguous identifier is never rescued by a title.
     const j2 = await importRows(A, [row({ product_id: "9850000000999", product_title: MUG.title }), row({ product_handle: "no-such-handle", product_title: MUG.title })]);
     assert.ok(j2.matches.every((x) => x.status !== "matched" && x.productId === null));
-    assert.equal(await owner.review.count({ where: { shopId: A.shopId, importJobId: j2.id } }), 0);
+    assert.equal((await reviewsIn(A.api)).filter((r) => r.importJobId === j2.id).length, 0);
   });
 
   test("4. near / fuzzy titles: no match and no suggestion", async () => {
@@ -107,7 +107,7 @@ describe("Title is never an automatic product-matching key", () => {
     assert.equal(j.matches[0].status, "unmatched");
     const res = await proxyList(args<LoaderFunctionArgs>(proxyRequest(A.domain, `products/${MUG.id}/reviews`), { id: String(MUG.id) }));
     assert.ok(!(await res.text()).includes("Title-only storefront probe"));
-    assert.equal(await owner.review.count({ where: { shopId: A.shopId, body: "Title-only storefront probe" } }), 0);
+    assert.equal((await reviewsIn(A.api)).filter((r) => r.body === "Title-only storefront probe").length, 0);
   });
 
   // Updated in checkpoint 8: the manual-match function now exists (resolveProductMatch), as this decision anticipated —
@@ -142,7 +142,7 @@ describe("Title is never an automatic product-matching key", () => {
     const job = await owner.importJob.findFirstOrThrow({ where: { shopId: A.shopId }, orderBy: { createdAt: "desc" } });
     const a = job.analysis as { validRows: number; unmatchedRows: number };
     assert.deepEqual([a.validRows, a.unmatchedRows], [0, 2]);
-    await runImport(A.shopId, job.id);
-    assert.equal(await owner.review.count({ where: { sourceReviewId: { in: ["sec-1", "sec-2"] } } }), 0);
+    await runImport(A.api, job.id);
+    for (const m of [A, B]) assert.equal((await reviewsIn(m.api)).filter((r) => ["sec-1", "sec-2"].includes(r.sourceReviewId)).length, 0);
   });
 });

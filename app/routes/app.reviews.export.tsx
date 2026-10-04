@@ -5,12 +5,9 @@ import { withTenant } from "../lib/tenant.server";
 
 // GET /app/reviews/export — all of the authenticated shop's reviews as CSV (import-template columns, re-importable).
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { shop, actor } = await requireAdminTenant(request);
-  const csv = await withTenant(shop.id, async (t) => {
-    const body = await exportReviewsCsv(t);
-    await t.db.auditLog.create({ data: { shopId: t.shopId, actor, action: "reviews.exported", entity: "reviews" } });
-    return body;
-  }, { timeoutMs: 120_000 });
+  const { shop, api, actor } = await requireAdminTenant(request);
+  const csv = await exportReviewsCsv(api);
+  await withTenant(shop.id, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor, action: "reviews.exported", entity: "reviews" } }));
   return new Response(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",

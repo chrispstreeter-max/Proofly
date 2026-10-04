@@ -1,7 +1,7 @@
-import type { ReviewStatus } from "@prisma/client";
-import { recomputeProduct } from "./aggregates.server";
-import { admitReviews, releaseEligibleReviews } from "./entitlements.server";
-import type { Tenant } from "./tenant.server";
+import { recomputeProducts } from "./aggregates.server";
+import { admitReviews, bumpStats } from "./entitlements.server";
+import { getReview, updateReview, type ReviewStatus, type ShopApi, type StoredReview } from "./review-store.server";
+import { withTenant, type Tenant } from "./tenant.server";
 
 export const ACTIONS = {
   approve: "published",
@@ -11,69 +11,52 @@ export const ACTIONS = {
 } as const satisfies Record<string, ReviewStatus>;
 export type ModerationActionName = keyof typeof ACTIONS;
 
+/** Admin URLs carry the numeric part of the review's metaobject id; anything else is not a review id. */
+export const reviewGid = (raw: string | undefined) => (raw && /^\d{1,20}$/.test(raw) ? `gid://shopify/Metaobject/${raw}` : null);
+export const reviewParam = (id: string) => id.split("/").pop()!;
+
 /**
- * Change status of this shop's reviews, record moderation history + audit, recompute aggregates.
- * Ids that do not belong to the shop are ignored (and indistinguishable from unknown ids).
- * Returns the number of reviews changed. Callers then call syncAfterRatingChange (rating-cache.server) outside the
- * transaction; a failed Shopify write never undoes the moderation.
+ * Changes the status of this shop's reviews, records history in the audit log and recomputes aggregates.
+ * Ids that are not reviews of this shop are ignored (the shop's Admin API cannot see another shop's entries, so they
+ * are indistinguishable from unknown ids). Approving re-signs the entry (a review edited outside Proofly becomes
+ * eligible again only through approval) and goes through the plan allowance: what doesn't fit stays approved and held.
+ * Returns the reviews changed. Callers then call syncAfterRatingChange (rating-cache.server).
  */
-export async function moderate(t: Tenant, reviewIds: string[], action: ModerationActionName, actor: string) {
-  const { db, shopId } = t;
+export async function moderate(api: ShopApi, reviewIds: string[], action: ModerationActionName, actor: string) {
   const status = ACTIONS[action];
-  const reviews = await db.review.findMany({ where: { shopId, id: { in: reviewIds } }, select: { id: true, status: true, productId: true } });
-  if (!reviews.length) return 0;
-  const ids = reviews.map((r) => r.id);
-  await db.review.updateMany({ where: { shopId, id: { in: ids } }, data: { status } });
-  if (action === "approve") {
-    // Approval ends a moderation hold; then the plan decides. Reviews that were not already public are admitted
-    // oldest-first while the allowance has room — the rest stay approved but held (plan_limit), never rejected.
-    await db.review.updateMany({ where: { shopId, id: { in: ids }, holdReason: "moderation" }, data: { holdReason: null } });
-    const newlyPublic = reviews.filter((r) => r.status !== "published").map((r) => r.id);
-    await admitReviews(t, newlyPublic, actor);
+  const changed: { before: StoredReview; after: StoredReview }[] = [];
+  for (const id of reviewIds) {
+    const before = await getReview(api, id);
+    if (!before) continue;
+    const wasPublic = before.isPublic;
+    // A newly approved review enters held; admission below decides (oldest first) whether it fits the plan.
+    let after = await updateReview(api, before, { status, held: action === "approve" ? (wasPublic ? false : true) : before.held });
+    await bumpStats(api.shopId, before, after);
+    if (action === "approve" && !wasPublic) {
+      await admitReviews(api, [after], actor);
+      after = (await getReview(api, id)) ?? after;
+    }
+    changed.push({ before, after });
   }
-  await db.moderationAction.createMany({
-    data: reviews.map((r) => ({ shopId, reviewId: r.id, action, fromStatus: r.status, toStatus: status, actor })),
-  });
-  await db.auditLog.createMany({
-    data: reviews.map((r) => ({ shopId, actor, action: `review.${action}`, entity: "review", entityId: r.id, details: { from: r.status, to: status } })),
-  });
-  for (const pid of new Set(reviews.map((r) => r.productId))) await recomputeProduct(t, pid);
-  return reviews.length;
+  if (!changed.length) return [];
+  await withTenant(api.shopId, ({ db, shopId }) => db.auditLog.createMany({
+    data: changed.map(({ before, after }) => ({ shopId, actor, action: `review.${action}`, entity: "review", entityId: after.id, details: { from: before.status, to: after.status, held: after.held } })),
+  }));
+  await recomputeProducts(api, changed.map((c) => c.after.productId));
+  return changed.map((c) => c.after);
 }
 
-/**
- * Puts reviews on the plan-limit hold, or releases them — releasing goes through the plan allowance
- * (entitlements.server releaseEligibleReviews: oldest first, only while there is room). Plan-limited reviews are stored,
- * never deleted, never public. Releasing only clears plan_limit holds — a moderation hold or a rejected/hidden status
- * is untouched.
- */
-export async function setPlanLimited(t: Tenant, reviewIds: string[], limited: boolean, actor: string) {
-  const { db, shopId } = t;
-  if (!limited) return (await releaseEligibleReviews(t, { reviewIds, actor })).released;
-  const reviews = await db.review.findMany({ where: { shopId, id: { in: reviewIds } }, select: { id: true, productId: true } });
-  if (!reviews.length) return 0;
-  await db.review.updateMany({ where: { shopId, id: { in: reviews.map((r) => r.id) } }, data: { holdReason: "plan_limit" } });
-  await db.auditLog.create({ data: { shopId, actor, action: "reviews.plan_limited", entity: "review", details: { count: reviews.length } } });
-  for (const pid of new Set(reviews.map((r) => r.productId))) await recomputeProduct(t, pid);
-  return reviews.length;
-}
-
-/** Save/remove the public reply on one of this shop's reviews. Returns false when the review is not this shop's. */
-export async function saveReply({ db, shopId }: Tenant, reviewId: string, reply: string, actor: string) {
-  const review = await db.review.findFirst({ where: { shopId, id: reviewId }, select: { id: true } });
+/** Saves/removes the public reply on one of this shop's reviews. Returns false when it is not this shop's review. */
+export async function saveReply(api: ShopApi, reviewId: string, reply: string, actor: string) {
+  const review = await getReview(api, reviewId);
   if (!review) return false;
   const text = reply.trim().slice(0, 5000);
-  if (!text) {
-    await db.reviewReply.deleteMany({ where: { shopId, reviewId } });
-    await db.auditLog.create({ data: { shopId, actor, action: "reply.delete", entity: "review", entityId: reviewId } });
-    return true;
-  }
-  await db.reviewReply.upsert({ where: { reviewId }, create: { shopId, reviewId, reply: text }, update: { reply: text } });
-  await db.auditLog.create({ data: { shopId, actor, action: "reply.save", entity: "review", entityId: reviewId } });
+  await updateReview(api, review, text ? { reply: text, replyDate: review.replyDate ?? new Date() } : { reply: null, replyDate: null });
+  await withTenant(api.shopId, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor, action: text ? "reply.save" : "reply.delete", entity: "review", entityId: review.id } }));
   return true;
 }
 
-/** Moderation history of one of this shop's reviews (empty for unknown/other-shop ids). */
+/** Moderation history of one review (Proofly's audit log — merchant edits in Shopify admin cannot alter it). */
 export function moderationHistory({ db, shopId }: Tenant, reviewId: string) {
-  return db.moderationAction.findMany({ where: { shopId, reviewId }, orderBy: { createdAt: "desc" }, take: 50 });
+  return db.auditLog.findMany({ where: { shopId, entity: "review", entityId: reviewId, action: { startsWith: "review." } }, orderBy: { createdAt: "desc" }, take: 50 });
 }

@@ -184,6 +184,9 @@ Theme Check / GraphQL schema / dependency audit, dashboard polish, App Store dra
 locally — see [LAUNCH.md](LAUNCH.md) and [APP-STORE.md](APP-STORE.md). Remaining: real-Shopify validation (LAUNCH §4).
 Product decision 2026-10-04: review photos removed entirely (storefront uploads, photo import, display, media
 allowances, public media storage and the `review_images` table) — see [ARCHITECTURE.md §11.16](ARCHITECTURE.md).
+Owner decision 2026-10-04: reviews stored in Shopify (merchant-owned metaobjects). Phase 0 (platform spike) verified;
+Phase 1 (all review reads/writes through the Shopify review store, review tables dropped) built — see
+[SHOPIFY-DATA.md](SHOPIFY-DATA.md).
 Checkpoint 6 decision (reply visibility): Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
 - **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review

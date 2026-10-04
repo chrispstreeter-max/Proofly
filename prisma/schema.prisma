@@ -59,10 +59,6 @@ model Shop {
   billing           BillingState?
   subscriptions     Subscription[]
   products          Product[]
-  reviews           Review[]
-  reviewReplies     ReviewReply[]
-  reviewRequests    ReviewRequest[]
-  moderationActions ModerationAction[]
   importJobs        ImportJob[]
   auditLogs         AuditLog[]
 
@@ -90,6 +86,9 @@ model ShopSettings {
   catalogSyncFinishedAt   DateTime? @map("catalog_sync_finished_at")
   catalogSyncCount        Int       @default(0) @map("catalog_sync_count")
   catalogSyncError        String?   @map("catalog_sync_error")
+  /// Cache of review counts by bucket (published, planLimited, pending, rejected, hidden, flagged, total). Reviews live
+  /// in Shopify (app/lib/review-store.server.ts); kept current by Proofly's own writes, recounted by maintenance.
+  reviewStats             Json      @default("{}") @map("review_stats")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @updatedAt @map("updated_at")
 
@@ -163,19 +162,6 @@ model Subscription {
   @@map("subscriptions")
 }
 
-enum ReviewStatus {
-  pending
-  published
-  rejected
-  hidden
-}
-
-/// Why a review is held back from the storefront (null = not held). plan_limit = over the plan's published allowance.
-enum HoldReason {
-  moderation
-  plan_limit
-}
-
 /// Who owns a product's Shopify rating metafields (reviews.rating / reviews.rating_count).
 /// unmanaged: Proofly never writes them (they may belong to another review app). proofly_managed: Proofly keeps them
 /// equal to its canonical aggregate. A product becomes proofly_managed when it first has a public Proofly review.
@@ -219,116 +205,12 @@ model Product {
   updatedAt        DateTime        @updatedAt @map("updated_at")
 
   shop          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  reviews       Review[]
   confirmations ProductMatchConfirmation[]
 
   @@unique([shopId, shopifyProductId])
   @@unique([shopId, id])
   @@index([shopId, handle])
   @@map("products")
-}
-
-model Review {
-  id                String       @id @default(uuid()) @db.Uuid
-  shopId            String       @map("shop_id") @db.Uuid
-  productId         String       @map("product_id") @db.Uuid
-  source            String // import source key (e.g. "csv") | storefront | request
-  sourceReviewId    String       @map("source_review_id")
-  rating            Int
-  title             String       @default("")
-  body              String
-  reviewerName      String       @map("reviewer_name")
-  reviewDate        DateTime     @map("review_date")
-  status            ReviewStatus @default(pending)
-  holdReason        HoldReason?  @map("hold_reason") // storefront shows only status = published AND hold_reason IS NULL
-  verifiedPurchase  Boolean      @default(false) @map("verified_purchase")
-  imported          Boolean      @default(false)
-  flags             String[]     @default([])
-  // Private: never serialised to the storefront.
-  shopifyCustomerId BigInt?      @map("shopify_customer_id")
-  shopifyOrderId    BigInt?      @map("shopify_order_id")
-  submitterIpHash   String?      @map("submitter_ip_hash")
-  /// Import that created this review (metadata; tenant-scoped by RLS). Re-imports never change it except to adopt
-  /// rows of an import that never finished.
-  importJobId       String?      @map("import_job_id") @db.Uuid
-  /// The product identifiers exactly as the source gave them (audit), e.g. {"id":"…","handle":"…","sku":"…"}
-  sourceProductRef  String?      @map("source_product_ref")
-  /// sha256 of normalised reviewer + body: duplicate / cross-product-repeat flagging only (never publication)
-  contentHash       String?      @map("content_hash")
-  sourceDateRaw     String?      @map("source_date_raw")
-  createdAt         DateTime     @default(now()) @map("created_at")
-  updatedAt         DateTime     @updatedAt @map("updated_at")
-
-  shop              Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  product           Product            @relation(fields: [shopId, productId], references: [shopId, id], onDelete: Cascade)
-  reply             ReviewReply?
-  request           ReviewRequest?
-  moderationActions ModerationAction[]
-
-  @@unique([shopId, source, sourceReviewId])
-  @@unique([shopId, id])
-  @@index([shopId, productId, status, reviewDate(sort: Desc)])
-  @@index([shopId, importJobId])
-  @@index([shopId, contentHash])
-  @@index([shopId, status, reviewDate(sort: Desc)])
-  @@map("reviews")
-}
-
-model ReviewReply {
-  id        String   @id @default(uuid()) @db.Uuid
-  shopId    String   @map("shop_id") @db.Uuid
-  reviewId  String   @unique @map("review_id") @db.Uuid
-  reply     String
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)
-
-  @@unique([shopId, reviewId])
-  @@map("review_replies")
-}
-
-/// V1.1 feature (review requests) — table retained and tenant-scoped; not part of the V1 product scope.
-model ReviewRequest {
-  id                String    @id @default(uuid()) @db.Uuid
-  shopId            String    @map("shop_id") @db.Uuid
-  shopifyCustomerId BigInt?   @map("shopify_customer_id")
-  shopifyOrderId    BigInt    @map("shopify_order_id")
-  shopifyProductId  BigInt    @map("shopify_product_id")
-  // SHA-256 of the emailed token, set when the link is issued (raw token is never stored).
-  tokenHash         String?   @map("token_hash")
-  sentAt            DateTime? @map("sent_at")
-  completedAt       DateTime? @map("completed_at")
-  expiresAt         DateTime? @map("expires_at")
-  reviewId          String?   @unique @map("review_id") @db.Uuid
-  createdAt         DateTime  @default(now()) @map("created_at")
-
-  shop   Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  review Review? @relation(fields: [shopId, reviewId], references: [shopId, id])
-
-  @@unique([shopId, shopifyOrderId, shopifyProductId])
-  @@unique([shopId, reviewId])
-  @@index([shopId, tokenHash])
-  @@map("review_requests")
-}
-
-/// Moderation history (one row per status change), merchant-private.
-model ModerationAction {
-  id         String       @id @default(uuid()) @db.Uuid
-  shopId     String       @map("shop_id") @db.Uuid
-  reviewId   String       @map("review_id") @db.Uuid
-  action     String
-  fromStatus ReviewStatus @map("from_status")
-  toStatus   ReviewStatus @map("to_status")
-  actor      String
-  createdAt  DateTime     @default(now()) @map("created_at")
-
-  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)
-
-  @@index([shopId, reviewId, createdAt(sort: Desc)])
-  @@map("moderation_actions")
 }
 
 /// Import job records (the import pipeline itself arrives in a later checkpoint).

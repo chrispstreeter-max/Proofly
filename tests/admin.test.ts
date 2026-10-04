@@ -6,13 +6,15 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { reconcileBilling } from "../app/lib/billing.server";
 import { rateLimit } from "../app/lib/http.server";
-import { publishStorefrontSettings, withTenant } from "../app/lib/tenant.server";
+import { reviewParam } from "../app/lib/moderation.server";
+import { getReview } from "../app/lib/review-store.server";
+import { publishStorefrontSettings } from "../app/lib/tenant.server";
 import { loader as productsLoader } from "../app/routes/app.products";
 import { action as bulkAction, loader as reviewsLoader } from "../app/routes/app.reviews._index";
 import { action as settingsAction, loader as settingsLoader } from "../app/routes/app.settings";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import { liquidProduct, renderBlock } from "../scripts/lib/extension-liquid";
-import { adminRequest, args, FakeShopify, installMerchant, owner, proxyRequest, resetDb, run, SAME_PRODUCT_ID, storefrontHost, type Merchant } from "./helpers";
+import { adminRequest, args, FakeShopify, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, SAME_PRODUCT_ID, seedReview, storefrontHost, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 before(async () => {
@@ -28,13 +30,13 @@ const post = (m: Merchant, path: string, fields: Record<string, string | string[
   for (const [k, v] of Object.entries(fields)) for (const x of [v].flat()) fd.append(k, x);
   return adminRequest(m.domain, path, { method: "POST", body: fd });
 };
-const pending = (m: Merchant, n: number, tag: string) =>
-  withTenant(m.shopId, async ({ db, shopId }) => {
-    const p = await db.product.findFirstOrThrow({ where: { shopId } });
-    const ids: string[] = [];
-    for (let i = 0; i < n; i++) ids.push((await db.review.create({ data: { shopId, productId: p.id, source: "storefront", sourceReviewId: `${tag}-${i}`, rating: 4, body: `${tag} ${i}`, reviewerName: "R", reviewDate: new Date(Date.UTC(2025, 0, 1, i)), status: "pending" } })).id);
-    return ids;
-  });
+/** n pending reviews in the shop's store; returns their admin ids (the numeric part of the metaobject id). */
+const pending = async (m: Merchant, n: number, tag: string) => {
+  const ids: string[] = [];
+  for (let i = 0; i < n; i++) ids.push(reviewParam((await seedReview(m.api, { productId: SAME_PRODUCT_ID, source: "storefront", sourceReviewId: `${tag}-${i}`, rating: 4, body: `${tag} ${i}`, reviewerName: "R", reviewDate: new Date(Date.UTC(2025, 0, 1, i)), status: "pending" })).id));
+  return ids;
+};
+const byParam = async (m: Merchant, ids: string[]) => (await reviewsIn(m.api)).filter((r) => ids.includes(reviewParam(r.id)));
 const submit = async (m: Merchant, label: string, fields: Record<string, string | Blob> = {}, ip = "198.51.100.20") => {
   const fd = new FormData();
   for (const [k, v] of Object.entries({ product_id: String(SAME_PRODUCT_ID), rating: "5", body: "Fictional submission.", name: "Sam Example", ...fields })) fd.set(k, v);
@@ -47,18 +49,16 @@ describe("Bulk moderation", () => {
     const theirs = await pending(B, 2, "bulk-b");
     const res = await run(() => bulkAction(args<ActionFunctionArgs>(post(A, "/app/reviews", { intent: "approve", ids: [...mine, ...theirs, "not-a-uuid"] }))));
     assert.match((res.data as { message: string }).message, /^3 reviews approved\./);
-    assert.equal(await owner.review.count({ where: { id: { in: mine }, status: "published", holdReason: null } }), 3);
-    assert.equal(await owner.review.count({ where: { id: { in: theirs }, status: "pending" } }), 2);
-    assert.equal(await owner.moderationAction.count({ where: { reviewId: { in: theirs } } }), 0);
+    assert.equal((await byParam(A, mine)).filter((r) => r.isPublic).length, 3);
+    assert.equal((await byParam(B, theirs)).filter((r) => r.status === "pending").length, 2);
+    assert.equal(await owner.auditLog.count({ where: { entity: "review", entityId: { in: theirs.map((x) => `gid://shopify/Metaobject/${x}`) }, action: { startsWith: "review." } } }), 0);
+    assert.equal(await owner.auditLog.count({ where: { shopId: A.shopId, action: "review.approve", entityId: { in: mine.map((x) => `gid://shopify/Metaobject/${x}`) } } }), 3);
   });
 
   test("approval beyond the plan allowance keeps reviews approved but held, and says so; hide / restore work in bulk", async () => {
     // Free = 100. Fill to 99 public, then approve 3: 1 published, 2 held (oldest first).
-    const pub = await owner.review.count({ where: { shopId: A.shopId, status: "published", holdReason: null } });
-    await withTenant(A.shopId, async ({ db, shopId }) => {
-      const p = await db.product.findFirstOrThrow({ where: { shopId } });
-      await db.review.createMany({ data: Array.from({ length: 99 - pub }, (_, i) => ({ shopId, productId: p.id, source: "seed", sourceReviewId: `fill-${i}`, rating: 5, body: "x", reviewerName: "x", reviewDate: new Date("2020-01-01"), status: "published" as const })) });
-    });
+    const pub = (await reviewsIn(A.api)).filter((r) => r.isPublic).length;
+    for (let i = 0; i < 99 - pub; i++) await seedReview(A.api, { productId: SAME_PRODUCT_ID, source: "seed", sourceReviewId: `fill-${i}`, body: "x", reviewerName: "x", reviewDate: new Date("2020-01-01") });
     const ids = await pending(A, 3, "over");
     const res = await run(() => bulkAction(args<ActionFunctionArgs>(post(A, "/app/reviews", { intent: "approve", ids }))));
     assert.match((res.data as { message: string }).message, /3 reviews approved\. 2 approved but currently held by your plan limit/);
@@ -71,11 +71,11 @@ describe("Bulk moderation", () => {
   });
 
   test("unknown intents and empty selections do nothing", async () => {
-    for (const fields of [{ intent: "delete", ids: [A.reviewId] }, { intent: "approve" }] as Record<string, string | string[]>[]) {
+    for (const fields of [{ intent: "delete", ids: [reviewParam(A.reviewId)] }, { intent: "approve" }] as Record<string, string | string[]>[]) {
       const res = await run(() => bulkAction(args<ActionFunctionArgs>(post(A, "/app/reviews", fields))));
       assert.match((res.data as { message: string }).message, /Choose an action|Select at least one/);
     }
-    assert.ok(await owner.review.findUnique({ where: { id: A.reviewId } }));
+    assert.ok(await getReview(A.api, A.reviewId));
   });
 });
 
@@ -84,10 +84,10 @@ describe("Settings are enforced on the storefront", () => {
     await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", moderationEnabled: "on" }))));
     const s = await run(() => settingsLoader(args<LoaderFunctionArgs>(adminRequest(B.domain, "/app/settings"))));
     assert.equal((s.data as { reviewSubmissionEnabled: boolean }).reviewSubmissionEnabled, false);
-    const before = await owner.review.count({ where: { shopId: B.shopId } });
+    const before = (await reviewsIn(B.api)).length;
     const res = await submit(B, "MB");
     assert.equal(res.status, 403);
-    assert.equal(await owner.review.count({ where: { shopId: B.shopId } }), before);
+    assert.equal((await reviewsIn(B.api)).length, before);
     await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", moderationEnabled: "on" }))));
     assert.equal((await submit(B, "MB", {}, "198.51.100.21")).status, 201);
   });
@@ -95,8 +95,8 @@ describe("Settings are enforced on the storefront", () => {
   test("approval off → new submissions publish immediately within the allowance", async () => {
     await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on" }))));
     assert.equal((await submit(B, "MB", { body: "Auto-published fictional review." }, "198.51.100.24")).status, 201);
-    const r = await owner.review.findFirstOrThrow({ where: { shopId: B.shopId, body: "Auto-published fictional review." } });
-    assert.deepEqual([r.status, r.holdReason], ["published", null]);
+    const r = (await reviewsIn(B.api)).find((x) => x.body === "Auto-published fictional review.")!;
+    assert.deepEqual([r.status, r.held, r.isPublic], ["published", false, true]);
   });
 
   test("settings changes are per shop and ignore tenant fields; the theme mirror follows the saved settings", async () => {

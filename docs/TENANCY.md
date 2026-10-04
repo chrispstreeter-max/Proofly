@@ -1,4 +1,4 @@
-# Proofly — Tenant isolation and shop lifecycle (Checkpoints 1–4)
+# Proofly — Tenant isolation and shop lifecycle (Checkpoints 1–4; reviews in Shopify since Phase 1)
 
 Every Shopify store that installs Proofly is an independent tenant (`shops` row). Merchant data never crosses tenants.
 
@@ -23,7 +23,7 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
 - **Authenticate**: every embedded request carries an App Bridge session token. With no valid offline session the
   library performs a token exchange, stores the (expiring) offline token encrypted, and runs `afterAuth`. Running
   `afterAuth` again on refresh keeps the same tenant and refreshes the name and storefront hosts; routine refreshes write no audit record (only install, reinstall, uninstall and merchant actions are audited).
-- **Scopes**: `read_products,write_products` only. No order or customer scopes and no order webhooks; storefront
+- **Scopes**: `read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects` (products, plus the custom data type that holds reviews). No order or customer scopes and no order webhooks; storefront
   submissions ignore `logged_in_customer_id` and store no customer identity.
 - **Onboarding**: a new tenant starts empty (default settings only). The dashboard shows a setup checklist with
   theme-editor deep links (the merchant saves; the app never edits themes) until "Finish setup" sets
@@ -40,8 +40,13 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
 2. **Row-level security** — merchant tables have RLS enabled and forced; policies compare `shop_id` with the
    per-transaction `app.shop_id` set by `withTenant`. No setting → no rows (fail closed). The app connects as
    `proofly_app` (no superuser, no BYPASSRLS); migrations run as the schema owner.
-3. **Database constraints** — composite foreign keys `(shop_id, id)` between products, reviews, replies,
-   requests and moderation actions; uniques are per shop: `(shop_id, shopify_product_id)`, `(shop_id, source, source_review_id)`.
+3. **Database constraints** — composite foreign keys `(shop_id, id)` between products, import matches and
+   confirmations; uniques are per shop, e.g. `(shop_id, shopify_product_id)`.
+3a. **Reviews (Shopify-native isolation)** — reviews live in each merchant's own Shopify store
+   (`app/lib/review-store.server.ts`). Proofly reaches them only through that shop's authenticated Admin API client
+   (admin session, app-proxy offline session, or the offline session for background work), which cannot see another
+   shop's data; review ids from another shop are simply not found. Uniqueness of `(source, source review id)` is the
+   entry handle (a hash of both).
 4. **Storage** — the only stored files are import CSVs, in private storage under `s/<shop_id>/`. No route serves a
    stored file, and there is no cross-tenant read.
 5. **Same response for missing and foreign** — admin detail/actions return the same 404; storefront endpoints return

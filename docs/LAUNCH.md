@@ -1,4 +1,4 @@
-# Proofly — Production readiness and V1 definition of done (Checkpoint 10)
+# Proofly — Production readiness and V1 definition of done (Checkpoint 10; reviews in Shopify since Phase 1)
 
 Nothing here has been deployed. This is what a deployment needs, what is proven offline, and what only a real Shopify
 store can prove.
@@ -75,7 +75,7 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
 | Requirement | Evidence (all offline, `npm test` unless noted) |
 |---|---|
 | New merchant starts empty | `lifecycle`: install creates the shop with no data; `import` 1 |
-| Merchant A cannot access Merchant B | `isolation` (30 cases: library, admin, storefront, database, webhooks); `database` (RLS, composite FKs) |
+| Merchant A cannot access Merchant B | `isolation` (29 cases: store, admin, storefront, database, webhooks) — reviews live in each shop's own Shopify store and are reached only through that shop's Admin API; `database` (RLS, composite FKs, no review content in Proofly's database) |
 | Shopify identity controls the tenant; relationships tenant-safe | `lifecycle`: tenant from the session token, not `?shop=`; mismatched identity refused; `database` composite FKs |
 | Install, reinstall, uninstall | `lifecycle`: install → onboard → uninstall (dark, sessions deleted) → reinstall (same tenant), with a bystander byte-for-byte unchanged |
 | Product sync; rating metafields correct | `sync`: all statuses, resume, throttling, webhooks; aggregate = metafields; reconciliation; third-party ratings untouched |
@@ -94,6 +94,11 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
 | Production configuration | `production`: environment checks, health check, image contents |
 
 ## 4. REAL-SHOPIFY VALIDATION REQUIRED
+
+**Reviews stored in Shopify (Phase 1):** every review read and write goes through the merchant's Shopify store. In
+addition to the items below, validate on a development store: review creation from the storefront, moderation and
+replies from the admin, an import of a few hundred rows, the daily recount, and a review edited in Shopify admin
+staying hidden until re-approved.
 
 None of the items below can be proven offline. Each one needs explicit authorisation and a development store, never a
 live merchant store.

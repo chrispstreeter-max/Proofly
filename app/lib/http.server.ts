@@ -29,10 +29,6 @@ export function clientIp(request: Request) {
   return request.headers.get("x-forwarded-for")?.split(",")[0].trim() || "unknown";
 }
 
-export function ipHash(ip: string) {
-  return createHash("sha256").update(`${process.env.IP_HASH_SALT ?? ""}:${ip}`).digest("hex");
-}
-
 export function json(data: unknown, init: ResponseInit & { cache?: number } = {}) {
   const { cache, ...rest } = init;
   const headers = new Headers(rest.headers);

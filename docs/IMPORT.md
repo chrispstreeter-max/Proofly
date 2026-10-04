@@ -1,6 +1,7 @@
 # Proofly — Review import (Checkpoints 6 and 8)
 
-Implementation: `app/lib/import.server.ts` (engine), `app/lib/csv.ts` (RFC 4180 parser), admin routes
+Implementation: `app/lib/import.server.ts` (engine; reviews are written into the shop's Shopify store through
+`app/lib/review-store.server.ts`), `app/lib/csv.ts` (RFC 4180 parser), admin routes
 `app.imports._index.tsx` (upload, column mapping, history), `app.imports.$id.tsx` (analysis, manual matching, start,
 resume, cancel, re-import), `app.imports.$id_.report.tsx` (problem report CSV).
 
@@ -95,7 +96,8 @@ Rules:
 
 ## 4. Identity and idempotency
 
-- **Identity:** `(shop, source, source_review_id)` is unique. Without a source id:
+- **Identity:** `(shop, source, source_review_id)` is unique: the review's entry handle in the shop's Shopify store is a
+  hash of source + source review id, so the same review can never be written twice. Without a source id:
   `h_` + SHA-256 of [product reference, normalised reviewer, ISO date, normalised body].
 - **Same id twice in one file:** identical records → imported once (`duplicate_source_row`); different content → none
   imported (`conflicting_duplicate_id`), so the result never depends on row order.
@@ -103,8 +105,8 @@ Rules:
   replies and moderation history, and use no extra allowance.
   - **One exception:** rows created by an import that never finished (failed or cancelled) are adopted by the new
     import, so they're admitted in date order with the rest.
-- **Content duplicates** (same reviewer and text): imported, flagged `possible_duplicate` (same product) or
-  `cross_product_repeat`. Flags are admin information only, never used for publication.
+- **Content duplicates** (same reviewer and text within the file): imported, flagged `possible_duplicate` (same
+  product) or `cross_product_repeat`. Flags are admin information only, never used for publication.
 
 ## 5. Review states
 
@@ -128,7 +130,7 @@ stored or reported, and the review itself imports normally.
 
 - **Never truncated:** every valid review is stored. Published-intent reviews are admitted oldest first while the
   published-review allowance has room; the rest are plan-limited (held, never deleted). Selection is review date, then
-  `(source, source_review_id)`; it never depends on rating, content or row order.
+  the review's stable handle (a hash of source + source review id); it never depends on rating, content or row order.
 - **Grandfathering:** published reviews stay public after a downgrade, and imports then hold new reviews.
 - **No automatic publication on upgrade:** the merchant uses "Publish eligible reviews".
 - **Aggregates and rating cache:** aggregates are recomputed through `recomputeProduct`; the Shopify rating cache is

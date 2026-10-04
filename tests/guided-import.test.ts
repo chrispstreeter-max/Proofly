@@ -10,7 +10,7 @@ import { withTenant } from "../app/lib/tenant.server";
 import { action as detailAction, loader as detailLoader } from "../app/routes/app.imports.$id";
 import { loader as reportLoader } from "../app/routes/app.imports.$id_.report";
 import { action as uploadAction } from "../app/routes/app.imports._index";
-import { adminRequest, args, installMerchant, owner, resetDb, run, type Merchant } from "./helpers";
+import { adminRequest, args, installMerchant, owner, resetDb, reviewsIn, run, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 const MUG = { id: 9_870_000_000_001n, handle: "east-example-mug", title: "East Example Mug" };
@@ -47,12 +47,12 @@ describe("Manual product matching", () => {
     const mug = await productOf(A, MUG.id);
     await resolveProductMatch(A.shopId, jobId, titleRef, mug.id, "staff:1");
     assert.equal((await refreshAnalysis(A.shopId, jobId))!.unmatchedRows, 0);
-    await runImport(A.shopId, jobId);
+    await runImport(A.api, jobId);
     job = (await getImport(A.shopId, jobId))!;
     assert.equal((job.counts as { imported: number }).imported, 2);
     const m = job.matches.find((x) => x.method === "manual")!;
     assert.equal(m.productId, mug.id);
-    assert.ok(await owner.review.findFirst({ where: { shopId: A.shopId, importJobId: jobId, productId: mug.id } }));
+    assert.ok((await reviewsIn(A.api)).find((r) => r.importJobId === jobId && r.productId === MUG.id));
     assert.ok(await owner.auditLog.findFirst({ where: { shopId: A.shopId, action: "import.match_confirmed", actor: "staff:1" } }));
   });
 
@@ -98,16 +98,16 @@ describe("Manual product matching", () => {
   test("after an import, newly matched rows are imported by a re-import; existing rows are not touched", async () => {
     const rows = [row({ review_id: "re-1", product_handle: LAMP.handle }), row({ review_id: "re-2", product_handle: "renamed-lamp" })];
     const { jobId: j } = await createImport(B.shopId, { csv: csv(rows), options: { publishMode: "publish" }, actor: "test" });
-    await runImport(B.shopId, j);
-    assert.equal(await owner.review.count({ where: { shopId: B.shopId, sourceReviewId: { in: ["re-1", "re-2"] } } }), 1);
-    const before = await owner.review.findFirstOrThrow({ where: { shopId: B.shopId, sourceReviewId: "re-1" } });
+    await runImport(B.api, j);
+    assert.equal((await reviewsIn(B.api)).filter((r) => ["re-1", "re-2"].includes(r.sourceReviewId)).length, 1);
+    const before = (await reviewsIn(B.api)).find((r) => r.sourceReviewId === "re-1")!;
     await resolveProductMatch(B.shopId, j, JSON.stringify({ id: "", handle: "renamed-lamp", sku: "", title: "" }), (await productOf(B, LAMP.id)).id, "x");
     const res = await run(() => detailAction(args<ActionFunctionArgs>(post(B, `/app/imports/${j}`, { intent: "reimport" }), { id: j })));
     const next = res.response!.headers.get("Location")!.split("/").pop()!;
-    await runImport(B.shopId, next);
+    await runImport(B.api, next);
     const c = (await getImport(B.shopId, next))!.counts as Record<string, number>;
     assert.deepEqual([c.imported, c.alreadyImported], [1, 1]);
-    assert.deepEqual(await owner.review.findFirstOrThrow({ where: { shopId: B.shopId, sourceReviewId: "re-1" } }), before);
+    assert.deepEqual((await reviewsIn(B.api)).find((r) => r.sourceReviewId === "re-1"), before);
   });
 });
 

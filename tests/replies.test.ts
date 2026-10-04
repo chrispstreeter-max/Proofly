@@ -7,9 +7,9 @@ import type { LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { reconcileBilling } from "../app/lib/billing.server";
 import { serializeReview } from "../app/lib/reviews.server";
-import { withTenant } from "../app/lib/tenant.server";
+import { getReview } from "../app/lib/review-store.server";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
-import { args, DOMAIN_A, DOMAIN_B, FakeShopify, installMerchant, owner, proxyRequest, resetDb, SAME_PRODUCT_ID, type Merchant } from "./helpers";
+import { args, DOMAIN_A, DOMAIN_B, FakeShopify, installMerchant, owner, proxyRequest, resetDb, reviewsIn, SAME_PRODUCT_ID, seedReview, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 const setPlan = (m: Merchant, handle: string | null) => {
@@ -19,7 +19,8 @@ const setPlan = (m: Merchant, handle: string | null) => {
 };
 const list = async (domain: string, extra: Record<string, string> = {}, headers: Record<string, string> = {}) =>
   (await proxyList(args<LoaderFunctionArgs>(proxyRequest(domain, `products/${SAME_PRODUCT_ID}/reviews`, extra, { headers }), { id: String(SAME_PRODUCT_ID) }))).json() as Promise<{ reviews: { body: string; reply: { body: string } | null }[] }>;
-const replyRows = (m: Merchant) => owner.reviewReply.findMany({ where: { shopId: m.shopId } });
+/** The stored replies of a shop (in its Shopify store), with the review they belong to. */
+const replyRows = async (m: Merchant) => (await reviewsIn(m.api)).filter((r) => r.reply).map((r) => ({ id: r.id, reply: r.reply, replyDate: r.replyDate }));
 
 before(async () => {
   await resetDb();
@@ -80,18 +81,15 @@ describe("Reply visibility follows the Replies entitlement; replies are never lo
 
   test("the entitlement never bypasses review visibility: held, hidden and rejected reviews stay out, with their replies", async () => {
     await setPlan(A, "pro");
-    await withTenant(A.shopId, async ({ db, shopId }) => {
-      for (const [status, hold, tag] of [["published", "plan_limit", "held"], ["hidden", null, "hidden"], ["rejected", null, "rejected"], ["pending", null, "pending"]] as const) {
-        const r = await db.review.create({ data: { shopId, productId: A.productId, source: "csv", sourceReviewId: `vis-${tag}`, rating: 5, body: `body ${tag}`, reviewerName: "X", reviewDate: new Date("2025-01-01"), status, holdReason: hold } });
-        await db.reviewReply.create({ data: { shopId, reviewId: r.id, reply: `secret reply ${tag}` } });
-      }
-    });
+    for (const [status, held, tag] of [["published", true, "held"], ["hidden", false, "hidden"], ["rejected", false, "rejected"], ["pending", false, "pending"]] as const) {
+      await seedReview(A.api, { productId: SAME_PRODUCT_ID, sourceReviewId: `vis-${tag}`, body: `body ${tag}`, reviewerName: "X", reviewDate: new Date("2025-01-01"), status, held, reply: `secret reply ${tag}` });
+    }
     const text = JSON.stringify(await list(DOMAIN_A));
     for (const tag of ["held", "hidden", "rejected", "pending"]) assert.ok(!text.includes(`secret reply ${tag}`) && !text.includes(`body ${tag}`), tag);
   });
 
   test("guard: the serializer itself omits a stored reply when not entitled, and the storefront route asks the entitlement layer", async () => {
-    const r = await owner.review.findFirstOrThrow({ where: { shopId: A.shopId, source: "csv", sourceReviewId: "fixture-review-1" }, include: { reply: true } });
+    const r = (await getReview(A.api, A.reviewId))!;
     assert.ok(r.reply);
     assert.equal(serializeReview(r, { replies: false }).reply, null);
     assert.equal(serializeReview(r, { replies: true }).reply?.body, "Reply from store A");

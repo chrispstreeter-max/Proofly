@@ -3,9 +3,9 @@
 **Proofly** is a Shopify App Store app for product reviews: bring your existing reviews with you, manage them in one
 place, and display them beautifully across your store.
 
-> Status: **Checkpoint 10 — V1 code complete offline** (multi-tenancy, installation, storefront, product sync and rating
-> cache, billing and entitlements, import engine, review management, guided import, privacy/retention/export, production
-> readiness). Real-Shopify validation is next: [docs/LAUNCH.md](docs/LAUNCH.md) §4. Nothing is deployed, installed or connected to a Shopify store. Import: [docs/IMPORT.md](docs/IMPORT.md) · Billing:
+> Status: **Reviews stored in Shopify — Phase 1 built.** Reviews live in each merchant's own Shopify store
+> ([docs/SHOPIFY-DATA.md](docs/SHOPIFY-DATA.md)); Proofly keeps settings, imports, billing and logs. Real-Shopify
+> validation runs on a development store only ([docs/LAUNCH.md](docs/LAUNCH.md) §4); nothing is deployed to production. Import: [docs/IMPORT.md](docs/IMPORT.md) · Billing:
 > [docs/BILLING.md](docs/BILLING.md) · Privacy and retention: [docs/PRIVACY.md](docs/PRIVACY.md).
 > Import rule: title is never an automatic product-matching key (ID → handle → SKU → other exact identifiers →
 > merchant-confirmed manual match; exact titles are suggestions only). See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
@@ -24,7 +24,6 @@ cp .env.example .env                    # fill local values (TOKEN_ENCRYPTION_KE
 ./scripts/db.sh setup                   # databases + proofly_app role (no superuser, no RLS bypass)
 set -a; . ./.env; set +a; npx prisma migrate deploy   # runs as the schema owner (DIRECT_DATABASE_URL)
 npx react-router dev --port 3000
-npm run dev:seed                        # optional: fictional dev shop + reviews, then open /dev/preview
 ```
 
 The app connects as `proofly_app`, so Postgres row-level security applies to every query. Merchant data is reachable

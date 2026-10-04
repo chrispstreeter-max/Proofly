@@ -12,6 +12,8 @@ listing copy are not invented here.
 - **Key benefits:**
   - **Migration first:** import your reviews from a CSV. Proofly matches products by ID, handle or SKU.
     It never guesses, so anything uncertain waits for your decision.
+  - **Your reviews stay in your store:** reviews are saved in your own Shopify store as Shopify custom data, so they
+    stay yours even if you stop using Proofly.
   - **Native storefront:** a review widget, a rating summary and product-card stars built as theme app blocks. There are
     no theme code edits, and they use Shopify's standard rating fields.
   - **Fair plans:** nothing is ever deleted because of a plan limit. Reviews over the allowance are kept and published
@@ -47,8 +49,9 @@ From shoppers who submit a review:
 
 Proofly does not accept or store photos.
 
-We do not ask shoppers for an email address. We store a salted one-way hash of the submitter's IP address to prevent
-abuse. We do not access orders or customer records.
+Reviews are stored in the merchant's own Shopify store (as Shopify custom data), not on our servers. We do not ask
+shoppers for an email address, and we do not store their IP address, customer account or order. Abuse limits use
+short-lived, one-way hashed counters that are deleted within a day. We do not access orders or customer records.
 
 From imports, we store the review files the merchant uploads, in private storage, for up to 30 days after the import
 finishes. Files are kept longer only while some of their products still need the merchant's decision.
@@ -59,12 +62,14 @@ product ratings to the merchant's store. We do not sell data and do not use it f
 **Retention and deletion**
 
 - Merchants can hide or reject any review at any time and export all reviews as CSV.
-- On uninstall, Proofly stops displaying reviews immediately.
-- When Shopify sends the shop-deletion request (48 hours after uninstall), we permanently delete all of the store's
-  data and files. We keep only a non-identifying record that the deletion happened.
+- On uninstall, Proofly stops displaying reviews immediately. The reviews stay in the merchant's own Shopify store.
+- When Shopify sends the shop-deletion request (48 hours after uninstall), we permanently delete everything we hold
+  for the store (settings, import files, logs, access tokens). We keep only a non-identifying record that the
+  deletion happened.
 - We honour Shopify's customer data-request and customer-redaction requests.
 
-**Sub-processors [decide]:** application hosting, managed Postgres, and object storage with a CDN.
+**Sub-processors [decide]:** application hosting, managed Postgres (settings and logs only), and private object
+storage for import files.
 
 **Contact [decide].**
 

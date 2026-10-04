@@ -21,14 +21,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ...(show === "reviewed" ? { reviewCount: { gt: 0 } } : {}),
   };
   const [rows, count] = await withTenant(shop.id, ({ db }) => Promise.all([
-    db.product.findMany({ where, orderBy: [{ reviewCount: "desc" }, { title: "asc" }], skip: (page - 1) * PER_PAGE, take: PER_PAGE, include: { _count: { select: { reviews: true } } } }),
+    db.product.findMany({ where, orderBy: [{ reviewCount: "desc" }, { title: "asc" }], skip: (page - 1) * PER_PAGE, take: PER_PAGE }),
     db.product.count({ where }),
   ]));
   return {
     count, page, pages: Math.max(1, Math.ceil(count / PER_PAGE)),
     rows: rows.map((p) => ({
       id: p.id, title: p.title, handle: p.handle, status: p.status ?? "", deleted: !!p.deletedAt,
-      published: p.reviewCount, stored: p._count.reviews, average: Number(p.averageRating).toFixed(2),
+      published: p.reviewCount, average: Number(p.averageRating).toFixed(2),
       managed: p.ratingOwnership === "proofly_managed", inSync: p.ratingOwnership !== "proofly_managed" || (p.syncedCount === p.reviewCount && !!p.syncedAverage?.equals(p.averageRating)),
     })),
   };
@@ -55,7 +55,7 @@ export default function Products() {
         <s-table>
           <s-table-header-row>
             <s-table-header>Product</s-table-header><s-table-header>Status</s-table-header><s-table-header>Published reviews</s-table-header>
-            <s-table-header>Stored reviews</s-table-header><s-table-header>Average</s-table-header><s-table-header>Shopify rating</s-table-header>
+            <s-table-header>Average</s-table-header><s-table-header>Shopify rating</s-table-header>
           </s-table-header-row>
           <s-table-body>
             {rows.map((p) => (
@@ -63,7 +63,6 @@ export default function Products() {
                 <s-table-cell><s-link href={`/app/reviews?product=${encodeURIComponent(p.handle)}`}>{p.title}</s-link></s-table-cell>
                 <s-table-cell>{p.deleted ? <s-badge>Deleted in Shopify (reviews kept)</s-badge> : p.status}</s-table-cell>
                 <s-table-cell>{p.published}</s-table-cell>
-                <s-table-cell>{p.stored}</s-table-cell>
                 <s-table-cell>{p.published ? p.average : "—"}</s-table-cell>
                 <s-table-cell>{p.managed ? (p.inSync ? "Managed by Proofly" : "Managed by Proofly · sync pending") : "Not managed by Proofly"}</s-table-cell>
               </s-table-row>

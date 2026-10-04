@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { recomputeProduct } from "./aggregates.server";
+import { recomputeProducts } from "./aggregates.server";
 import { parseCsv } from "./csv";
-import { can, releaseEligibleReviews } from "./entitlements.server";
+import { bumpStats, can, releaseEligibleReviews } from "./entitlements.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
+import { createReview, findByHandles, reviewHandle, scanReviews, updateReview, type ShopApi } from "./review-store.server";
 import { importFileKey, readPrivate, storePrivateFile } from "./storage.server";
 import { isShopActive, withTenant, type Tenant } from "./tenant.server";
 
@@ -330,10 +331,12 @@ type Counts = Record<"imported" | "alreadyImported" | "adopted" | "repliesImport
 const ZERO: Counts = { imported: 0, alreadyImported: 0, adopted: 0, repliesImported: 0, importedPending: 0, importedHidden: 0, importedRejected: 0 };
 
 /**
- * Runs (or resumes) an import for the authenticated shop. Safe to call again after any failure: it continues at the
- * job's cursor; rows already written are never duplicated ((shop, source, source_review_id) is unique).
+ * Runs (or resumes) an import for the authenticated shop, writing reviews into its Shopify store through the review
+ * store (app/lib/review-store.server.ts). Safe to call again after any failure: it continues at the job's cursor;
+ * a review is never written twice (its handle is derived from source + source review id).
  */
-export async function runImport(shopId: string, jobId: string, opts: { graphql?: Parameters<typeof syncAfterRatingChange>[1]; batchRows?: number; failAfterBatches?: number } = {}) {
+export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?: number; failAfterBatches?: number; syncRatings?: boolean } = {}) {
+  const { shopId } = api;
   const job = await withTenant(shopId, async (t) => {
     const { db } = t;
     await lockImports(t);
@@ -353,8 +356,19 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
     const csv = await readPrivate(job.fileKey!);
     if (!csv) throw new ImportError("file_missing", "The uploaded file is no longer available.");
     const { rows } = analyseRecords(csv.toString("utf8"), options, +job.createdAt);
-    const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
+    const { matches, shopifyIds } = await withTenant(shopId, async ({ db }) => ({
+      matches: new Map((await db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } })).map((m) => [m.sourceProductRef, m])),
+      shopifyIds: new Map((await db.product.findMany({ where: { shopId }, select: { id: true, shopifyProductId: true } })).map((p) => [p.id, p.shopifyProductId])),
+    }));
     for (const r of rows) if (r.ok && matches.get(r.ref)?.status !== "matched") { r.ok = false; r.code = "product_not_matched"; }
+    // Repeated text inside the file (admin information only — never used for publication).
+    const byText = new Map<string, Analysed[]>();
+    for (const r of rows) if (r.ok) byText.set(contentHash(r.reviewerName, r.body), [...(byText.get(contentHash(r.reviewerName, r.body)) ?? []), r]);
+    const dupFlag = new Map<Analysed, string>();
+    for (const g of byText.values()) {
+      if (g.length < 2) continue;
+      for (const r of g) dupFlag.set(r, g.some((o) => o !== r && o.ref === r.ref) ? "possible_duplicate" : "cross_product_repeat");
+    }
 
     const size = opts.batchRows ?? IMPORT_LIMITS.batchRows;
     let batches = 0;
@@ -365,98 +379,80 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
         return getImport(shopId, jobId);
       }
       if (opts.failAfterBatches !== undefined && batches++ >= opts.failAfterBatches) throw new Error("simulated process failure");
-      await writeBatch(shopId, jobId, rows.slice(cursor, cursor + size), matches, Math.min(cursor + size, rows.length));
+      const productOf = (r: Analysed) => shopifyIds.get(matches.get(r.ref)!.productId!)!;
+      await writeBatch(api, job.source, jobId, rows.slice(cursor, cursor + size), productOf, dupFlag, Math.min(cursor + size, rows.length));
     }
-    await finalize(shopId, jobId);
+    await finalize(api, jobId);
   } catch (e) {
     const msg = e instanceof ImportError ? e.message : "The import stopped unexpectedly. It can be resumed.";
     console.warn("import failed", jobId, e instanceof Error ? e.message.slice(0, 120) : "");
     await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { status: "failed", error: msg } }));
     throw e;
   }
-  if (opts.graphql) await syncAfterRatingChange(shopId, opts.graphql);
+  if (opts.syncRatings !== false) await syncAfterRatingChange(shopId, api.graphql);
   return getImport(shopId, jobId);
 }
 
-async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matches: Map<string, { productId: string | null }>, nextCursor: number) {
+async function writeBatch(api: ShopApi, source: string, jobId: string, batch: Analysed[], productOf: (r: Analysed) => bigint, dupFlag: Map<Analysed, string>, nextCursor: number) {
+  const { shopId } = api;
   const valid = batch.filter((r) => r.ok);
-  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { source: true, counts: true } }));
-  const existing = new Map((await withTenant(shopId, ({ db }) => db.review.findMany({
-    where: { shopId, source: job.source, sourceReviewId: { in: valid.map((r) => r.sourceReviewId) } },
-    select: { id: true, sourceReviewId: true, importJobId: true },
-  }))).map((r) => [r.sourceReviewId, r]));
-
-  const fresh = valid.filter((r) => !existing.has(r.sourceReviewId)).map((r) => ({ r, id: randomUUID() }));
-
-  await withTenant(shopId, async (t) => {
-    const { db } = t;
-    const c: Counts = { ...ZERO, ...(job.counts as Partial<Counts>) };
-    for (const f of fresh) {
-      const r = f.r;
-      const created = await db.review.createMany({
-        data: [{
-          id: f.id, shopId, productId: matches.get(r.ref)!.productId!, source: job.source, sourceReviewId: r.sourceReviewId, sourceProductRef: r.ref,
-          rating: r.rating, title: r.title, body: r.body, reviewerName: r.reviewerName, reviewDate: r.reviewDate, imported: true, importJobId: jobId,
-          contentHash: contentHash(r.reviewerName, r.body), status: r.intent,
-          // Published rows enter HELD; finalize admits them oldest-first within the plan allowance.
-          holdReason: r.intent === "published" ? "plan_limit" : null,
-          flags: r.warnings.includes("unknown_status") ? ["unknown_source_status"] : [],
-        }],
-        skipDuplicates: true,
-      });
-      if (!created.count) { c.alreadyImported++; continue; } // created concurrently
-      c.imported++;
-      if (r.intent === "pending") c.importedPending++;
-      if (r.intent === "hidden") c.importedHidden++;
-      if (r.intent === "rejected") c.importedRejected++;
-      if (r.reply) { await db.reviewReply.create({ data: { shopId, reviewId: f.id, reply: r.reply.slice(0, 5_000) } }); c.repliesImported++; }
-    }
-    // Already stored: unchanged — unless it belongs to an import that never finished; then this job adopts it so
-    // finalize admits it in date order with everything else (no row is ever written twice).
-    for (const r of valid.filter((x) => existing.has(x.sourceReviewId))) {
-      const e = existing.get(r.sourceReviewId)!;
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { counts: true } }));
+  const c: Counts = { ...ZERO, ...(job.counts as Partial<Counts>) };
+  const existing = await findByHandles(api, valid.map((r) => reviewHandle(source, r.sourceReviewId)));
+  for (const r of valid) {
+    const e = existing.get(reviewHandle(source, r.sourceReviewId));
+    if (e) {
+      // Already stored: unchanged — unless it belongs to an import that never finished; then this job adopts it so
+      // finalize admits it in date order with everything else (no review is ever written twice).
       if (e.importJobId && e.importJobId !== jobId) {
-        const prev = await db.importJob.findFirst({ where: { shopId, id: e.importJobId }, select: { finalizedAt: true } });
-        if (prev && !prev.finalizedAt) { await db.review.updateMany({ where: { shopId, id: e.id }, data: { importJobId: jobId } }); c.adopted++; continue; }
+        const prev = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: e.importJobId! }, select: { finalizedAt: true } }));
+        if (prev && !prev.finalizedAt) { await updateReview(api, e, { importJobId: jobId }); c.adopted++; continue; }
       }
       if (e.importJobId !== jobId) c.alreadyImported++;
+      continue;
     }
-    await db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } });
-  });
+    const flags = [...(r.warnings.includes("unknown_status") ? ["unknown_source_status"] : []), ...(dupFlag.has(r) ? [dupFlag.get(r)!] : [])];
+    const created = await createReview(api, {
+      productId: productOf(r), source, sourceReviewId: r.sourceReviewId, rating: r.rating, title: r.title, body: r.body,
+      reviewerName: r.reviewerName, reviewDate: r.reviewDate, status: r.intent,
+      // Published rows enter HELD; finalize admits them oldest-first within the plan allowance.
+      held: r.intent === "published", reply: r.reply ? r.reply.slice(0, 5_000) : null, replyDate: r.reply ? r.reviewDate : null,
+      imported: true, importJobId: jobId, flags,
+    });
+    if (!created) { c.alreadyImported++; continue; } // created concurrently
+    await bumpStats(shopId, null, created);
+    c.imported++;
+    if (r.intent === "pending") c.importedPending++;
+    if (r.intent === "hidden") c.importedHidden++;
+    if (r.intent === "rejected") c.importedRejected++;
+    if (r.reply) c.repliesImported++;
+  }
+  await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } }));
 }
 
-async function finalize(shopId: string, jobId: string) {
+async function finalize(api: ShopApi, jobId: string) {
+  const { shopId } = api;
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } }));
+  // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
+  await releaseEligibleReviews(api, { importJobId: jobId, actor: job.actor ?? "import" });
+  // 2. Outcome + aggregates through the one aggregate path.
+  let published = 0, planLimited = 0, pending = 0, replies = 0;
+  const products = new Set<bigint>();
+  for await (const r of scanReviews(api, { importJobId: jobId })) {
+    products.add(r.productId);
+    if (r.status === "published") { if (r.held) planLimited++; else published++; }
+    if (r.status === "pending") pending++;
+    if (r.reply) replies++;
+  }
+  await recomputeProducts(api, products);
   await withTenant(shopId, async (t) => {
-    const { db } = t;
-    const job = await db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } });
-    const mine = { shopId, importJobId: jobId };
-    // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
-    const held = await db.review.findMany({ where: { ...mine, status: "published", holdReason: "plan_limit" }, select: { id: true } });
-    await releaseEligibleReviews(t, { reviewIds: held.map((r) => r.id), actor: job.actor ?? "import" });
-    // 2. Duplicate flags (admin information only — never used for publication).
-    await db.$executeRaw`UPDATE reviews r SET flags = array_append(r.flags, CASE WHEN EXISTS (
-        SELECT 1 FROM reviews o WHERE o.shop_id = r.shop_id AND o.content_hash = r.content_hash AND o.id <> r.id AND o.product_id = r.product_id)
-        THEN 'possible_duplicate' ELSE 'cross_product_repeat' END)
-      WHERE r.shop_id = ${shopId}::uuid AND r.import_job_id = ${jobId}::uuid AND r.content_hash IS NOT NULL
-        AND NOT (r.flags && ARRAY['possible_duplicate','cross_product_repeat'])
-        AND EXISTS (SELECT 1 FROM reviews o WHERE o.shop_id = r.shop_id AND o.content_hash = r.content_hash AND o.id <> r.id)`;
-    // 3. Aggregates through the one aggregate path.
-    const products = await db.review.findMany({ where: mine, select: { productId: true }, distinct: ["productId"] });
-    for (const p of products) await recomputeProduct(t, p.productId);
-    // 4. Outcome.
-    const [published, planLimited, pending, replies] = await Promise.all([
-      db.review.count({ where: { ...mine, status: "published", holdReason: null } }),
-      db.review.count({ where: { ...mine, status: "published", holdReason: "plan_limit" } }),
-      db.review.count({ where: { ...mine, status: "pending" } }),
-      db.reviewReply.count({ where: { shopId, review: mine } }),
-    ]);
     const repliesVisible = (await can(t, "replies")) ? replies : 0;
     const c = { ...ZERO, ...(job.counts as Partial<Counts>), published, planLimited, awaitingModeration: pending, repliesVisible, repliesSuppressed: replies - repliesVisible };
     const a = job.analysis as { validRows: number; totalRows: number; warnings: number };
     const warnings = a.validRows < a.totalRows || a.warnings > 0;
-    await db.importJob.update({ where: { id: jobId }, data: { status: warnings ? "completed_with_warnings" : "completed", counts: c, finalizedAt: new Date(), finishedAt: new Date(), heartbeatAt: new Date() } });
-    await db.auditLog.create({ data: { shopId, actor: job.actor ?? "import", action: "import.finished", entity: "import", entityId: jobId, details: { imported: c.imported, published, planLimited } } });
-  }, { timeoutMs: 120_000 });
+    await t.db.importJob.update({ where: { id: jobId }, data: { status: warnings ? "completed_with_warnings" : "completed", counts: c, finalizedAt: new Date(), finishedAt: new Date(), heartbeatAt: new Date() } });
+    await t.db.auditLog.create({ data: { shopId, actor: job.actor ?? "import", action: "import.finished", entity: "import", entityId: jobId, details: { imported: c.imported, published, planLimited } } });
+  });
 }
 
 /** Cancels an import of the authenticated shop (another shop's job id is "not found"). Imported rows are kept. */
@@ -603,12 +599,12 @@ export async function importProblemReport(shopId: string, jobId: string) {
 // ---------------------------------------------------------------------------------------------------------------
 /** Typed-row convenience (tests, internal callers): rows → template CSV → the same engine (one import mechanism). */
 export interface ImportRow { sourceReviewId: string; shopifyProductId: bigint; rating: number; title?: string; body: string; reviewerName: string; reviewDate: Date; status?: Intent; reply?: string }
-export async function importReviews(shopId: string, input: { source: string; rows: ImportRow[]; actor: string; publishMode?: PublishMode }) {
+export async function importReviews(api: ShopApi, input: { source: string; rows: ImportRow[]; actor: string; publishMode?: PublishMode }) {
   const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
   const csv = ["review_id,product_id,rating,title,body,reviewer_name,review_date,status,reply",
     ...input.rows.map((r) => [r.sourceReviewId, String(r.shopifyProductId), String(r.rating), r.title ?? "", r.body, r.reviewerName, r.reviewDate.toISOString(), r.status ?? "", r.reply ?? ""].map(q).join(","))].join("\n");
-  const { jobId } = await createImport(shopId, { csv: Buffer.from(csv), options: { source: input.source, publishMode: input.publishMode ?? "publish" }, actor: input.actor });
-  const done = await runImport(shopId, jobId);
+  const { jobId } = await createImport(api.shopId, { csv: Buffer.from(csv), options: { source: input.source, publishMode: input.publishMode ?? "publish" }, actor: input.actor });
+  const done = await runImport(api, jobId);
   const a = done!.analysis as { totalRows: number; invalidRows: number; duplicateSourceRows: number; conflictingSourceIds: number; unmatchedRows: number; ambiguousRows: number };
   const c = done!.counts as Counts & { published: number; planLimited: number; awaitingModeration: number };
   return {

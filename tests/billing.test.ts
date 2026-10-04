@@ -11,14 +11,15 @@ import {
   getPlanStatus, getUsage, releaseEligibleReviews, REVIEW_ADMISSION_ORDER,
 } from "../app/lib/entitlements.server";
 import { importReviews, type ImportRow } from "../app/lib/import.server";
-import { moderate } from "../app/lib/moderation.server";
+import { moderate, reviewParam } from "../app/lib/moderation.server";
+import { getReview } from "../app/lib/review-store.server";
 import { annualSavingPercent, FEATURES, PLAN_ORDER, PLANS, planForHandle, planHasFeature, type PlanKey } from "../app/lib/plans";
 import { withTenant, type Tenant } from "../app/lib/tenant.server";
 import { afterAuth } from "../app/shopify.server";
 import { action as planAction, loader as planLoader } from "../app/routes/app.plan";
 import { loader as dashboardLoader } from "../app/routes/app._index";
 import { action as reviewAction } from "../app/routes/app.reviews.$id";
-import { adminRequest, args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, resetDb, run, type Merchant } from "./helpers";
+import { adminRequest, apiOf, args, clearReviews, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, resetDb, reviewsIn, run, seedReview, storeOf, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 before(async () => {
@@ -41,8 +42,8 @@ async function newProduct(m: { shopId: string }, id: bigint) {
   return as(m, ({ db, shopId }) => db.product.create({ data: { shopId, shopifyProductId: id, handle: `p-${id}`, title: `P ${id}`, status: "active" } }));
 }
 /** n reviews already public (grandfathered), dated before anything created later. */
-async function publicReviews(m: { shopId: string }, productId: string, n: number) {
-  await as(m, ({ db, shopId }) => db.review.createMany({ data: Array.from({ length: n }, (_, i) => ({ shopId, productId, source: "seed", sourceReviewId: `seed-${++seq}`, rating: 5, body: `public ${i}`, reviewerName: "S", reviewDate: new Date(Date.UTC(2020, 0, 1, 0, 0, i)), status: "published" as const })) }));
+async function publicReviews(m: Merchant, shopifyProductId: bigint, n: number) {
+  for (let i = 0; i < n; i++) await seedReview(m.api, { productId: shopifyProductId, source: "seed", sourceReviewId: `seed-${++seq}`, body: `public ${i}`, reviewerName: "S", reviewDate: new Date(Date.UTC(2020, 0, 1, 0, 0, i)) });
 }
 const rows = (n: number, productId: bigint, o: { start?: number; rating?: (i: number) => number; body?: (i: number) => string } = {}): ImportRow[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -103,7 +104,7 @@ describe("New merchant starts on Free", () => {
     const st = await as({ shopId: c.id }, (t) => getPlanStatus(t));
     assert.equal(st.plan.publishedReviewAllowance, 100);
     assert.equal(st.usage.publishedReviews, 0);
-    assert.equal(await owner.review.count({ where: { shopId: c.id } }), 0);
+    assert.deepEqual(await reviewsIn(apiOf(DOMAIN_C, c.id)), []);
   });
 });
 
@@ -194,7 +195,10 @@ describe("Shopify App Pricing is authoritative", () => {
 // ---------------------------------------------------------------------------------------------------------------
 describe("Billing security: client input never decides the plan", () => {
   test("plan, price, interval, shop or subscription ids in the request are ignored by the Plan page", async () => {
+    // Shopify (A's own store) says Growth. Whatever the request asks for, Shopify's answer is the plan.
+    storeOf(DOMAIN_A).subscriptions = [{ id: "gid://shopify/AppSubscription/g", name: "Growth", status: "ACTIVE", planHandle: "growth" }];
     const before = await billing(A);
+    assert.equal(before.plan, "GROWTH");
     for (const intent of ["refresh", "select", "upgrade", "activate"]) {
       const fd = new FormData();
       for (const [k, v] of Object.entries({ intent, plan: "SCALE", plan_handle: "scale", price: "0", interval: "annual", shopId: B.shopId, subscription_id: "gid://shopify/AppSubscription/1" })) fd.set(k, v);
@@ -204,8 +208,8 @@ describe("Billing security: client input never decides the plan", () => {
     const r = await run(() => planLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, "/app/plan?plan_handle=scale&shop=" + DOMAIN_B))));
     assert.ok(r.data);
     const after = await billing(A);
-    assert.equal(after.plan, before.plan); // network blocked in tests → unverified, plan kept
-    assert.equal(after.verification, "unverified");
+    assert.equal(after.plan, "GROWTH"); // re-checked with Shopify: never Scale, never anything the request named
+    assert.equal(after.verification, "confirmed");
     assert.equal((await billing(B)).plan, "STARTER");
     await setPlan(A, "growth");
   });
@@ -248,24 +252,24 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
   });
 
   test("below the limit: everything published", async () => {
-    const r = await importReviews(shop.shopId, { source: "csv", rows: rows(40, PID), actor: "test" });
+    const r = await importReviews(shop.api, { source: "csv", rows: rows(40, PID), actor: "test" });
     assert.deepEqual([r.imported, r.published, r.planLimited], [40, 40, 0]);
   });
 
   test("exactly at the limit, then above it: stored in full, the excess held — nothing deleted", async () => {
     // The fixture review from installMerchant is public too: 41 used, 59 left.
-    const atLimit = await importReviews(shop.shopId, { source: "csv", rows: rows(59, PID, { start: 1000 }), actor: "test" });
+    const atLimit = await importReviews(shop.api, { source: "csv", rows: rows(59, PID, { start: 1000 }), actor: "test" });
     assert.deepEqual([atLimit.imported, atLimit.published, atLimit.planLimited], [59, 59, 0]);
     assert.equal((await as(shop, (t) => getUsage(t))).publishedReviews, 100);
-    const over = await importReviews(shop.shopId, { source: "csv", rows: rows(30, PID, { start: 2000 }), actor: "test" });
+    const over = await importReviews(shop.api, { source: "csv", rows: rows(30, PID, { start: 2000 }), actor: "test" });
     assert.deepEqual([over.imported, over.published, over.planLimited], [30, 0, 30]);
-    assert.equal(await owner.review.count({ where: { shopId: shop.shopId } }), 130);
+    assert.equal((await reviewsIn(shop.api)).length, 130);
     const job = await owner.importJob.findFirstOrThrow({ where: { shopId: shop.shopId }, orderBy: { createdAt: "desc" } });
     assert.equal((job.counts as { planLimited: number }).planLimited, 30);
   });
 
   test("re-running the same import is idempotent; unmatched products and invalid rows are reported, not stored", async () => {
-    const r = await importReviews(shop.shopId, {
+    const r = await importReviews(shop.api, {
       source: "csv", actor: "test",
       rows: [...rows(5, PID, { start: 2000 }), ...rows(2, 9_999_999_999_999n, { start: 3000 }), { ...rows(1, PID, { start: 4000 })[0], rating: 9 }],
     });
@@ -274,14 +278,15 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
 
   test("Free merchant importing 1,000 reviews: 1,000 stored, 100 published (the oldest), 900 plan-limited", async () => {
     const m = await installMerchant("proofly-test-f.myshopify.com", "F");
-    await owner.review.deleteMany({ where: { shopId: m.shopId } }); // start from zero public reviews
+    await clearReviews(m); // start from zero public reviews
     await newProduct(m, PID);
     // Adversarial data: the OLDEST reviews are 1★ and negative, the newest 5★ and glowing.
     const input = rows(1000, PID, { rating: (i) => (i < 500 ? 1 : 5), body: (i) => (i < 500 ? `Terrible, broke at once ${i}` : `Wonderful, love it ${i}`) });
-    const r = await importReviews(m.shopId, { source: "legacy-provider", rows: [...input].reverse(), actor: "test" });
+    const r = await importReviews(m.api, { source: "legacy-provider", rows: [...input].reverse(), actor: "test" });
     assert.deepEqual([r.received, r.imported, r.published, r.planLimited, r.notPublished], [1000, 1000, 100, 900, 0]);
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 1000);
-    const published = await owner.review.findMany({ where: { shopId: m.shopId, status: "published", holdReason: null }, select: { sourceReviewId: true, rating: true } });
+    const all = await reviewsIn(m.api);
+    assert.equal(all.length, 1000);
+    const published = all.filter((r) => r.isPublic);
     assert.deepEqual(new Set(published.map((p) => p.sourceReviewId)), new Set(input.slice(0, 100).map((x) => x.sourceReviewId))); // date order, nothing else
     assert.ok(published.every((p) => p.rating === 1));
   });
@@ -290,45 +295,45 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
 // ---------------------------------------------------------------------------------------------------------------
 describe("Fairness: date order only (regression guards)", () => {
   test("admission orderings are chronological and use no quality signal", () => {
-    const keys = (o: readonly object[]) => o.map((x) => JSON.stringify(x));
-    assert.deepEqual(keys(REVIEW_ADMISSION_ORDER), ['{"reviewDate":"asc"}', '{"source":"asc"}', '{"sourceReviewId":"asc"}']);
+    // Review date, then the stable handle (a hash of source + source review id) — deterministic, never a quality signal.
+    assert.deepEqual([...REVIEW_ADMISSION_ORDER], ["reviewDate", "handle"]);
     const banned = /rating|sentiment|body|title|reviewerName|verified|images|photo|product|flags|helpful|score|createdAt/i;
     for (const o of REVIEW_ADMISSION_ORDER) assert.doesNotMatch(JSON.stringify(o), banned);
   });
 
-  test("every allowance decision in the entitlement layer uses those orderings", () => {
+  test("every allowance decision in the entitlement layer uses that ordering", () => {
     const src = readFileSync("app/lib/entitlements.server.ts", "utf8");
-    const orderBys = src.match(/orderBy:[^,}]+/g) ?? [];
-    assert.ok(orderBys.length >= 1); // review admission is the only allowance decision (no photo allowance since 2026-10-04)
-    for (const o of orderBys) assert.match(o, /orderBy: \[\.\.\.REVIEW_ADMISSION_ORDER\]/, o);
+    const sorts = src.match(/\.sort\([^)]*\)/g) ?? [];
+    assert.deepEqual(sorts, [".sort(byAdmissionOrder)"]); // the only ordering applied to candidates
+    assert.match(src, /scanReviews\(api, \{ status: "published", held: true[^\n]*\{ oldestFirst: true \}\)/); // read oldest first
+    // and the store's oldest-first order IS that ordering: the display name is "review date | handle"
+    assert.match(readFileSync("app/lib/review-store.server.ts", "utf8"), /sort_key: `\$\{r\.reviewDate\.toISOString\(\)\}\|\$\{handle\}`/);
   });
 
   test("high ratings never jump the queue when publishing eligible reviews", async () => {
     const m = await installMerchant("proofly-test-g.myshopify.com", "G");
-    await owner.review.deleteMany({ where: { shopId: m.shopId } });
-    const p = await newProduct(m, 9_700_000_000_200n);
-    await publicReviews(m, p.id, 99); // 1 slot left
-    await as(m, ({ db, shopId }) => db.review.createMany({ data: [
-      { shopId, productId: p.id, source: "x", sourceReviewId: "older-1star", rating: 1, body: "bad", reviewerName: "x", reviewDate: new Date("2023-01-01"), status: "published", holdReason: "plan_limit" },
-      { shopId, productId: p.id, source: "x", sourceReviewId: "newer-5star", rating: 5, body: "great", reviewerName: "x", reviewDate: new Date("2023-06-01"), status: "published", holdReason: "plan_limit", verifiedPurchase: true },
-    ] }));
-    const r = await as(m, (t) => releaseEligibleReviews(t));
+    await clearReviews(m);
+    const P = 9_700_000_000_200n;
+    await newProduct(m, P);
+    await publicReviews(m, P, 99); // 1 slot left
+    await seedReview(m.api, { productId: P, source: "x", sourceReviewId: "newer-5star", rating: 5, body: "great", reviewerName: "x", reviewDate: new Date("2023-06-01"), held: true, verified: true });
+    await seedReview(m.api, { productId: P, source: "x", sourceReviewId: "older-1star", rating: 1, body: "bad", reviewerName: "x", reviewDate: new Date("2023-01-01"), held: true });
+    const r = await releaseEligibleReviews(m.api);
     assert.deepEqual(r, { released: 1, stillHeld: 1 });
-    const released = await owner.review.findFirstOrThrow({ where: { shopId: m.shopId, source: "x", holdReason: null } });
-    assert.equal(released.sourceReviewId, "older-1star");
+    const released = (await reviewsIn(m.api)).filter((x) => x.source === "x" && x.isPublic);
+    assert.deepEqual(released.map((x) => x.sourceReviewId), ["older-1star"]);
   });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
 describe("Upgrade and downgrade", () => {
   let m: Merchant;
-  let pid: string;
   before(async () => {
     m = await installMerchant("proofly-test-h.myshopify.com", "H");
-    await owner.review.deleteMany({ where: { shopId: m.shopId } });
-    pid = (await newProduct(m, 9_700_000_000_300n)).id;
+    await clearReviews(m);
+    await newProduct(m, 9_700_000_000_300n);
     await setPlan(m, null); // Free, confirmed
-    await importReviews(m.shopId, { source: "csv", rows: rows(150, 9_700_000_000_300n), actor: "test" }); // 100 public, 50 held
+    await importReviews(m.api, { source: "csv", rows: rows(150, 9_700_000_000_300n), actor: "test" }); // 100 public, 50 held
   });
 
   test("upgrade: allowance grows only after Shopify confirms; held reviews do NOT auto-publish; 'Publish eligible reviews' does", async () => {
@@ -353,23 +358,23 @@ describe("Upgrade and downgrade", () => {
     let st = await as(m, (t) => getPlanStatus(t));
     assert.deepEqual([st.plan.key, st.usage.publishedReviews, st.overReviewAllowance, st.reviewRoom], ["FREE", 150, true, 0]);
     // Future imports and approvals are held; nothing becomes hidden, nothing is deleted.
-    const imp = await importReviews(m.shopId, { source: "csv", rows: rows(10, 9_700_000_000_300n, { start: 5000 }), actor: "test" });
+    const imp = await importReviews(m.api, { source: "csv", rows: rows(10, 9_700_000_000_300n, { start: 5000 }), actor: "test" });
     assert.deepEqual([imp.imported, imp.published, imp.planLimited], [10, 0, 10]);
-    const pending = await as(m, ({ db, shopId }) => db.review.create({ data: { shopId, productId: pid, source: "storefront", sourceReviewId: "sf-1", rating: 5, body: "new", reviewerName: "N", reviewDate: new Date(), status: "pending" } }));
-    await as(m, (t) => moderate(t, [pending.id], "approve", "test"));
-    const approved = await owner.review.findUniqueOrThrow({ where: { id: pending.id } });
-    assert.deepEqual([approved.status, approved.holdReason], ["published", "plan_limit"]); // approved, held — never rejected
+    const pending = await seedReview(m.api, { productId: 9_700_000_000_300n, source: "storefront", sourceReviewId: "sf-1", rating: 5, body: "new", reviewerName: "N", reviewDate: new Date(), status: "pending" });
+    await moderate(m.api, [pending.id], "approve", "test");
+    const approved = (await getReview(m.api, pending.id))!;
+    assert.deepEqual([approved.status, approved.held], ["published", true]); // approved, held — never rejected
     st = await as(m, (t) => getPlanStatus(t));
     assert.equal(st.usage.publishedReviews, 150);
-    assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 161);
+    assert.equal((await reviewsIn(m.api)).length, 161);
   });
 
   test("approval with no room → admin message 'Approved, but currently held by your plan limit.'", async () => {
-    const r = await as(m, ({ db, shopId }) => db.review.create({ data: { shopId, productId: pid, source: "storefront", sourceReviewId: "sf-2", rating: 4, body: "new", reviewerName: "N", reviewDate: new Date(), status: "pending" } }));
+    const r = await seedReview(m.api, { productId: 9_700_000_000_300n, source: "storefront", sourceReviewId: "sf-2", rating: 4, body: "new", reviewerName: "N", reviewDate: new Date(), status: "pending" });
     await owner.billingState.update({ where: { shopId: m.shopId }, data: { verifiedAt: new Date() } });
     const fd = new FormData();
     fd.set("intent", "approve");
-    const res = await run(() => reviewAction(args<ActionFunctionArgs>(adminRequest("proofly-test-h.myshopify.com", `/app/reviews/${r.id}`, { method: "POST", body: fd }), { id: r.id })));
+    const res = await run(() => reviewAction(args<ActionFunctionArgs>(adminRequest("proofly-test-h.myshopify.com", `/app/reviews/${reviewParam(r.id)}`, { method: "POST", body: fd }), { id: reviewParam(r.id) })));
     assert.match((res.data as { message: string }).message, /Approved, but currently held by your plan limit/);
   });
 

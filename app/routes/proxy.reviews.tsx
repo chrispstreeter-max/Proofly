@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs } from "react-router";
-import { clientIp, ipHash, json, originAllowed, rateLimit } from "../lib/http.server";
+import { clientIp, json, originAllowed, rateLimit } from "../lib/http.server";
 import { requireProxyTenant } from "../lib/proxy.server";
 import { parseIds } from "../lib/reviews.server";
 import { SubmitError, createReview, ensureProduct, parseSubmission } from "../lib/submit.server";
@@ -9,7 +9,7 @@ import { withTenant } from "../lib/tenant.server";
 // (submissions on/off, approval required) whatever the theme shows.
 export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
-  const { admin, shop } = await requireProxyTenant(request);
+  const { admin, shop, api } = await requireProxyTenant(request);
   const ip = clientIp(request);
   try {
     if (!originAllowed(request, shop)) throw new SubmitError("form", "Submission rejected.", 403);
@@ -25,10 +25,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const data = await parseSubmission(form);
     // No customer identity is stored: logged_in_customer_id is ignored (V1 has no customer/order scopes).
 
-    await withTenant(shop.id, async (t) => {
-      const product = await ensureProduct(t, admin, shopifyProductId);
-      await createReview(t, { productId: product.id, data, source: "storefront", ipHash: ipHash(ip) });
-    });
+    await withTenant(shop.id, (t) => ensureProduct(t, admin, shopifyProductId)); // this shop's live product only
+    await createReview(api, { shopifyProductId, data });
     return json({ ok: true }, { status: 201 });
   } catch (e) {
     if (e instanceof SubmitError) return json({ ok: false, field: e.field, error: e.message }, { status: e.status });

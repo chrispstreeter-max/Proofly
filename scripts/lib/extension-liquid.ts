@@ -1,5 +1,5 @@
 /**
- * Renders the theme app extension's Liquid outside Shopify (tests and the local /dev/preview only; liquidjs is a
+ * Renders the theme app extension's Liquid outside Shopify (tests only; liquidjs is a
  * devDependency). liquidjs implements the Liquid language; the handful of Shopify-only filters the blocks use are
  * registered below, and strictFilters makes any other Shopify-only filter fail loudly instead of rendering blank.
  */

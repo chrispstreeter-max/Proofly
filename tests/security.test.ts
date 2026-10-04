@@ -6,14 +6,12 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
-import { loader as devIndex } from "../app/routes/dev._index";
-import { loader as devPreview } from "../app/routes/dev.preview";
-import { loader as devProxy } from "../app/routes/apps.$";
-import { args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, run, SAME_PRODUCT_ID, storefrontHost } from "./helpers";
+import { args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, reviewsIn, SAME_PRODUCT_ID, storefrontHost, storeOf, type Merchant } from "./helpers";
 
+let A: Merchant;
 before(async () => {
   await resetDb();
-  await installMerchant(DOMAIN_A, "A");
+  A = await installMerchant(DOMAIN_A, "A");
   await installMerchant(DOMAIN_B, "B");
 });
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
@@ -28,7 +26,7 @@ const submit = (domain: string, label: string, fields: Record<string, string | B
 test("honeypot and invalid rating are rejected", async () => {
   assert.equal((await submit(DOMAIN_A, "A", { website: "spam" }, "203.0.113.1")).status, 400);
   assert.equal((await submit(DOMAIN_A, "A", { rating: "9" }, "203.0.113.1")).status, 400);
-  assert.equal(await owner.review.count({ where: { source: "storefront" } }), 0);
+  assert.equal((await reviewsIn(A.api)).filter((r) => r.source === "storefront").length, 0);
 });
 
 // Product decision (2026-10-04): no review photos anywhere.
@@ -40,10 +38,12 @@ test("photos can't be submitted: oversized requests are refused, a file field is
   assert.equal(big.status, 413);
   const small = await submit(DOMAIN_A, "A", { body: "Photo probe 2.", images: new File([Buffer.from([0xff, 0xd8, 0xff, 0])], "x.jpg", { type: "image/jpeg" }) }, "203.0.113.9");
   assert.equal(small.status, 201);
-  assert.equal(await owner.review.count({ where: { source: "storefront", body: "Photo probe 2." } }), 1);
+  const stored = (await reviewsIn(A.api)).filter((r) => r.body === "Photo probe 2.");
+  assert.equal(stored.length, 1);
+  const raw = storeOf(DOMAIN_A).metaobjects.get(stored[0].id)!;
+  assert.deepEqual([...raw.fields.keys()].filter((k) => /photo|image|media|file/i.test(k)), []); // nothing photo-like in the entry
   const cols = await owner.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM information_schema.columns WHERE table_schema = 'public' AND ((column_name ~ '(photo|image|media)' AND table_name <> 'products') OR table_name = 'review_images')`);
   assert.equal(cols[0].n, 0n);
-  await owner.review.deleteMany({ where: { source: "storefront", body: "Photo probe 2." } });
 });
 
 test("rate limits are per shop: exhausting shop A does not block shop B", async () => {
@@ -64,9 +64,3 @@ test("there is no public file or media route: nothing Proofly stores is ever ser
   assert.deepEqual(readdirSync("app/routes").filter((f) => /media|upload|file|asset/i.test(f) && !f.startsWith("dev.")), []);
 });
 
-test("dev-only routes are 404 outside development", async () => {
-  for (const loader of [devIndex, devPreview, devProxy]) {
-    const r = await run(() => loader(args<LoaderFunctionArgs>(new Request("http://localhost/dev"), { "*": "proofly/ratings" })));
-    assert.equal(r.response?.status, 404);
-  }
-});

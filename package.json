@@ -25,7 +25,6 @@
     "test": "tsx --env-file=.env.test --import ./tests/no-network.ts --test --test-concurrency=1 tests/*.test.ts",
     "db:setup": "./scripts/db.sh setup",
     "check:theme": "shopify theme check --path extensions/proofly -C theme-check:theme-app-extension --fail-level suggestion",
-    "dev:seed": "tsx --env-file=.env scripts/dev-seed.ts",
     "check:graphql": "tsx --env-file=.env.test scripts/check-admin-graphql.ts",
     "maintenance": "tsx scripts/maintenance.ts"
   },

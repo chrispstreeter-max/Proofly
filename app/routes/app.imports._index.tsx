@@ -18,7 +18,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, admin, actor } = await requireAdminTenant(request);
+  const { shop, admin, api, actor } = await requireAdminTenant(request);
   const form = await request.formData();
   const intent = form.get("intent");
   const graphql = admin.graphql;
@@ -46,7 +46,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
     const jobId = String(form.get("jobId") ?? "");
-    if (intent === "resume") { void runImport(shop.id, jobId, { graphql }).catch(() => {}); return { message: "Import resumed." }; }
+    if (intent === "resume") { void runImport(api, jobId).catch(() => {}); return { message: "Import resumed." }; }
     if (intent === "cancel") { await cancelImport(shop.id, jobId, actor); return { message: "Import cancelled. Reviews already imported are kept." }; }
   } catch (e) {
     if (e instanceof ImportError) return { message: e.message };

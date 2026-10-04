@@ -35,7 +35,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { shop, admin, actor } = await requireAdminTenant(request);
+  const { shop, admin, api, actor } = await requireAdminTenant(request);
   if (!isUuid(params.id)) throw notFound();
   const jobId = params.id;
   const form = await request.formData();
@@ -51,7 +51,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
     if (intent === "start" || intent === "resume") {
       // ponytail: runs in this server process; the maintenance worker resumes stalled imports (the job is resumable).
-      void runImport(shop.id, jobId, { graphql: admin.graphql }).catch(() => {});
+      void runImport(api, jobId).catch(() => {});
       return { message: "Import started.", started: true };
     }
     if (intent === "cancel") { await cancelImport(shop.id, jobId, actor); return { message: "Import cancelled. Reviews already imported are kept." }; }

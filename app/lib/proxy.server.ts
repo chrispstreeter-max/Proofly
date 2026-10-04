@@ -1,5 +1,6 @@
 import { authenticate } from "../shopify.server";
 import { json } from "./http.server";
+import type { GraphqlFn } from "./review-store.server";
 import { activeShopByDomain, withTenant } from "./tenant.server";
 
 /** Same response for "app not installed", "shop uninstalled" and anything else that is not a known active tenant. */
@@ -18,6 +19,8 @@ export async function requireProxyTenant(request: Request) {
   if (!shop) throw storefrontNotFound();
   const signedPath = new URL(request.url).searchParams.get("path_prefix")?.toLowerCase();
   const settings = await withTenant(shop.id, ({ db, shopId }) => db.shopSettings.findUnique({ where: { shopId }, select: { proxyPath: true } }));
-  if (!settings || signedPath !== settings.proxyPath) throw storefrontNotFound();
-  return { ...ctx, shop, proxyPath: settings.proxyPath };
+  if (!settings || signedPath !== settings.proxyPath || !ctx.admin) throw storefrontNotFound();
+  // The review store of THIS shop: its offline session's Admin API client can only reach this shop's data.
+  const api = { shopId: shop.id, graphql: ctx.admin.graphql as GraphqlFn };
+  return { ...ctx, shop, api, proxyPath: settings.proxyPath };
 }

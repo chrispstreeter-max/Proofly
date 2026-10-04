@@ -4,6 +4,7 @@ import prisma from "./db.server";
 import { API_VERSION } from "./shopify-api-version";
 import { EncryptedSessionStorage } from "./lib/session-storage.server";
 import { reconcileBilling } from "./lib/billing.server";
+import { ensureReviewDefinition } from "./lib/review-store.server";
 import { upsertShopFromAuth } from "./lib/tenant.server";
 
 // Fail fast: an empty API secret would make every HMAC/JWT check forgeable, so never start without these.
@@ -31,6 +32,8 @@ export const afterAuth = async ({ session, admin }: { session: { shop: string };
   const shop = await upsertShopFromAuth(session.shop, (q, o) => admin.graphql(q, o));
   // Entitlements follow Shopify App Pricing. Best effort: a failure leaves the plan unchanged (never a downgrade).
   await reconcileBilling(shop.id, (q, o) => admin.graphql(q, o)).catch((e) => console.warn("billing reconcile deferred", shop.id, e));
+  // The merchant-owned review type in the shop's Shopify store (created on install, brought up to date afterwards).
+  await ensureReviewDefinition({ shopId: shop.id, graphql: (q, o) => admin.graphql(q, o) }).catch((e) => console.warn("review definition deferred", shop.id, e));
 };
 
 const shopify = shopifyApp({

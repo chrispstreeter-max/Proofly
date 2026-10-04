@@ -2,72 +2,66 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { Form, useActionData, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
-import { ACTIONS, moderate, moderationHistory, saveReply, type ModerationActionName } from "../lib/moderation.server";
+import { ACTIONS, moderate, moderationHistory, reviewGid, saveReply, type ModerationActionName } from "../lib/moderation.server";
 import { can } from "../lib/entitlements.server";
 import { PLAN_ORDER, PLANS, planHasFeature } from "../lib/plans";
+import { syncAfterRatingChange } from "../lib/rating-cache.server";
+import { getReview } from "../lib/review-store.server";
+import { withTenant } from "../lib/tenant.server";
 
 const REPLIES_FROM = PLANS[PLAN_ORDER.find((k) => planHasFeature(k, "replies")) ?? "STARTER"].name;
-import { syncAfterRatingChange } from "../lib/rating-cache.server";
-import { isUuid, withTenant } from "../lib/tenant.server";
 
-// Missing reviews and other shops' reviews get the identical response (no existence leak).
+// The review is read through THIS shop's Admin API: another shop's review id is simply not found — the identical
+// response to a missing one (no existence leak).
 const notFound = () => new Response("Not found", { status: 404 });
 const TONE = { published: "success", pending: "warning", rejected: "critical", hidden: "neutral" } as const;
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const { shop } = await requireAdminTenant(request);
-  if (!isUuid(params.id)) throw notFound();
-  const found = await withTenant(shop.id, async (t) => {
-    const r = await t.db.review.findFirst({
-      where: { shopId: t.shopId, id: params.id },
-      include: { product: true, reply: true },
-    });
-    if (!r) return null;
-    const history = await moderationHistory(t, r.id);
-    return { r, history, canReply: await can(t, "replies") };
-  });
-  if (!found) throw notFound();
-  const { r, history, canReply } = found;
+  const { shop, api } = await requireAdminTenant(request);
+  const id = reviewGid(params.id);
+  const r = id ? await getReview(api, id) : null;
+  if (!r) throw notFound();
+  const { history, canReply, product } = await withTenant(shop.id, async (t) => ({
+    history: await moderationHistory(t, r.id),
+    canReply: await can(t, "replies"),
+    product: await t.db.product.findFirst({ where: { shopId: t.shopId, shopifyProductId: r.productId }, select: { title: true } }),
+  }));
   return {
     review: {
-      id: r.id, sourceId: r.sourceReviewId, source: r.source, imported: r.imported, status: r.status, rating: r.rating,
+      id: params.id!, sourceId: r.sourceReviewId, source: r.source, imported: r.imported, status: r.status, rating: r.rating,
       title: r.title, body: r.body, name: r.reviewerName, date: r.reviewDate.toISOString().slice(0, 16).replace("T", " "),
-      verified: r.verifiedPurchase, flags: r.flags, heldByPlan: r.holdReason === "plan_limit",
-      product: { title: r.product.title, handle: r.product.handle, id: r.product.shopifyProductId.toString() },
-      reply: r.reply?.reply ?? "",
+      verified: r.verified, flags: r.flags, heldByPlan: r.status === "published" && r.held, editedOutside: r.editedOutside,
+      product: { title: product?.title ?? "(product not in catalogue)", id: r.productId.toString() },
+      reply: r.reply ?? "",
     },
     canReply, repliesFrom: REPLIES_FROM,
-    history: history.map((h) => ({ at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: `${h.action} (${h.fromStatus} → ${h.toStatus})` })),
+    history: history.map((h) => {
+      const d = h.details as { from?: string; to?: string };
+      return { at: h.createdAt.toISOString().slice(0, 16).replace("T", " "), actor: h.actor, action: `${h.action}${d.from ? ` (${d.from} → ${d.to})` : ""}` };
+    }),
   };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { admin, actor, shop } = await requireAdminTenant(request);
-  if (!isUuid(params.id)) throw notFound();
+  const { admin, api, actor, shop } = await requireAdminTenant(request);
+  const id = reviewGid(params.id);
+  if (!id) throw notFound();
   const form = await request.formData();
   const intent = String(form.get("intent"));
   if (intent === "reply") {
     const text = String(form.get("reply") ?? "");
-    // Replies are a plan feature (Starter and up). Removing an existing reply is always allowed (grandfathered replies
-    // stay public after a downgrade until the merchant removes them).
-    const ok = await withTenant(shop.id, async (t) => {
-      // Ownership first: another shop's review gets the same 404 as a missing one, whatever the plan.
-      if (!(await t.db.review.findFirst({ where: { shopId: t.shopId, id: params.id! }, select: { id: true } }))) return false;
-      return text.trim() && !(await can(t, "replies")) ? "plan" : saveReply(t, params.id!, text, actor);
-    });
-    if (ok === "plan") return { message: `Public replies are included from the ${REPLIES_FROM} plan. See Plan.` };
-    if (!ok) throw notFound();
+    // Replies are a plan feature (Starter and up). Removing an existing reply is always allowed. Ownership first:
+    // another shop's review gets the same 404 as a missing one, whatever the plan.
+    if (!(await getReview(api, id))) throw notFound();
+    if (text.trim() && !(await withTenant(shop.id, (t) => can(t, "replies")))) return { message: `Public replies are included from the ${REPLIES_FROM} plan. See Plan.` };
+    if (!(await saveReply(api, id, text, actor))) throw notFound();
     return { message: "Reply saved." };
   }
   if (intent in ACTIONS) {
-    const result = await withTenant(shop.id, async (t) => {
-      const n = await moderate(t, [params.id!], intent as ModerationActionName, actor);
-      const after = n ? await t.db.review.findFirst({ where: { shopId: t.shopId, id: params.id! }, select: { holdReason: true } }) : null;
-      return { n, held: after?.holdReason === "plan_limit" };
-    });
-    if (!result.n) throw notFound();
-    await syncAfterRatingChange(shop.id, admin.graphql); // best effort: the canonical change above stands either way
-    if (intent === "approve" && result.held) return { message: "Approved, but currently held by your plan limit. It will appear once there is room — see Plan." };
+    const [after] = await moderate(api, [id], intent as ModerationActionName, actor);
+    if (!after) throw notFound();
+    await syncAfterRatingChange(shop.id, admin.graphql); // best effort: the change above stands either way
+    if (intent === "approve" && after.held) return { message: "Approved, but currently held by your plan limit. It will appear once there is room — see Plan." };
     return { message: `Review ${ACTIONS[intent as ModerationActionName]}. Storefront rating updated.` };
   }
   return { message: "Unknown action." };
@@ -95,11 +89,18 @@ export default function ReviewDetail() {
         </s-paragraph></s-banner>
       )}
 
+      {r.editedOutside && (
+        <s-banner tone="critical"><s-paragraph>
+          This review was changed outside Proofly (in Shopify admin or by another app). Proofly doesn&apos;t show it on your store until
+          you approve it again here.
+        </s-paragraph></s-banner>
+      )}
       <s-section heading="Review">
         <s-stack gap="base">
           <s-stack direction="inline" gap="small">
             <s-badge tone={TONE[r.status]}>{r.status}</s-badge>
             {r.heldByPlan && <s-badge tone="warning">Held by plan limit</s-badge>}
+            {r.editedOutside && <s-badge tone="critical">Edited outside Proofly</s-badge>}
             {r.verified && <s-badge tone="success">Verified purchase</s-badge>}
             {r.imported && <s-badge>{`Imported from ${r.source}`}</s-badge>}
             {r.flags.map((f) => <s-badge key={f} tone="caution">{f}</s-badge>)}
@@ -107,7 +108,7 @@ export default function ReviewDetail() {
           <s-text>{"★".repeat(r.rating)}{"☆".repeat(5 - r.rating)} · {r.name} · {r.date}</s-text>
           <s-paragraph><span style={{ whiteSpace: "pre-line" }}>{r.body}</span></s-paragraph>
           <s-stack direction="inline" gap="small">
-            {r.status !== "published" && <Act intent="approve" label="Approve" />}
+            {(r.status !== "published" || r.editedOutside) && <Act intent="approve" label="Approve" />}
             {r.status === "published" && <Act intent="hide" label="Hide" />}
             {r.status !== "rejected" && <Act intent="reject" label="Reject" tone="critical" />}
             {(r.status === "rejected" || r.status === "hidden") && <Act intent="restore" label="Restore to pending" />}

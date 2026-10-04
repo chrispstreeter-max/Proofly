@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { after, test } from "node:test";
 import { Session } from "@shopify/shopify-api";
 import { decryptSecret, encryptSecret, isEncrypted } from "../app/lib/crypto.server";
-import { isDev, signProxyParams } from "../app/lib/devsign.server";
+import { signProxyParams } from "../app/lib/devsign.server";
 import { shopPrefix } from "../app/lib/storage.server";
 import { parseIds } from "../app/lib/reviews.server";
 import { isUuid } from "../app/lib/tenant.server";
@@ -31,17 +31,6 @@ test("Shopify sessions are stored with encrypted access tokens and loaded decryp
   assert.ok(row.accessToken.startsWith("enc:v1:"));
   assert.ok(!row.accessToken.includes("fixture-secret-token"));
   assert.equal((await sessionStorage.loadSession("offline_x"))?.accessToken, "fixture-secret-token");
-});
-
-test("dev routes are fail-closed: only NODE_ENV=development enables them", () => {
-  const prev = process.env.NODE_ENV;
-  for (const v of [undefined, "", "production", "test", "staging", "Development"]) {
-    if (v === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = v;
-    assert.equal(isDev(), false, `NODE_ENV=${v}`);
-  }
-  process.env.NODE_ENV = "development";
-  assert.equal(isDev(), true);
-  process.env.NODE_ENV = prev;
 });
 
 test("app-proxy signature changes when any signed parameter changes", () => {

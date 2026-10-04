@@ -3,11 +3,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
-import { moderate, moderationHistory, saveReply } from "../app/lib/moderation.server";
+import { moderate, moderationHistory, reviewParam, saveReply } from "../app/lib/moderation.server";
+import { getReview } from "../app/lib/review-store.server";
 import { listReviews, parseListParams, ratingsByHandle } from "../app/lib/reviews.server";
 import { importFileKey } from "../app/lib/storage.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
@@ -19,7 +19,7 @@ import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { action as uninstalledWebhook } from "../app/routes/webhooks.app.uninstalled";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import {
-  adminRequest, args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, run, SAME_HANDLE, SAME_PRODUCT_ID, storefrontHost, type Merchant,
+  adminRequest, args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, SAME_HANDLE, SAME_PRODUCT_ID, seedReview, storefrontHost, type Merchant,
 } from "./helpers";
 
 let A: Merchant, B: Merchant;
@@ -31,21 +31,23 @@ before(async () => {
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
 const asA = <T>(fn: Parameters<typeof withTenant<T>>[1]) => withTenant(A.shopId, fn);
-const reviewB = () => owner.review.findUniqueOrThrow({ where: { id: B.reviewId }, include: { reply: true } });
+const reviewB = async () => (await getReview(B.api, B.reviewId))!; // read through B's own store
+const idB = () => reviewParam(B.reviewId);
 
 describe("1. Merchant A cannot read Merchant B's review", () => {
-  test("library: lookup by B's id returns nothing", async () => {
-    assert.equal(await asA(({ db, shopId }) => db.review.findFirst({ where: { shopId, id: B.reviewId } })), null);
-    assert.equal(await asA(({ db }) => db.review.findFirst({ where: { id: B.reviewId } })), null); // RLS alone
+  test("library: lookup by B's id through A's store returns nothing (Shopify-native: A's API reaches only A's data)", async () => {
+    assert.equal(await getReview(A.api, B.reviewId), null);
+    assert.ok(await getReview(B.api, B.reviewId)); // it exists — in B's store
+    assert.deepEqual((await reviewsIn(A.api)).map((r) => r.id), [A.reviewId]);
   });
   test("admin: A's review detail request for B's review → 404", async () => {
-    const r = await run(() => reviewLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${B.reviewId}`), { id: B.reviewId })));
+    const r = await run(() => reviewLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${idB()}`), { id: idB() })));
     assert.equal(r.response?.status, 404);
   });
   test("admin: A's review list never contains B's reviews", async () => {
     const r = await run(() => reviewsListLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, "/app/reviews"))));
     const ids = (r.data as { rows: { id: string }[] }).rows.map((x) => x.id);
-    assert.deepEqual(ids, [A.reviewId]);
+    assert.deepEqual(ids, [reviewParam(A.reviewId)]);
   });
   test("admin: A's dashboard counts only A's data", async () => {
     const r = await run(() => dashboardLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, "/app"))));
@@ -55,28 +57,33 @@ describe("1. Merchant A cannot read Merchant B's review", () => {
 
 describe("2. Merchant A cannot modify Merchant B's review", () => {
   test("library: moderation and replies on B's review are no-ops", async () => {
-    assert.equal(await asA((t) => moderate(t, [B.reviewId], "hide", "test")), 0);
-    assert.equal(await asA((t) => saveReply(t, B.reviewId, "overwritten by A", "test")), false);
+    assert.deepEqual(await moderate(A.api, [B.reviewId], "hide", "test"), []);
+    assert.equal(await saveReply(A.api, B.reviewId, "overwritten by A", "test"), false);
     const b = await reviewB();
     assert.equal(b.status, "published");
-    assert.equal(b.reply?.reply, "Reply from store B");
+    assert.equal(b.reply, "Reply from store B");
   });
   test("admin: A's moderate / reply actions on B's review → 404, B unchanged", async () => {
     for (const intent of ["hide", "reject", "reply"]) {
       const body = new URLSearchParams({ intent, reply: "x" });
-      const r = await run(() => reviewAction(args<ActionFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${B.reviewId}`, { method: "POST", body }), { id: B.reviewId })));
+      const r = await run(() => reviewAction(args<ActionFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${idB()}`, { method: "POST", body }), { id: idB() })));
       assert.equal(r.response?.status, 404, intent);
     }
     const b = await reviewB();
     assert.equal(b.status, "published");
-    assert.equal(b.reply?.reply, "Reply from store B");
+    assert.equal(b.reply, "Reply from store B");
   });
 });
 
 describe("3. Merchant A cannot read Merchant B's reviews or stored files", () => {
   test("storefront: A's product list for B's product never returns B's reviews", async () => {
-    const res = await asA((t) => listReviews(t, B.productId, parseListParams(new URL("http://x/?page=1")), { replies: true }));
+    const bOnly = 9_000_000_000_778n; // a product only B has reviews for
+    await seedReview(B.api, { productId: bOnly, body: "B-only review" });
+    const res = await listReviews(A.api, bOnly, parseListParams(new URL("http://x/?page=1")), { replies: true });
     assert.deepEqual(res.reviews, []);
+    // and A's list for the Shopify product id both shops share holds only A's review
+    const shared = await listReviews(A.api, SAME_PRODUCT_ID, parseListParams(new URL("http://x/?page=1")), { replies: true });
+    assert.deepEqual(shared.reviews.map((r) => r.body), [A.reviewBody]);
   });
   test("stored import files are namespaced per shop", () => {
     for (const m of [A, B]) assert.ok(importFileKey(m.shopId, m.importJobId).startsWith(`s/${m.shopId}/imports/`));
@@ -107,14 +114,15 @@ describe("5. Merchant A cannot access Merchant B's import jobs", () => {
 describe("6. Merchant A cannot access Merchant B's moderation records", () => {
   test("library: B's moderation history is empty from A's context", async () => {
     assert.deepEqual(await asA((t) => moderationHistory(t, B.reviewId)), []);
-    assert.equal(await asA(({ db }) => db.moderationAction.findFirst({ where: { id: B.moderationActionId } })), null);
+    assert.equal(await asA(({ db }) => db.auditLog.findFirst({ where: { entityId: B.reviewId } })), null); // RLS alone
+    assert.equal((await withTenant(B.shopId, (t) => moderationHistory(t, B.reviewId))).length, 1);
   });
 });
 
 describe("7. Missing resources and other-shop resources get the same safe response", () => {
   test("admin review detail: B's id and a random id → identical 404", async () => {
-    const other = await run(() => reviewLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${B.reviewId}`), { id: B.reviewId })));
-    const missing = randomUUID();
+    const other = await run(() => reviewLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${idB()}`), { id: idB() })));
+    const missing = "999999999999";
     const none = await run(() => reviewLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${missing}`), { id: missing })));
     assert.equal(other.response?.status, 404);
     assert.equal(none.response?.status, 404);
@@ -154,9 +162,9 @@ describe("8. No client-supplied tenant id can override the authenticated shop", 
   });
   test("admin: shop/tenant ids in query or body are ignored", async () => {
     const r = await run(() => reviewsListLoader(args<LoaderFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews?shop=${DOMAIN_B}&shopId=${B.shopId}&shop_id=${B.shopId}`))));
-    assert.deepEqual((r.data as { rows: { id: string }[] }).rows.map((x) => x.id), [A.reviewId]);
+    assert.deepEqual((r.data as { rows: { id: string }[] }).rows.map((x) => x.id), [reviewParam(A.reviewId)]);
     const body = new URLSearchParams({ intent: "hide", shopId: B.shopId, shop: DOMAIN_B });
-    const act = await run(() => reviewAction(args<ActionFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${B.reviewId}`, { method: "POST", body }), { id: B.reviewId })));
+    const act = await run(() => reviewAction(args<ActionFunctionArgs>(adminRequest(DOMAIN_A, `/app/reviews/${idB()}`, { method: "POST", body }), { id: idB() })));
     assert.equal(act.response?.status, 404);
   });
   test("database: a row claiming another shop is rejected inside a tenant transaction", async () => {
@@ -193,7 +201,7 @@ describe("9. Unauthenticated requests cannot access merchant data", () => {
     await markUninstalled("proofly-test-gone.myshopify.com");
     const r = await run(() => proxyRatings(args<LoaderFunctionArgs>(proxyRequest("proofly-test-gone.myshopify.com", "ratings", { handles: SAME_HANDLE }))));
     assert.equal(r.response?.status, 404);
-    assert.equal(await owner.review.count({ where: { shopId: gone.shopId } }), 1);
+    assert.equal((await reviewsIn(gone.api)).length, 1); // the merchant's reviews stay in its own store
   });
 });
 
@@ -213,12 +221,11 @@ describe("Tenant-scoped writes from the storefront", () => {
   test("a submission signed for shop A from A's storefront lands only in shop A, pending", async () => {
     const res = await submit(`https://${storefrontHost("A")}`);
     assert.equal(res.status, 201);
-    const rows = await owner.review.findMany({ where: { title: "Write test" } });
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].shopId, A.shopId);
-    assert.equal(rows[0].status, "pending");
-    const prod = await owner.product.findUniqueOrThrow({ where: { id: rows[0].productId } });
-    assert.equal(prod.shopId, A.shopId);
+    const inA = (await reviewsIn(A.api)).filter((r) => r.title === "Write test");
+    assert.equal(inA.length, 1);
+    assert.equal(inA[0].status, "pending");
+    assert.equal(inA[0].productId, SAME_PRODUCT_ID);
+    assert.deepEqual((await reviewsIn(B.api)).filter((r) => r.title === "Write test"), []);
   });
   test("a submission for shop A whose Origin is shop B's storefront is rejected", async () => {
     const res = await submit(`https://${storefrontHost("B")}`);
