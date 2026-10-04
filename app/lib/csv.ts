@@ -23,3 +23,12 @@ export function parseCsv(text: string): Record<string, string>[] {
   const [header, ...body] = rows.filter((r) => r.length > 1 || r[0] !== "");
   return body.map((r) => Object.fromEntries(header.map((h, i) => [h.replace(/^\uFEFF/, ""), r[i] ?? ""])));
 }
+
+/**
+ * One cell of a CSV file the merchant downloads. A value a spreadsheet would run as a formula (leading =, +, -, @, tab
+ * or carriage return — OWASP "CSV injection") is prefixed with an apostrophe; then quoted when needed.
+ */
+export function csvCell(v: string) {
+  const safe = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+  return /[",\n\r]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
+}

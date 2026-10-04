@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { recomputeProducts } from "./aggregates.server";
-import { parseCsv } from "./csv";
+import { csvCell, parseCsv } from "./csv";
 import { BULK_MAX_BYTES } from "./bulk.server";
 import { bumpStats, bumpStatsMany, can, releaseEligibleReviews } from "./entitlements.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
@@ -665,7 +665,7 @@ export async function importProblemReport(shopId: string, jobId: string) {
   if (!job || !csv) return null;
   const { rows } = analyseRecords(csv.toString("utf8"), job.options as unknown as ImportOptions, +job.createdAt);
   const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
-  const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+  const q = csvCell; // values come from the uploaded file: neutralise formulas like the review export
   const lines = [["record", "review_id", "product_id", "product_handle", "sku", "product_title", "problem", "explanation"].join(",")];
   for (const r of rows) {
     const ref = JSON.parse(r.ref) as { id: string; handle: string; sku: string; title: string };

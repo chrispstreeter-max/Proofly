@@ -27,6 +27,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      # Shopify CLI before the tests: tests/storefront.test.ts runs Theme Check through it
+      - run: npm install -g @shopify/cli
       # Unit, integration, tenant-isolation and security tests (incl. the production-build merchant-data scan)
       - run: npm test
       # Synthetic fixture replaces any real dataset in CI
@@ -34,7 +36,6 @@ jobs:
       - run: npm run fixtures:check
       - run: npm run scan:merchant-data
       # Theme app extension rules (Shopify CLI) and every Admin GraphQL operation against the pinned API schema
-      - run: npm install -g @shopify/cli
       - run: npm run check:theme
       - run: npm run check:graphql
       # Production dependencies: fail on critical advisories (known high: deepmerge-ts via prisma CLI — docs/LAUNCH.md)

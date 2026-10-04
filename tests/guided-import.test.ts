@@ -83,6 +83,15 @@ describe("Manual product matching", () => {
     assert.match(csvReport, /skipped_by_merchant,You chose to skip these reviews\./);
   });
 
+  test("the problem report neutralises formulas coming from the uploaded file (CSV injection), like the review export", async () => {
+    const { jobId: j } = await createImport(A.shopId, { csv: csv([row({ review_id: "-2+3+cmd|' /C calc'!A0", product_handle: "=HYPERLINK(\"http://x\")" })]), options: { publishMode: "publish" }, actor: "test" });
+    const report = (await importProblemReport(A.shopId, j))!;
+    const cells = report.trim().split("\n")[1];
+    assert.ok(cells.includes(`'-2+3+cmd|' /C calc'!A0`), cells);
+    assert.ok(cells.includes(`,'=hyperlink(http://x),`), cells); // handles are normalised, then neutralised
+    assert.doesNotMatch(report, /(^|,)[=+\-@]/m);
+  });
+
   test("confirmations are re-used by later imports of the same source — never over an automatic match, never across sources", async () => {
     const { jobId: j } = await createImport(A.shopId, { csv: csv([row({ product_title: "East Example Mug" })]), options: { publishMode: "publish" }, actor: "test" });
     const m = (await getImport(A.shopId, j))!.matches[0];

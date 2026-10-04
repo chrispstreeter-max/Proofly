@@ -9,8 +9,8 @@ import { upsertShopFromAuth } from "./lib/tenant.server";
 
 // Fail fast: an empty API secret would make every HMAC/JWT check forgeable, so never start without these.
 const REQUIRED_ENV = ["SHOPIFY_API_KEY", "SHOPIFY_API_SECRET", "SHOPIFY_APP_URL", "SCOPES", "TOKEN_ENCRYPTION_KEY"] as const;
-// Production additionally needs durable private file storage for import CSVs (local disk is per-instance and
-// ephemeral), a real IP-hash salt and the Shopify app handle (plan page links).
+// Production additionally needs its database (the only storage: import CSVs live there too), a real IP-hash salt and
+// the Shopify app handle (plan page links).
 const PRODUCTION_ENV = ["DATABASE_URL", "IP_HASH_SALT", "SHOPIFY_APP_HANDLE"] as const;
 export function envProblems(env: Record<string, string | undefined>) {
   const problems = REQUIRED_ENV.filter((k) => !env[k]).map((k) => `missing ${k}`);
