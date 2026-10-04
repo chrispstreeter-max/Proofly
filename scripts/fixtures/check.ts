@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { parseCsv } from "../lib/csv";
+import { parseCsv } from "../../app/lib/csv";
 import { FICTIONAL_ID_BASE } from "./constants";
 
 const i = process.argv.indexOf("--dir");
@@ -30,8 +30,8 @@ ok("cross-product repeated text", exp.cross_product_groups >= 25 && exp.cross_pr
 ok("missing titles", exp.missing_title >= 1);
 ok("reply-like records", exp.reply_like >= 3);
 ok("unmatched products", exp.unmatched_rows >= 10);
-ok("ambiguous title needs confirmation", exp.ambiguous_title >= 1);
-ok("matching by id/handle/sku/title", exp.match_by_id > 0 && exp.match_by_handle > 0 && exp.match_by_sku > 0 && exp.match_by_unique_title > 0);
+ok("title-only rows (suggestions only, never matched)", exp.title_only_one_suggestion >= 1 && exp.title_only_several_suggestions >= 1);
+ok("matching by id/handle/sku", exp.match_by_id > 0 && exp.match_by_handle > 0 && exp.match_by_sku > 0);
 ok("multiple review states", ["published", "pending", "hidden", "rejected"].every((s) => exp.status[s] > 0));
 ok("invalid records", exp.invalid_rating >= 3 && exp.invalid_date >= 3);
 ok("plan-limited under Free", exp.plan_limited_under_free > 0 && exp.plan_limited_under_free === exp.importable_published - 100);

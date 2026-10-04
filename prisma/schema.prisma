@@ -259,6 +259,13 @@ model Review {
   shopifyCustomerId BigInt?      @map("shopify_customer_id")
   shopifyOrderId    BigInt?      @map("shopify_order_id")
   submitterIpHash   String?      @map("submitter_ip_hash")
+  /// Import that created this review (metadata; tenant-scoped by RLS). Re-imports never change it except to adopt
+  /// rows of an import that never finished.
+  importJobId       String?      @map("import_job_id") @db.Uuid
+  /// The product identifiers exactly as the source gave them (audit), e.g. {"id":"…","handle":"…","sku":"…"}
+  sourceProductRef  String?      @map("source_product_ref")
+  /// sha256 of normalised reviewer + body: duplicate / cross-product-repeat flagging only (never publication)
+  contentHash       String?      @map("content_hash")
   sourceDateRaw     String?      @map("source_date_raw")
   createdAt         DateTime     @default(now()) @map("created_at")
   updatedAt         DateTime     @updatedAt @map("updated_at")
@@ -273,6 +280,8 @@ model Review {
   @@unique([shopId, source, sourceReviewId])
   @@unique([shopId, id])
   @@index([shopId, productId, status, reviewDate(sort: Desc)])
+  @@index([shopId, importJobId])
+  @@index([shopId, contentHash])
   @@index([shopId, status, reviewDate(sort: Desc)])
   @@map("reviews")
 }
@@ -365,20 +374,64 @@ model ModerationAction {
 }
 
 /// Import job records (the import pipeline itself arrives in a later checkpoint).
+/// One import run (app/lib/import.server.ts). Lifecycle: queued → running → completed | completed_with_warnings | failed
+/// | cancelled. Resumable: `cursor` = next source record to process, committed together with each batch.
 model ImportJob {
-  id         String    @id @default(uuid()) @db.Uuid
-  shopId     String    @map("shop_id") @db.Uuid
-  source     String
-  status     String    @default("pending")
-  counts     Json      @default("{}")
-  report     Json      @default("{}")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  finishedAt DateTime? @map("finished_at")
+  id                String    @id @default(uuid()) @db.Uuid
+  shopId            String    @map("shop_id") @db.Uuid
+  source            String
+  status            String    @default("queued")
+  /// publishMode, column mapping — never a shop or tenant id
+  options           Json      @default("{}")
+  fileKey           String?   @map("file_key")
+  imagesKey         String?   @map("images_key")
+  /// validation + matching result computed before any review is written
+  analysis          Json      @default("{}")
+  counts            Json      @default("{}")
+  report            Json      @default("{}")
+  totalRows         Int       @default(0) @map("total_rows")
+  cursor            Int       @default(0)
+  actor             String?
+  error             String?
+  startedAt         DateTime? @map("started_at")
+  heartbeatAt       DateTime? @map("heartbeat_at")
+  cancelRequestedAt DateTime? @map("cancel_requested_at")
+  finalizedAt       DateTime? @map("finalized_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  finishedAt        DateTime? @map("finished_at")
 
-  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop    Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  matches ImportProductMatch[]
 
+  @@unique([shopId, id])
   @@index([shopId, createdAt(sort: Desc)])
   @@map("import_jobs")
+}
+
+/// How one source product reference in an import resolved: matched (by id / handle / sku), unmatched or ambiguous.
+/// Title is never an automatic key: exact-title products appear only in `candidates` as suggestions. Manual
+/// confirmation (checkpoint 8) will set product_id + method = manual.
+model ImportProductMatch {
+  id               String   @id @default(uuid()) @db.Uuid
+  shopId           String   @map("shop_id") @db.Uuid
+  importJobId      String   @map("import_job_id") @db.Uuid
+  sourceProductRef String   @map("source_product_ref")
+  /// matched | unmatched | ambiguous
+  status           String
+  /// id | handle | sku | manual (null unless matched)
+  method           String?
+  /// This shop's products.id when matched. Reviews written with it are protected by their composite (shop_id, product_id) FK.
+  productId        String?  @map("product_id") @db.Uuid
+  reason           String?
+  /// suggestions for the merchant: [{ productId, title, handle, via }] — never used automatically
+  candidates       Json     @default("[]")
+  rows             Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  importJob ImportJob @relation(fields: [shopId, importJobId], references: [shopId, id], onDelete: Cascade)
+
+  @@unique([shopId, importJobId, sourceProductRef])
+  @@map("import_product_matches")
 }
 
 model AuditLog {

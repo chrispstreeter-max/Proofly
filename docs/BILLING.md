@@ -119,8 +119,9 @@ Your existing reviews remain visible. New reviews will be held until you upgrade
 
 ## 7. Imports
 
-`importReviews` is provider-neutral. Every valid row is stored, and imports are never truncated. Published rows go
-through admission, and duplicates (same source and source review id) are skipped idempotently. Example: Free, 1,000
+The import engine ([IMPORT.md](IMPORT.md), checkpoint 6) is provider-neutral. Every valid row is stored, and imports
+are never truncated. Published rows go through admission once per import, by date order across the whole file, and
+duplicates (same source and source review id) are skipped idempotently. Example: Free, 1,000
 rows → 1,000 stored, 100 published (the oldest), 900 plan-limited, 0 rejected. CSV parsing, mapping, images and the
 import UI are checkpoint 8.
 

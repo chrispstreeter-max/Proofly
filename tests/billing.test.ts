@@ -49,7 +49,7 @@ async function publicReviews(m: { shopId: string }, productId: string, n: number
 const rows = (n: number, productId: bigint, o: { start?: number; rating?: (i: number) => number; body?: (i: number) => string } = {}): ImportRow[] =>
   Array.from({ length: n }, (_, i) => ({
     sourceReviewId: `r-${o.start ?? 0}-${i}`, shopifyProductId: productId, rating: o.rating?.(i) ?? 4, body: o.body?.(i) ?? `Imported review ${i}`,
-    reviewerName: `Reviewer ${i}`, reviewDate: new Date(Date.UTC(2024, 0, 1) + ((o.start ?? 0) + i) * 86_400_000),
+    reviewerName: `Reviewer ${i}`, reviewDate: new Date(Date.UTC(2024, 0, 1) + ((o.start ?? 0) + i) * 3_600_000),
   }));
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -251,16 +251,16 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
   });
 
   test("below the limit: everything published", async () => {
-    const r = await as(shop, (t) => importReviews(t, { source: "csv", rows: rows(40, PID), actor: "test" }));
+    const r = await importReviews(shop.shopId, { source: "csv", rows: rows(40, PID), actor: "test" });
     assert.deepEqual([r.imported, r.published, r.planLimited], [40, 40, 0]);
   });
 
   test("exactly at the limit, then above it: stored in full, the excess held — nothing deleted", async () => {
     // The fixture review from installMerchant is public too: 41 used, 59 left.
-    const atLimit = await as(shop, (t) => importReviews(t, { source: "csv", rows: rows(59, PID, { start: 1000 }), actor: "test" }));
+    const atLimit = await importReviews(shop.shopId, { source: "csv", rows: rows(59, PID, { start: 1000 }), actor: "test" });
     assert.deepEqual([atLimit.imported, atLimit.published, atLimit.planLimited], [59, 59, 0]);
     assert.equal((await as(shop, (t) => getUsage(t))).publishedReviews, 100);
-    const over = await as(shop, (t) => importReviews(t, { source: "csv", rows: rows(30, PID, { start: 2000 }), actor: "test" }));
+    const over = await importReviews(shop.shopId, { source: "csv", rows: rows(30, PID, { start: 2000 }), actor: "test" });
     assert.deepEqual([over.imported, over.published, over.planLimited], [30, 0, 30]);
     assert.equal(await owner.review.count({ where: { shopId: shop.shopId } }), 130);
     const job = await owner.importJob.findFirstOrThrow({ where: { shopId: shop.shopId }, orderBy: { createdAt: "desc" } });
@@ -268,10 +268,10 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
   });
 
   test("re-running the same import is idempotent; unmatched products and invalid rows are reported, not stored", async () => {
-    const r = await as(shop, (t) => importReviews(t, {
+    const r = await importReviews(shop.shopId, {
       source: "csv", actor: "test",
       rows: [...rows(5, PID, { start: 2000 }), ...rows(2, 9_999_999_999_999n, { start: 3000 }), { ...rows(1, PID, { start: 4000 })[0], rating: 9 }],
-    }));
+    });
     assert.deepEqual([r.imported, r.duplicates, r.unmatchedProduct, r.invalid], [0, 5, 2, 1]);
   });
 
@@ -281,7 +281,7 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
     await newProduct(m, PID);
     // Adversarial data: the OLDEST reviews are 1★ and negative, the newest 5★ and glowing.
     const input = rows(1000, PID, { rating: (i) => (i < 500 ? 1 : 5), body: (i) => (i < 500 ? `Terrible, broke at once ${i}` : `Wonderful, love it ${i}`) });
-    const r = await as(m, (t) => importReviews(t, { source: "legacy-provider", rows: [...input].reverse(), actor: "test" }));
+    const r = await importReviews(m.shopId, { source: "legacy-provider", rows: [...input].reverse(), actor: "test" });
     assert.deepEqual([r.received, r.imported, r.published, r.planLimited, r.notPublished], [1000, 1000, 100, 900, 0]);
     assert.equal(await owner.review.count({ where: { shopId: m.shopId } }), 1000);
     const published = await owner.review.findMany({ where: { shopId: m.shopId, status: "published", holdReason: null }, select: { sourceReviewId: true, rating: true } });
@@ -294,9 +294,9 @@ describe("Imports: never truncated; excess is plan-limited, oldest first", () =>
 describe("Fairness: date order only (regression guards)", () => {
   test("admission orderings are chronological and use no quality signal", () => {
     const keys = (o: readonly object[]) => o.map((x) => JSON.stringify(x));
-    assert.deepEqual(keys(REVIEW_ADMISSION_ORDER), ['{"reviewDate":"asc"}', '{"createdAt":"asc"}', '{"id":"asc"}']);
-    assert.deepEqual(keys(MEDIA_ADMISSION_ORDER), ['{"review":{"reviewDate":"asc"}}', '{"createdAt":"asc"}', '{"position":"asc"}', '{"id":"asc"}']);
-    const banned = /rating|sentiment|body|title|reviewerName|verified|images|photo|product|flags|helpful|score/i;
+    assert.deepEqual(keys(REVIEW_ADMISSION_ORDER), ['{"reviewDate":"asc"}', '{"source":"asc"}', '{"sourceReviewId":"asc"}']);
+    assert.deepEqual(keys(MEDIA_ADMISSION_ORDER), ['{"review":{"reviewDate":"asc"}}', '{"review":{"source":"asc"}}', '{"review":{"sourceReviewId":"asc"}}', '{"position":"asc"}', '{"id":"asc"}']);
+    const banned = /rating|sentiment|body|title|reviewerName|verified|images|photo|product|flags|helpful|score|createdAt/i;
     for (const o of [...REVIEW_ADMISSION_ORDER, ...MEDIA_ADMISSION_ORDER]) assert.doesNotMatch(JSON.stringify(o), banned);
   });
 
@@ -332,7 +332,7 @@ describe("Upgrade and downgrade", () => {
     await owner.review.deleteMany({ where: { shopId: m.shopId } });
     pid = (await newProduct(m, 9_700_000_000_300n)).id;
     await setPlan(m, null); // Free, confirmed
-    await as(m, (t) => importReviews(t, { source: "csv", rows: rows(150, 9_700_000_000_300n), actor: "test" })); // 100 public, 50 held
+    await importReviews(m.shopId, { source: "csv", rows: rows(150, 9_700_000_000_300n), actor: "test" }); // 100 public, 50 held
   });
 
   test("upgrade: allowance grows only after Shopify confirms; held reviews do NOT auto-publish; 'Publish eligible reviews' does", async () => {
@@ -360,7 +360,7 @@ describe("Upgrade and downgrade", () => {
     assert.deepEqual([st.plan.key, st.usage.publishedReviews, st.overReviewAllowance, st.reviewRoom], ["FREE", 150, true, 0]);
     assert.equal(await owner.reviewImage.count({ where: { shopId: m.shopId, mediaStatus: "published" } }), 1);
     // Future imports and approvals are held; nothing becomes hidden, nothing is deleted.
-    const imp = await as(m, (t) => importReviews(t, { source: "csv", rows: rows(10, 9_700_000_000_300n, { start: 5000 }), actor: "test" }));
+    const imp = await importReviews(m.shopId, { source: "csv", rows: rows(10, 9_700_000_000_300n, { start: 5000 }), actor: "test" });
     assert.deepEqual([imp.imported, imp.published, imp.planLimited], [10, 0, 10]);
     const pending = await as(m, ({ db, shopId }) => db.review.create({ data: { shopId, productId: pid, source: "storefront", sourceReviewId: "sf-1", rating: 5, body: "new", reviewerName: "N", reviewDate: new Date(), status: "pending" } }));
     await as(m, (t) => moderate(t, [pending.id], "approve", "test"));

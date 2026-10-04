@@ -23,7 +23,7 @@ export interface Tenant {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const isUuid = (s: string | null | undefined): s is string => !!s && UUID.test(s);
 
-export async function withTenant<T>(shopId: string, fn: (t: Tenant) => Promise<T>): Promise<T> {
+export async function withTenant<T>(shopId: string, fn: (t: Tenant) => Promise<T>, opts: { timeoutMs?: number } = {}): Promise<T> {
   if (!isUuid(shopId)) throw new Error("withTenant: invalid shop id");
   // ponytail: one interactive transaction per tenant operation; move long network work (S3, Shopify API) outside
   // the transaction if connection-pool pressure shows up.
@@ -32,7 +32,7 @@ export async function withTenant<T>(shopId: string, fn: (t: Tenant) => Promise<T
       await db.$executeRaw`SELECT set_config('app.shop_id', ${shopId}, true)`;
       return fn({ shopId, db });
     },
-    { maxWait: 5_000, timeout: 20_000 },
+    { maxWait: 5_000, timeout: opts.timeoutMs ?? 20_000 },
   );
 }
 
@@ -42,6 +42,11 @@ const normalise = (domain: string) => domain.trim().toLowerCase();
 /** The installed (not uninstalled) shop for an authenticated Shopify domain, or null. */
 export function activeShopByDomain(domain: string) {
   return prisma.shop.findFirst({ where: { shopDomain: normalise(domain), uninstalledAt: null } });
+}
+
+/** True while the shop has Proofly installed (imports and other merchant jobs refuse to run otherwise). */
+export async function isShopActive(shopId: string) {
+  return !!(await prisma.shop.findFirst({ where: { id: shopId, uninstalledAt: null }, select: { id: true } }));
 }
 
 /** Any shop row for an authenticated domain (including uninstalled — used by compliance webhooks). */

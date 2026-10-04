@@ -24,7 +24,8 @@ const IMAGE = /\.(png|jpe?g|gif|webp|avif|heic|bmp|tiff?|ico|svg)$/i;
 const DATA_DUMP = /\.(csv|tsv|sql|sqlite3?|db|zip|tar|gz|tgz|7z|ndjson|jsonl)$/i;
 const SKIP_CONTENT = /(^|\/)(package-lock\.json)$|\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|map)$/i;
 const ALLOWED_EMAIL_DOMAINS = /@(example\.(com|org|net)|proofly\.test)$/i;
-const ALLOWED_SHOPS = new Set(["proofly-dev", "proofly-test-a", "proofly-test-b", "proofly-test-gone", "proofly-test-c", "proofly-test-d", "proofly-test-e", "proofly-test-f", "proofly-test-g", "proofly-test-h", "proofly-test-i", "example", "your-store", "shop"]); // fictional / template placeholders
+const ALLOWED_SHOPS = new Set(["proofly-dev", "example", "your-store", "shop"]); // fictional / template placeholders
+const FICTIONAL_TEST_SHOP = /^proofly-test-[a-z0-9]{1,8}$/; // the test suite's fictional shops (short labels only)
 
 type Finding = { rule: string; file: string; line?: number; detail: string };
 const findings: Finding[] = [];
@@ -53,7 +54,7 @@ function scanText(file: string, text: string, build: boolean) {
       if (!ALLOWED_EMAIL_DOMAINS.test(m[0]) && !/@[\d.]+$/.test(m[0]) && !/\.(png|jpe?g|webp|js|css)$/i.test(m[0])) findings.push({ rule: "R3 email", ...at, detail: m[0].replace(/^[^@]+/, "***") });
     if (!build && /(?<![\w.])\+?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\w])/.test(line)) findings.push({ rule: "R4 phone", ...at, detail: "phone-like number" });
     for (const m of line.matchAll(/([a-z0-9][a-z0-9-]*)\.myshopify\.com/gi))
-      if (!ALLOWED_SHOPS.has(m[1].toLowerCase())) findings.push({ rule: "R5 shop domain", ...at, detail: `${m[1]}.myshopify.com` });
+      if (!ALLOWED_SHOPS.has(m[1].toLowerCase()) && !FICTIONAL_TEST_SHOP.test(m[1].toLowerCase())) findings.push({ rule: "R5 shop domain", ...at, detail: `${m[1]}.myshopify.com` });
     for (const m of line.matchAll(/(?<![\d.])\d{13}(?![\d.])/g)) {
       const n = Number(m[0]);
       if (n >= 1e12 && n < 9e12 && !build) findings.push({ rule: "R6 real-range id", ...at, detail: m[0] });

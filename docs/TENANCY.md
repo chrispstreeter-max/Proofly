@@ -53,7 +53,9 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
    that shop's own hosts; each shop's proxy path is its own (no global default accepted).
 8. **Billing is per shop** — `billing_state` and `subscriptions` are row-level-security tenant tables; plan state is
    read from the shop's own Admin API; no request field can choose a plan ([BILLING.md](BILLING.md)).
-9. **Shopify writes are per shop** — catalogue sync, rating-cache sync and reconciliation use the shop's own Admin API
+9. **Imports are per shop** — `import_jobs` and `import_product_matches` are RLS tenant tables; import files live under
+   `s/<shop>/imports/`; the shop comes from the authenticated session, never from the file or the request.
+10. **Shopify writes are per shop** — catalogue sync, rating-cache sync and reconciliation use the shop's own Admin API
    client and only that shop's (RLS-scoped) rows; Proofly writes rating metafields only for its `proofly_managed`
    products.
 
@@ -62,7 +64,8 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
 `tests/database.test.ts` (RLS + constraints), `tests/isolation.test.ts` (the required cases 1–10 through real route
 handlers with signed session tokens / proxy requests), `tests/lifecycle.test.ts` (new merchant starts empty;
 install → authenticate → onboard → uninstall → reinstall with a bystander merchant proven unchanged; install/auth
-configuration), `tests/storefront.test.ts`, `tests/billing.test.ts` (plans, billing reconciliation, entitlements, imports, fairness, billing isolation),
+configuration), `tests/storefront.test.ts`, `tests/import.test.ts` (import engine: matching, idempotency, resume, cross-tenant collisions, limits, privacy),
+`tests/replies.test.ts` (reply visibility), `tests/billing.test.ts` (plans, billing reconciliation, entitlements, imports, fairness, billing isolation),
 `tests/sync.test.ts` (product sync, webhooks, aggregation, rating
 ownership and reconciliation, proxy paths, public media), `tests/security.test.ts`, `tests/unit.test.ts`.
 

@@ -16,9 +16,14 @@ import type { Tenant } from "./tenant.server";
  *    Never rating, sentiment, text, name, photos, verification or product.
  */
 
-/** The ONLY orderings allowed when an allowance decides what becomes public. Chronological, oldest first. */
-export const REVIEW_ADMISSION_ORDER = Object.freeze([{ reviewDate: "asc" }, { createdAt: "asc" }, { id: "asc" }] as const);
-export const MEDIA_ADMISSION_ORDER = Object.freeze([{ review: { reviewDate: "asc" } }, { createdAt: "asc" }, { position: "asc" }, { id: "asc" }] as const);
+/**
+ * The ONLY orderings allowed when an allowance decides what becomes public. Chronological, oldest first.
+ * Equal review dates are resolved by the review's stable source identity — (source, source_review_id), unique per shop —
+ * never by insertion time or a random id, so the outcome is identical whatever order rows arrived in. For imports
+ * without a source id that identity is a content hash (import.server fallbackId): deterministic, not a quality signal.
+ */
+export const REVIEW_ADMISSION_ORDER = Object.freeze([{ reviewDate: "asc" }, { source: "asc" }, { sourceReviewId: "asc" }] as const);
+export const MEDIA_ADMISSION_ORDER = Object.freeze([{ review: { reviewDate: "asc" } }, { review: { source: "asc" } }, { review: { sourceReviewId: "asc" } }, { position: "asc" }, { id: "asc" }] as const);
 
 export async function getBillingState({ db, shopId }: Tenant) {
   return (await db.billingState.findUnique({ where: { shopId } })) ?? db.billingState.create({ data: { shopId, plan: DEFAULT_PLAN } });

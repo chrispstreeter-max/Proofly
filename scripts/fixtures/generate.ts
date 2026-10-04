@@ -54,7 +54,7 @@ async function main() {
   await rm(OUT, { recursive: true, force: true });
   await mkdir(path.join(OUT, "images"), { recursive: true });
 
-  // ---- catalogue: 90 products (5 drafts), two share a title (ambiguous title match)
+  // ---- catalogue: 90 products (5 drafts), two share a title (title-only rows get two suggestions, never a match)
   const products: Product[] = [];
   for (let i = 0; products.length < 90; i++) {
     const title = `${ADJ[i % ADJ.length]} ${NOUN[Math.floor(i / ADJ.length) % NOUN.length]}`;
@@ -67,7 +67,7 @@ async function main() {
   const rows: Row[] = [];
   const exp = {
     reviews: 0, products_in_catalogue: products.length, products_referenced: 0,
-    match_by_id: 0, match_by_handle: 0, match_by_sku: 0, match_by_unique_title: 0, ambiguous_title: 0, unmatched_rows: 0,
+    match_by_id: 0, match_by_handle: 0, match_by_sku: 0, title_only_one_suggestion: 0, title_only_several_suggestions: 0, unmatched_rows: 0,
     invalid_rating: 0, invalid_date: 0, missing_title: 0, reply_like: 0,
     duplicate_same_product_extra_rows: 0, cross_product_groups: 0, cross_product_rows: 0,
     status: { published: 0, pending: 0, hidden: 0, rejected: 0 } as Record<string, number>,
@@ -103,8 +103,8 @@ async function main() {
     while (x > weights[k]) x -= weights[k++];
     add(products[Math.min(k, 87)], {}, howFor(i));
   }
-  for (let i = 0; i < 8; i++) add(products[10 + i], {}, "title");                       // unique-title matches
-  for (let i = 0; i < 3; i++) add(products[88], {}, "title");                            // ambiguous title → needs confirmation
+  for (let i = 0; i < 8; i++) add(products[10 + i], {}, "title");                       // title only → unmatched, 1 suggestion
+  for (let i = 0; i < 3; i++) add(products[88], {}, "title");                            // title only, shared title → 2 suggestions
   for (let i = 0; i < 12; i++) add(unmatched[i % unmatched.length], {}, i % 2 ? "handle" : "id"); // unmatched products
 
   // duplicates on the same product (7 groups → 8 extra rows)
@@ -165,15 +165,17 @@ async function main() {
   for (const r of rows) {
     exp.reviews++;
     exp.status[r.status]++;
-    // Matching cascade (ID → handle → SKU → unique exact title); an ambiguous title needs merchant confirmation.
+    // Automatic matching: ID → handle → SKU only. Title is NEVER an automatic key: a title-only row stays unmatched
+    // (the exact-title products are merchant-facing suggestions).
     let matched: Product | undefined;
     const titles = titleCount.get(r.product_title) ?? 0;
     if (r.product_id && (matched = prodById.get(r.product_id))) exp.match_by_id++;
     else if (r.product_handle && (matched = prodByHandle.get(r.product_handle))) exp.match_by_handle++;
     else if (r.sku && (matched = prodBySku.get(r.sku))) exp.match_by_sku++;
-    else if (titles === 1 && (matched = products.find((p) => p.title === r.product_title))) exp.match_by_unique_title++;
-    else if (titles > 1) exp.ambiguous_title++;
-    else exp.unmatched_rows++;
+    else {
+      exp.unmatched_rows++;
+      if (!r.product_id && !r.product_handle && !r.sku) { if (titles === 1) exp.title_only_one_suggestion++; else if (titles > 1) exp.title_only_several_suggestions++; }
+    }
     if (matched) referenced.add(matched.id);
     const validRating = /^[1-5]$/.test(r.rating);
     if (!validRating) exp.invalid_rating++;
@@ -187,7 +189,8 @@ async function main() {
     exp.images_corrupt += files.filter((f) => f.includes("corrupt")).length;
     const key = `${matched?.id}|${r.reviewer_name}|${r.body}`;
     if (matched) seenText.set(key, (seenText.get(key) ?? 0) + 1);
-    if (matched && validRating && isDate(r.review_date) && r.status === "published" && r.reviewer_name !== "Example Store Team") importablePublished.push(r);
+    // Reply-like rows are ordinary reviews to a generic importer (no name heuristics); they import like any other row.
+    if (matched && validRating && isDate(r.review_date) && r.status === "published") importablePublished.push(r);
   }
   exp.images_valid = imgN;
   exp.products_referenced = referenced.size;

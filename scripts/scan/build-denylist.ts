@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { parseCsv } from "../lib/csv";
+import { parseCsv } from "../../app/lib/csv";
 
 const SHINGLE = 6;
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");

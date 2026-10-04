@@ -1,4 +1,4 @@
-// Generic RFC 4180 CSV parsing (shared by fixtures and, later, the importer).
+// Generic RFC 4180 CSV parsing (shared by the importer and the synthetic fixture scripts).
 
 /** RFC 4180 CSV parser (quoted fields, "" escapes, embedded newlines, CRLF). */
 export function parseCsv(text: string): Record<string, string>[] {

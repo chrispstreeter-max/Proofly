@@ -1,77 +1,548 @@
+import { createHash, randomUUID } from "node:crypto";
 import { recomputeProduct } from "./aggregates.server";
-import { admitReviews } from "./entitlements.server";
-import type { Tenant } from "./tenant.server";
+import { parseCsv } from "./csv";
+import { can, releaseEligibleMedia, releaseEligibleReviews } from "./entitlements.server";
+import { importFileKey, readPrivate, sniffType, storePrivateFile, storeReviewImage } from "./media.server";
+import { syncAfterRatingChange } from "./rating-cache.server";
+import { isShopActive, withTenant, type Tenant } from "./tenant.server";
+import { normaliseZipName, readZipDirectory, readZipEntry, ZipError, type ZipEntry } from "./zip.server";
 
 /**
- * Generic review import core (provider-neutral). CSV parsing, field mapping, product matching UI, images and the
- * import screens are checkpoint 8; whatever produces rows calls this.
+ * Merchant-owned review import engine (generic CSV; provider presets only map columns). docs/IMPORT.md.
  *
- * Plan rule: imports are NEVER truncated. Every valid row is stored. Rows that arrive published become public only
- * while the published-review allowance has room — oldest review date first (entitlements.server); the rest are stored
- * as plan-limited (held), never deleted, and become publishable after an upgrade via "Publish eligible reviews".
- * Idempotent: (source, sourceReviewId) already stored → counted as a duplicate, left unchanged.
+ *  createImport  → validates limits, stores the files privately, parses + VALIDATES + MATCHES every record (nothing is
+ *                  written to reviews yet), saves the analysis and per-product matches → job "queued".
+ *  runImport     → claims the job and writes records in small batches, each batch committed together with the job's
+ *                  cursor (resume = continue at the cursor; no giant transaction). Then FINALIZE once: admit the job's
+ *                  reviews and photos to public view by date order (entitlements), recompute aggregates, flag
+ *                  duplicates. Rating cache sync goes through rating-cache.server.
+ *  Lifecycle: queued → running → completed | completed_with_warnings | failed (resumable) | cancelled.
+ *
+ * Locked rules honoured here: imports never truncated (plan limits only hold reviews back, oldest-first admission);
+ * nothing deleted; title is never an automatic product-matching key; unknown statuses never become public; a source
+ * "published" row still goes through Proofly's admission; tenant = the authenticated shop only.
  */
-export interface ImportRow {
+
+const MB = 1024 ** 2;
+export const IMPORT_LIMITS = Object.freeze({
+  csvBytes: 50 * MB, archiveBytes: 2 * 1024 * MB, imageBytes: 20 * MB, imagesPerReview: 5,
+  bodyChars: 20_000, titleChars: 255, nameChars: 255, batchRows: 50, reportProblems: 1_000,
+});
+
+export class ImportError extends Error {
+  constructor(public code: string, message: string) { super(message); }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Columns (generic template + common aliases). Anything else — e.g. email columns — is ignored, never stored.
+const ALIASES = {
+  sourceReviewId: ["review_id", "source_review_id", "id"],
+  productId: ["product_id", "shopify_product_id"],
+  handle: ["product_handle", "handle"],
+  sku: ["sku", "product_sku", "variant_sku"],
+  productTitle: ["product_title"],
+  rating: ["rating", "stars", "score"],
+  title: ["title", "review_title"],
+  body: ["body", "review_body", "content", "review"],
+  reviewerName: ["reviewer_name", "author", "name", "reviewer"],
+  reviewDate: ["review_date", "date", "created_at"],
+  status: ["status", "state"],
+  reply: ["reply", "reply_content", "merchant_reply", "store_reply"],
+  images: ["image_files", "images", "photos"],
+} as const;
+type Field = keyof typeof ALIASES;
+export type PublishMode = "publish" | "moderate";
+export interface ImportOptions { source?: string; publishMode: PublishMode; mapping?: Partial<Record<Field, string>> }
+
+const STATUS_WORDS: Record<string, "published" | "pending" | "rejected" | "hidden"> = {
+  published: "published", approved: "published", active: "published", visible: "published", public: "published",
+  pending: "pending", unpublished: "pending", awaiting: "pending", new: "pending", draft: "pending",
+  rejected: "rejected", declined: "rejected", spam: "rejected",
+  hidden: "hidden", archived: "hidden",
+};
+
+const norm = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim();
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+
+/** ISO-8601 date / date-time (UTC unless an offset is given) or "YYYY-MM-DD HH:MM[:SS]". Ambiguous formats are rejected. */
+export function parseReviewDate(raw: string, now = Date.now()): Date | null {
+  const s = raw.trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})?)?$/.exec(s);
+  if (!m) return null;
+  const [, y, mo, d, h = "00", mi = "00", sec = "00", tz] = m;
+  const d0 = new Date(`${y}-${mo}-${d}T${h}:${mi}:${sec}${tz ?? "Z"}`);
+  if (Number.isNaN(+d0)) return null;
+  // Calendar check (2021-02-30 → invalid, not rolled over).
+  const check = new Date(Date.UTC(+y, +mo - 1, +d));
+  if (check.getUTCFullYear() !== +y || check.getUTCMonth() !== +mo - 1 || check.getUTCDate() !== +d) return null;
+  if (+d0 > now + 86_400_000 || +y < 1990) return null;
+  return d0;
+}
+
+export function parseRating(raw: string): number | null {
+  const m = /^\s*([1-5])(?:\.0+)?\s*$/.exec(raw);
+  return m ? Number(m[1]) : null;
+}
+
+/** The source product identifiers of a record, as a stable key. Title is kept only to produce suggestions. */
+const productRef = (r: { productId: string; handle: string; sku: string; productTitle: string }) =>
+  JSON.stringify({ id: r.productId, handle: r.handle, sku: r.sku, title: r.productTitle });
+
+/**
+ * Identity when the source has no review id: sha256 over the source product reference, reviewer, date and body
+ * (normalised). Deterministic and collision-resistant; scoped by (shop, source) like any source id.
+ */
+export const fallbackId = (ref: string, reviewer: string, date: Date, body: string) =>
+  `h_${sha(JSON.stringify([ref, norm(reviewer).toLowerCase(), date.toISOString(), norm(body)]))}`;
+const contentHash = (reviewer: string, body: string) => sha(`${norm(reviewer).toLowerCase()}\n${norm(body).toLowerCase()}`);
+
+type Intent = "published" | "pending" | "rejected" | "hidden";
+export interface Analysed {
+  record: number; // 1-based data record number in the CSV (header excluded)
+  ok: boolean;
+  code?: string; // why the record is not imported
+  warnings: string[];
   sourceReviewId: string;
-  shopifyProductId: bigint; // identity: matched to THIS shop's product by Shopify id only
-  rating: number;
-  title?: string;
-  body: string;
-  reviewerName: string;
-  reviewDate: Date;
-  status?: "published" | "pending" | "hidden" | "rejected";
+  ref: string;
+  rating: number; title: string; body: string; reviewerName: string; reviewDate: Date; intent: Intent; reply: string;
+  images: { position: number; ref: string; problem?: string }[];
 }
 
-export interface ImportReport {
-  received: number;
-  imported: number;
-  published: number;
-  planLimited: number;
-  notPublished: number; // imported as pending / hidden / rejected by their source state
-  duplicates: number;
-  unmatchedProduct: number;
-  invalid: number;
+function pickColumns(header: string[], mapping: ImportOptions["mapping"] = {}) {
+  const lower = new Map(header.map((h) => [h.trim().toLowerCase(), h]));
+  return Object.fromEntries((Object.keys(ALIASES) as Field[]).map((f) => {
+    const explicit = mapping[f];
+    const col = explicit ? lower.get(explicit.trim().toLowerCase()) : ALIASES[f].map((a) => lower.get(a)).find(Boolean);
+    return [f, col ?? null];
+  })) as Record<Field, string | null>;
 }
 
-const valid = (r: ImportRow) =>
-  typeof r.sourceReviewId === "string" && r.sourceReviewId.length > 0 && r.sourceReviewId.length <= 255 &&
-  Number.isInteger(r.rating) && r.rating >= 1 && r.rating <= 5 &&
-  typeof r.body === "string" && r.body.trim().length > 0 && typeof r.reviewerName === "string" && r.reviewerName.trim().length > 0 &&
-  r.reviewDate instanceof Date && !Number.isNaN(+r.reviewDate);
+/** Validates every record (pure — no database). Also resolves duplicate source ids deterministically. */
+export function analyseRecords(csvText: string, opts: ImportOptions, now = Date.now()) {
+  const rows = parseCsv(csvText);
+  const header = rows.length ? Object.keys(rows[0]) : [];
+  const col = pickColumns(header, opts.mapping);
+  if (!col.rating || !col.body || !col.reviewDate) throw new ImportError("missing_columns", "The file needs rating, body and review date columns.");
+  if (!col.productId && !col.handle && !col.sku && !col.productTitle) throw new ImportError("missing_columns", "The file needs a product id, handle or SKU column.");
+  const get = (r: Record<string, string>, f: Field) => (col[f] ? (r[col[f]!] ?? "") : "");
 
-export async function importReviews(t: Tenant, input: { source: string; rows: ImportRow[]; actor: string }): Promise<ImportReport> {
-  const { db, shopId } = t;
-  const report: ImportReport = { received: input.rows.length, imported: 0, published: 0, planLimited: 0, notPublished: 0, duplicates: 0, unmatchedProduct: 0, invalid: 0 };
-  const products = new Map(
-    (await db.product.findMany({ where: { shopId, deletedAt: null, shopifyProductId: { in: [...new Set(input.rows.map((r) => r.shopifyProductId))] } }, select: { id: true, shopifyProductId: true } }))
-      .map((p) => [p.shopifyProductId, p.id]),
-  );
-  const publishedIds: string[] = [];
-  const touched = new Set<string>();
-  for (const r of input.rows) {
-    if (!valid(r)) { report.invalid++; continue; }
-    const productId = products.get(r.shopifyProductId);
-    if (!productId) { report.unmatchedProduct++; continue; }
-    const status = r.status ?? "published";
-    // Published rows go in HELD; admitReviews then releases them oldest-first within the allowance.
-    const created = await db.review.createMany({
-      data: [{ shopId, productId, source: input.source, sourceReviewId: r.sourceReviewId, rating: r.rating, title: (r.title ?? "").slice(0, 255), body: r.body, reviewerName: r.reviewerName.slice(0, 255), reviewDate: r.reviewDate, status, imported: true, holdReason: status === "published" ? "plan_limit" : null }],
-      skipDuplicates: true,
-    });
-    if (!created.count) { report.duplicates++; continue; }
-    report.imported++;
-    touched.add(productId);
-    if (status === "published") {
-      const row = await db.review.findUniqueOrThrow({ where: { shopId_source_sourceReviewId: { shopId, source: input.source, sourceReviewId: r.sourceReviewId } }, select: { id: true } });
-      publishedIds.push(row.id);
-    } else report.notPublished++;
+  const out: Analysed[] = rows.map((r, i) => {
+    const warnings: string[] = [];
+    const productId = get(r, "productId").trim(), handle = get(r, "handle").trim().toLowerCase(), sku = get(r, "sku").trim(), productTitle = norm(get(r, "productTitle"));
+    const ref = productRef({ productId, handle, sku, productTitle });
+    const rating = parseRating(get(r, "rating"));
+    const body = get(r, "body").replace(/\r\n/g, "\n").trim();
+    const reviewDate = parseReviewDate(get(r, "reviewDate"), now);
+    let reviewerName = norm(get(r, "reviewerName"));
+    if (!reviewerName) { reviewerName = "Anonymous"; warnings.push("missing_reviewer_name"); }
+    const title = norm(get(r, "title"));
+    const rawStatus = get(r, "status").trim().toLowerCase();
+    let intent: Intent;
+    if (!rawStatus) intent = opts.publishMode === "publish" ? "published" : "pending";
+    else if (STATUS_WORDS[rawStatus]) intent = STATUS_WORDS[rawStatus];
+    else { intent = "pending"; warnings.push("unknown_status"); } // never public by accident
+    if (intent === "published" && opts.publishMode === "moderate") intent = "pending";
+    const refs = get(r, "images").split(/[;|]/).map((s) => s.trim()).filter(Boolean);
+    const images = refs.map((ref, position) => ({ position, ref, problem: position >= IMPORT_LIMITS.imagesPerReview ? "too_many_images" : imageRefProblem(ref) }));
+    let code: string | undefined;
+    if (!productId && !handle && !sku && !productTitle) code = "missing_product_reference";
+    else if (productId && !/^\d{1,20}$/.test(productId)) code = "invalid_product_id";
+    else if (rating === null) code = "invalid_rating";
+    else if (!reviewDate) code = "invalid_date";
+    else if (!body) code = "missing_body";
+    else if (body.length > IMPORT_LIMITS.bodyChars) code = "body_too_long";
+    else if (title.length > IMPORT_LIMITS.titleChars) code = "title_too_long";
+    else if (reviewerName.length > IMPORT_LIMITS.nameChars) code = "name_too_long";
+    const rawId = norm(get(r, "sourceReviewId"));
+    if (!code && rawId.length > 255) code = "invalid_review_id";
+    const sourceReviewId = code ? rawId : rawId || fallbackId(ref, reviewerName, reviewDate!, body);
+    return { record: i + 1, ok: !code, code, warnings, sourceReviewId, ref, rating: rating ?? 0, title, body, reviewerName, reviewDate: reviewDate ?? new Date(0), intent, reply: get(r, "reply").trim(), images };
+  });
+
+  // Same source id more than once: identical records → keep one; conflicting → none (never "first wins", which would
+  // make the result depend on row order).
+  const groups = new Map<string, Analysed[]>();
+  for (const a of out) if (a.ok) groups.set(a.sourceReviewId, [...(groups.get(a.sourceReviewId) ?? []), a]);
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    const sig = (a: Analysed) => JSON.stringify([a.ref, a.rating, a.title, a.body, a.reviewerName, +a.reviewDate, a.intent, a.reply, a.images.map((x) => x.ref)]);
+    if (new Set(g.map(sig)).size === 1) g.slice(1).forEach((a) => { a.ok = false; a.code = "duplicate_source_row"; });
+    else g.forEach((a) => { a.ok = false; a.code = "conflicting_duplicate_id"; });
   }
-  // ponytail: one transaction per call; the checkpoint 8 importer feeds this in batches for very large files.
-  const admitted = await admitReviews(t, publishedIds, input.actor);
-  report.published = admitted.released;
-  report.planLimited = admitted.stillHeld;
-  for (const pid of touched) await recomputeProduct(t, pid);
-  await db.importJob.create({ data: { shopId, source: input.source, status: "finished", counts: { ...report }, finishedAt: new Date() } });
-  await db.auditLog.create({ data: { shopId, actor: input.actor, action: "import.finished", entity: "import", details: { ...report } } });
-  return report;
+  return { rows: out, columns: col };
+}
+
+/** Image references are archive member names. Remote URLs and anything path-like outside the archive are refused. */
+function imageRefProblem(ref: string): string | undefined {
+  if (/^[a-z]:[\\/]/i.test(ref)) return "invalid_path"; // Windows drive path
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return "remote_images_not_supported";
+  const n = normaliseZipName(ref);
+  if (ref.includes("\0") || n.startsWith("/") || /^[a-z]:/i.test(n) || n.split("/").some((seg) => seg === ".." )) return "invalid_path";
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Product matching: Shopify product id → handle → SKU → (merchant-confirmed manual match, checkpoint 8).
+// TITLE IS NEVER AN AUTOMATIC MATCHING KEY: exact (trimmed, case-insensitive) title matches are suggestions only.
+export type SkuLookup = (skus: string[]) => Promise<Map<string, bigint[]>>; // sku → Shopify product ids (exact sku)
+
+interface Catalogue { id: string; shopifyProductId: bigint; handle: string; title: string; deletedAt: Date | null }
+export interface MatchResult { status: "matched" | "unmatched" | "ambiguous"; method: "id" | "handle" | "sku" | null; productId: string | null; reason: string | null; candidates: { productId: string; title: string; handle: string; via: string }[] }
+
+export function matchProduct(refJson: string, catalogue: Catalogue[], skuMap: Map<string, bigint[]> | null): MatchResult {
+  const ref = JSON.parse(refJson) as { id: string; handle: string; sku: string; title: string };
+  const live = catalogue.filter((p) => !p.deletedAt);
+  const cand = (p: Catalogue, via: string) => ({ productId: p.id, title: p.title, handle: p.handle, via });
+  const found: { method: "id" | "handle" | "sku"; products: Catalogue[] }[] = [];
+  const notes: string[] = [];
+  if (ref.id) {
+    const any = catalogue.filter((p) => p.shopifyProductId === BigInt(ref.id));
+    const ok = any.filter((p) => !p.deletedAt);
+    if (ok.length) found.push({ method: "id", products: ok });
+    else notes.push(any.length ? "product_id_deleted_in_shopify" : "product_id_not_in_catalogue");
+  }
+  if (ref.handle) {
+    const ok = live.filter((p) => p.handle === ref.handle);
+    if (ok.length) found.push({ method: "handle", products: ok });
+  }
+  if (ref.sku) {
+    if (!skuMap) notes.push("sku_lookup_unavailable");
+    else {
+      const ids = new Set(skuMap.get(ref.sku) ?? []);
+      const ok = live.filter((p) => ids.has(p.shopifyProductId));
+      if (ok.length) found.push({ method: "sku", products: ok });
+    }
+  }
+  const titleKey = ref.title.toLowerCase();
+  const titleSuggestions = titleKey ? live.filter((p) => norm(p.title).toLowerCase() === titleKey).map((p) => cand(p, "title")) : [];
+  const distinct = [...new Map(found.flatMap((f) => f.products).map((p) => [p.id, p])).values()];
+
+  if (found.some((f) => f.products.length > 1)) {
+    return { status: "ambiguous", method: null, productId: null, reason: "identifier_matches_several_products", candidates: [...distinct.map((p) => cand(p, "identifier")), ...titleSuggestions] };
+  }
+  if (distinct.length > 1) {
+    return { status: "ambiguous", method: null, productId: null, reason: "identifiers_disagree", candidates: [...found.map((f) => cand(f.products[0], f.method)), ...titleSuggestions] };
+  }
+  if (distinct.length === 1 && (notes.includes("product_id_not_in_catalogue") || notes.includes("product_id_deleted_in_shopify"))) {
+    // The source names a Shopify product id that is not this live product: identity uncertain → don't guess.
+    return { status: "ambiguous", method: null, productId: null, reason: notes[0], candidates: [...distinct.map((p) => cand(p, found[0].method)), ...titleSuggestions] };
+  }
+  if (distinct.length === 1) return { status: "matched", method: found[0].method, productId: distinct[0].id, reason: null, candidates: [] };
+  return { status: "unmatched", method: null, productId: null, reason: notes[0] ?? (titleSuggestions.length ? "title_only_needs_confirmation" : "no_matching_product"), candidates: titleSuggestions };
+}
+
+export const SKU_LOOKUP_QUERY = `#graphql
+  query ProoflySkuLookup($query: String!, $after: String) {
+    productVariants(first: 250, after: $after, query: $query) {
+      pageInfo { hasNextPage endCursor }
+      nodes { sku product { legacyResourceId } }
+    }
+  }`;
+
+/** SKU → Shopify product ids through THIS shop's Admin API (exact SKU equality re-checked locally). */
+export function skuLookupFromAdmin(graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response>): SkuLookup {
+  return async (skus) => {
+    const map = new Map<string, bigint[]>();
+    const quote = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    for (let i = 0; i < skus.length; i += 20) {
+      const batch = skus.slice(i, i + 20);
+      let after: string | null = null;
+      do {
+        const body = (await (await graphql(SKU_LOOKUP_QUERY, { variables: { query: batch.map((s) => `sku:${quote(s)}`).join(" OR "), after } })).json()) as { data?: { productVariants?: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { sku: string | null; product: { legacyResourceId: string } }[] } }; errors?: unknown };
+        const pv = body.data?.productVariants;
+        if (!pv) throw new ImportError("sku_lookup_failed", "Shopify SKU lookup failed.");
+        for (const n of pv.nodes) {
+          const sku = n.sku?.trim();
+          if (sku && batch.includes(sku)) map.set(sku, [...new Set([...(map.get(sku) ?? []), BigInt(n.product.legacyResourceId)])]);
+        }
+        after = pv.pageInfo.hasNextPage ? pv.pageInfo.endCursor : null;
+      } while (after);
+    }
+    return map;
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+const ACTIVE = ["queued", "running"];
+const STALE_MS = 10 * 60_000;
+const lockImports = (t: Tenant) => t.db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`imports:${t.shopId}`}))`;
+const sourceLabel = (s?: string) => {
+  const v = (s ?? "csv").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(v)) throw new ImportError("invalid_source", "Invalid source name.");
+  return v;
+};
+
+/**
+ * Creates an import for the AUTHENTICATED shop (shopId comes from the verified session, never from the file or the
+ * client). Validates limits, stores the files privately, analyses and matches every record; writes no reviews.
+ */
+export async function createImport(shopId: string, input: { csv: Buffer; images?: Buffer | null; options: ImportOptions; actor: string; skuLookup?: SkuLookup | null }) {
+  if (!(await isShopActive(shopId))) throw new ImportError("shop_inactive", "This store has uninstalled Proofly.");
+  if (input.csv.length > IMPORT_LIMITS.csvBytes) throw new ImportError("csv_too_large", "The CSV file is larger than 50 MB.");
+  if (input.images && input.images.length > IMPORT_LIMITS.archiveBytes) throw new ImportError("archive_too_large", "The images archive is larger than 2 GB.");
+  if (input.csv.includes(0)) throw new ImportError("csv_not_text", "The CSV file is not a UTF-8 text file.");
+  const options: ImportOptions = { source: sourceLabel(input.options.source), publishMode: input.options.publishMode === "moderate" ? "moderate" : "publish", mapping: input.options.mapping ?? {} };
+  const text = input.csv.toString("utf8");
+  const { rows } = analyseRecords(text, options);
+  let zip: Map<string, ZipEntry> | null = null;
+  if (input.images) { try { zip = readZipDirectory(input.images); } catch (e) { throw new ImportError("archive_invalid", e instanceof ZipError ? e.message : "The images archive could not be read."); } }
+
+  const catalogue = await withTenant(shopId, ({ db }) => db.product.findMany({ where: { shopId }, select: { id: true, shopifyProductId: true, handle: true, title: true, deletedAt: true } }));
+  const refs = [...new Set(rows.filter((r) => r.ok).map((r) => r.ref))].sort();
+  const skus = [...new Set(refs.map((r) => (JSON.parse(r) as { sku: string }).sku).filter(Boolean))].sort();
+  let skuMap: Map<string, bigint[]> | null = null;
+  if (skus.length && input.skuLookup) { try { skuMap = await input.skuLookup(skus); } catch { skuMap = null; } }
+  const matches = new Map(refs.map((ref) => [ref, matchProduct(ref, catalogue, skuMap)]));
+  for (const r of rows) if (r.ok && matches.get(r.ref)!.status !== "matched") { r.ok = false; r.code = `product_${matches.get(r.ref)!.status}`; }
+  for (const r of rows) for (const img of r.images) if (!img.problem && !(zip?.has(normaliseZipName(img.ref)))) img.problem = zip ? "missing_in_archive" : "no_archive";
+
+  const analysis = summarise(rows, matches);
+  const jobId = randomUUID();
+  const fileKey = importFileKey(shopId, jobId, "source.csv");
+  const imagesKey = input.images ? importFileKey(shopId, jobId, "images.zip") : null;
+  await storePrivateFile(fileKey, input.csv, "text/csv");
+  if (input.images && imagesKey) await storePrivateFile(imagesKey, input.images, "application/zip");
+
+  return withTenant(shopId, async (t) => {
+    const { db } = t;
+    await lockImports(t);
+    const busy = await db.importJob.findFirst({ where: { shopId, status: { in: ACTIVE }, OR: [{ status: "queued" }, { heartbeatAt: { gt: new Date(Date.now() - STALE_MS) } }] } });
+    if (busy) throw new ImportError("import_in_progress", "Another import is already in progress for this store.");
+    await db.importJob.create({ data: { id: jobId, shopId, source: options.source!, status: "queued", options: options as object, fileKey, imagesKey, analysis: analysis as object, totalRows: rows.length, actor: input.actor } });
+    for (const [ref, m] of matches) {
+      await db.importProductMatch.create({ data: { shopId, importJobId: jobId, sourceProductRef: ref, status: m.status, method: m.method, productId: m.productId, reason: m.reason, candidates: m.candidates, rows: rows.filter((r) => r.ref === ref).length } });
+    }
+    await db.auditLog.create({ data: { shopId, actor: input.actor, action: "import.created", entity: "import", entityId: jobId, details: { totalRows: rows.length, validRows: analysis.validRows } } });
+    return { jobId, analysis };
+  });
+}
+
+function summarise(rows: Analysed[], matches: Map<string, MatchResult>) {
+  const count = (code: string) => rows.filter((r) => r.code === code).length;
+  const problems = rows.filter((r) => !r.ok || r.warnings.length || r.images.some((i) => i.problem))
+    .slice(0, IMPORT_LIMITS.reportProblems)
+    .map((r) => ({ record: r.record, code: r.code ?? null, warnings: r.warnings, images: r.images.filter((i) => i.problem).map((i) => i.problem), sourceReviewId: r.sourceReviewId.slice(0, 80) || null }));
+  const m = [...matches.values()];
+  return {
+    totalRows: rows.length,
+    validRows: rows.filter((r) => r.ok).length,
+    invalidRows: rows.filter((r) => !r.ok && !["duplicate_source_row", "product_unmatched", "product_ambiguous"].includes(r.code!)).length,
+    duplicateSourceRows: count("duplicate_source_row"),
+    conflictingSourceIds: count("conflicting_duplicate_id"),
+    unmatchedRows: count("product_unmatched"),
+    ambiguousRows: count("product_ambiguous"),
+    products: { matched: m.filter((x) => x.status === "matched").length, unmatched: m.filter((x) => x.status === "unmatched").length, ambiguous: m.filter((x) => x.status === "ambiguous").length },
+    imagesReferenced: rows.reduce((n, r) => n + r.images.length, 0),
+    warnings: rows.reduce((n, r) => n + r.warnings.length, 0),
+    problems,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+type Counts = Record<"imported" | "alreadyImported" | "adopted" | "repliesImported" | "mediaAccepted" | "mediaRejected" | "importedPending" | "importedHidden" | "importedRejected", number>;
+const ZERO: Counts = { imported: 0, alreadyImported: 0, adopted: 0, repliesImported: 0, mediaAccepted: 0, mediaRejected: 0, importedPending: 0, importedHidden: 0, importedRejected: 0 };
+
+/**
+ * Runs (or resumes) an import for the authenticated shop. Safe to call again after any failure: it continues at the
+ * job's cursor; rows already written are never duplicated ((shop, source, source_review_id) is unique).
+ */
+export async function runImport(shopId: string, jobId: string, opts: { graphql?: Parameters<typeof syncAfterRatingChange>[1]; batchRows?: number; failAfterBatches?: number } = {}) {
+  const job = await withTenant(shopId, async (t) => {
+    const { db } = t;
+    await lockImports(t);
+    const j = await db.importJob.findFirst({ where: { shopId, id: jobId } });
+    if (!j) throw new ImportError("not_found", "Import not found.");
+    if (!["queued", "failed", "running"].includes(j.status) || (j.status === "running" && j.heartbeatAt && Date.now() - +j.heartbeatAt < STALE_MS)) {
+      throw new ImportError("not_runnable", `This import is ${j.status}.`);
+    }
+    if (!(await isShopActive(shopId))) throw new ImportError("shop_inactive", "This store has uninstalled Proofly.");
+    const other = await db.importJob.findFirst({ where: { shopId, id: { not: jobId }, status: "running", heartbeatAt: { gt: new Date(Date.now() - STALE_MS) } } });
+    if (other) throw new ImportError("import_in_progress", "Another import is already running for this store.");
+    return db.importJob.update({ where: { id: jobId }, data: { status: "running", error: null, startedAt: j.startedAt ?? new Date(), heartbeatAt: new Date() } });
+  });
+
+  try {
+    const options = job.options as unknown as ImportOptions;
+    const csv = await readPrivate(job.fileKey!);
+    if (!csv) throw new ImportError("file_missing", "The uploaded file is no longer available.");
+    const zipBuf = job.imagesKey ? await readPrivate(job.imagesKey) : null;
+    const zip = zipBuf ? readZipDirectory(zipBuf) : null;
+    const { rows } = analyseRecords(csv.toString("utf8"), options, +job.createdAt);
+    const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
+    for (const r of rows) if (r.ok && matches.get(r.ref)?.status !== "matched") { r.ok = false; r.code = "product_not_matched"; }
+
+    const size = opts.batchRows ?? IMPORT_LIMITS.batchRows;
+    let batches = 0;
+    for (let cursor = job.cursor; cursor < rows.length; cursor += size) {
+      const cancelled = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId }, select: { cancelRequestedAt: true } }));
+      if (cancelled?.cancelRequestedAt) {
+        await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { status: "cancelled", finishedAt: new Date() } }));
+        return getImport(shopId, jobId);
+      }
+      if (opts.failAfterBatches !== undefined && batches++ >= opts.failAfterBatches) throw new Error("simulated process failure");
+      await writeBatch(shopId, jobId, rows.slice(cursor, cursor + size), matches, zip, zipBuf, Math.min(cursor + size, rows.length));
+    }
+    await finalize(shopId, jobId, rows);
+  } catch (e) {
+    const msg = e instanceof ImportError ? e.message : "The import stopped unexpectedly. It can be resumed.";
+    console.warn("import failed", jobId, e instanceof Error ? e.message.slice(0, 120) : "");
+    await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { status: "failed", error: msg } }));
+    throw e;
+  }
+  if (opts.graphql) await syncAfterRatingChange(shopId, opts.graphql);
+  return getImport(shopId, jobId);
+}
+
+async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matches: Map<string, { productId: string | null }>, zip: Map<string, ZipEntry> | null, zipBuf: Buffer | null, nextCursor: number) {
+  const valid = batch.filter((r) => r.ok);
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { source: true, counts: true } }));
+  const existing = new Map((await withTenant(shopId, ({ db }) => db.review.findMany({
+    where: { shopId, source: job.source, sourceReviewId: { in: valid.map((r) => r.sourceReviewId) } },
+    select: { id: true, sourceReviewId: true, importJobId: true },
+  }))).map((r) => [r.sourceReviewId, r]));
+
+  // Images for NEW reviews are processed before the transaction (storage + sharp are slow); a crash here only leaves
+  // unreferenced private objects, never duplicate rows.
+  const fresh = valid.filter((r) => !existing.has(r.sourceReviewId)).map((r) => ({ r, id: randomUUID(), images: [] as Awaited<ReturnType<typeof storeReviewImage>>[], rejected: 0 }));
+  for (const f of fresh) {
+    const seen = new Set<string>();
+    for (const img of f.r.images) {
+      if (img.problem) { f.rejected++; continue; }
+      try {
+        const entry = zip!.get(normaliseZipName(img.ref))!;
+        const buf = readZipEntry(zipBuf!, entry, IMPORT_LIMITS.imageBytes);
+        if (!sniffType(buf)) { f.rejected++; continue; }
+        const stored = await storeReviewImage(shopId, f.id, buf);
+        if (seen.has(stored.sha256)) { f.rejected++; continue; }
+        seen.add(stored.sha256);
+        f.images.push(stored);
+      } catch { f.rejected++; }
+    }
+  }
+
+  await withTenant(shopId, async (t) => {
+    const { db } = t;
+    const c: Counts = { ...ZERO, ...(job.counts as Partial<Counts>) };
+    for (const f of fresh) {
+      const r = f.r;
+      const created = await db.review.createMany({
+        data: [{
+          id: f.id, shopId, productId: matches.get(r.ref)!.productId!, source: job.source, sourceReviewId: r.sourceReviewId, sourceProductRef: r.ref,
+          rating: r.rating, title: r.title, body: r.body, reviewerName: r.reviewerName, reviewDate: r.reviewDate, imported: true, importJobId: jobId,
+          contentHash: contentHash(r.reviewerName, r.body), status: r.intent,
+          // Published rows enter HELD; finalize admits them oldest-first within the plan allowance.
+          holdReason: r.intent === "published" ? "plan_limit" : null,
+          flags: r.warnings.includes("unknown_status") ? ["unknown_source_status"] : [],
+        }],
+        skipDuplicates: true,
+      });
+      if (!created.count) { c.alreadyImported++; continue; } // created concurrently: its stored images stay unreferenced
+      c.imported++;
+      if (r.intent === "pending") c.importedPending++;
+      if (r.intent === "hidden") c.importedHidden++;
+      if (r.intent === "rejected") c.importedRejected++;
+      if (r.reply) { await db.reviewReply.create({ data: { shopId, reviewId: f.id, reply: r.reply.slice(0, 5_000) } }); c.repliesImported++; }
+      for (const [position, s] of f.images.entries()) {
+        await db.reviewImage.create({ data: { shopId, reviewId: f.id, position, originalFilename: `import-${position + 1}`, mediaStatus: "storage_limited", ...s } });
+      }
+      c.mediaAccepted += f.images.length;
+      c.mediaRejected += f.rejected;
+    }
+    // Already stored: unchanged — unless it belongs to an import that never finished; then this job adopts it so
+    // finalize admits it in date order with everything else (no row is ever written twice).
+    for (const r of valid.filter((x) => existing.has(x.sourceReviewId))) {
+      const e = existing.get(r.sourceReviewId)!;
+      if (e.importJobId && e.importJobId !== jobId) {
+        const prev = await db.importJob.findFirst({ where: { shopId, id: e.importJobId }, select: { finalizedAt: true } });
+        if (prev && !prev.finalizedAt) { await db.review.updateMany({ where: { shopId, id: e.id }, data: { importJobId: jobId } }); c.adopted++; continue; }
+      }
+      if (e.importJobId !== jobId) c.alreadyImported++;
+    }
+    await db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } });
+  });
+}
+
+async function finalize(shopId: string, jobId: string, rows: Analysed[]) {
+  await withTenant(shopId, async (t) => {
+    const { db } = t;
+    const job = await db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } });
+    const mine = { shopId, importJobId: jobId };
+    // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
+    const held = await db.review.findMany({ where: { ...mine, status: "published", holdReason: "plan_limit" }, select: { id: true } });
+    await releaseEligibleReviews(t, { reviewIds: held.map((r) => r.id), actor: job.actor ?? "import" });
+    const images = await db.reviewImage.findMany({ where: { shopId, mediaStatus: "storage_limited", review: mine }, select: { id: true } });
+    await releaseEligibleMedia(t, { imageIds: images.map((i) => i.id), actor: job.actor ?? "import" });
+    // 2. Duplicate flags (admin information only — never used for publication).
+    await db.$executeRaw`UPDATE reviews r SET flags = array_append(r.flags, CASE WHEN EXISTS (
+        SELECT 1 FROM reviews o WHERE o.shop_id = r.shop_id AND o.content_hash = r.content_hash AND o.id <> r.id AND o.product_id = r.product_id)
+        THEN 'possible_duplicate' ELSE 'cross_product_repeat' END)
+      WHERE r.shop_id = ${shopId}::uuid AND r.import_job_id = ${jobId}::uuid AND r.content_hash IS NOT NULL
+        AND NOT (r.flags && ARRAY['possible_duplicate','cross_product_repeat'])
+        AND EXISTS (SELECT 1 FROM reviews o WHERE o.shop_id = r.shop_id AND o.content_hash = r.content_hash AND o.id <> r.id)`;
+    // 3. Aggregates through the one aggregate path.
+    const products = await db.review.findMany({ where: mine, select: { productId: true }, distinct: ["productId"] });
+    for (const p of products) await recomputeProduct(t, p.productId);
+    // 4. Outcome.
+    const [published, planLimited, pending, mediaPublic, mediaStorageLimited, replies] = await Promise.all([
+      db.review.count({ where: { ...mine, status: "published", holdReason: null } }),
+      db.review.count({ where: { ...mine, status: "published", holdReason: "plan_limit" } }),
+      db.review.count({ where: { ...mine, status: "pending" } }),
+      db.reviewImage.count({ where: { shopId, mediaStatus: "published", review: mine } }),
+      db.reviewImage.count({ where: { shopId, mediaStatus: "storage_limited", review: mine } }),
+      db.reviewReply.count({ where: { shopId, review: mine } }),
+    ]);
+    const repliesVisible = (await can(t, "replies")) ? replies : 0;
+    const c = { ...ZERO, ...(job.counts as Partial<Counts>), published, planLimited, awaitingModeration: pending, mediaPublic, mediaStorageLimited, repliesVisible, repliesSuppressed: replies - repliesVisible };
+    const a = job.analysis as { validRows: number; totalRows: number; warnings: number };
+    const warnings = a.validRows < a.totalRows || a.warnings > 0 || c.mediaRejected > 0 || rows.some((r) => r.images.some((i) => i.problem));
+    await db.importJob.update({ where: { id: jobId }, data: { status: warnings ? "completed_with_warnings" : "completed", counts: c, finalizedAt: new Date(), finishedAt: new Date(), heartbeatAt: new Date() } });
+    await db.auditLog.create({ data: { shopId, actor: job.actor ?? "import", action: "import.finished", entity: "import", entityId: jobId, details: { imported: c.imported, published, planLimited, mediaStorageLimited } } });
+  }, { timeoutMs: 120_000 });
+}
+
+/** Cancels an import of the authenticated shop (another shop's job id is "not found"). Imported rows are kept. */
+export async function cancelImport(shopId: string, jobId: string, actor: string) {
+  return withTenant(shopId, async ({ db }) => {
+    const j = await db.importJob.findFirst({ where: { shopId, id: jobId } });
+    if (!j) throw new ImportError("not_found", "Import not found.");
+    if (j.status === "queued" || j.status === "failed") await db.importJob.update({ where: { id: jobId }, data: { status: "cancelled", cancelRequestedAt: new Date(), finishedAt: new Date() } });
+    else if (j.status === "running") await db.importJob.update({ where: { id: jobId }, data: { cancelRequestedAt: new Date() } });
+    else throw new ImportError("not_cancellable", `This import is ${j.status}.`);
+    await db.auditLog.create({ data: { shopId, actor, action: "import.cancel_requested", entity: "import", entityId: jobId } });
+    return true;
+  });
+}
+
+/** Merchant-visible summary of one import (RLS-scoped: another shop's job is simply not found). */
+export async function getImport(shopId: string, jobId: string) {
+  return withTenant(shopId, async ({ db }) => {
+    const j = await db.importJob.findFirst({ where: { shopId, id: jobId }, include: { matches: { orderBy: { sourceProductRef: "asc" } } } });
+    if (!j) return null;
+    return {
+      id: j.id, status: j.status, source: j.source, createdAt: j.createdAt, finishedAt: j.finishedAt, error: j.error,
+      totalRows: j.totalRows, processedRows: j.cursor, analysis: j.analysis, counts: j.counts,
+      matches: j.matches.map((m) => ({ ref: JSON.parse(m.sourceProductRef), status: m.status, method: m.method, productId: m.productId, reason: m.reason, candidates: m.candidates, rows: m.rows })),
+    };
+  });
+}
+
+export const listImports = (shopId: string) =>
+  withTenant(shopId, ({ db }) => db.importJob.findMany({ where: { shopId }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true, status: true, source: true, createdAt: true, finishedAt: true, totalRows: true, cursor: true, counts: true, analysis: true, error: true } }));
+
+// ---------------------------------------------------------------------------------------------------------------
+/** Typed-row convenience (tests, internal callers): rows → template CSV → the same engine (one import mechanism). */
+export interface ImportRow { sourceReviewId: string; shopifyProductId: bigint; rating: number; title?: string; body: string; reviewerName: string; reviewDate: Date; status?: Intent; reply?: string }
+export async function importReviews(shopId: string, input: { source: string; rows: ImportRow[]; actor: string; publishMode?: PublishMode }) {
+  const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+  const csv = ["review_id,product_id,rating,title,body,reviewer_name,review_date,status,reply",
+    ...input.rows.map((r) => [r.sourceReviewId, String(r.shopifyProductId), String(r.rating), r.title ?? "", r.body, r.reviewerName, r.reviewDate.toISOString(), r.status ?? "", r.reply ?? ""].map(q).join(","))].join("\n");
+  const { jobId } = await createImport(shopId, { csv: Buffer.from(csv), options: { source: input.source, publishMode: input.publishMode ?? "publish" }, actor: input.actor });
+  const done = await runImport(shopId, jobId);
+  const a = done!.analysis as { totalRows: number; invalidRows: number; duplicateSourceRows: number; conflictingSourceIds: number; unmatchedRows: number; ambiguousRows: number };
+  const c = done!.counts as Counts & { published: number; planLimited: number; awaitingModeration: number };
+  return {
+    jobId, received: a.totalRows, imported: c.imported, published: c.published, planLimited: c.planLimited,
+    notPublished: c.importedPending + c.importedHidden + c.importedRejected, duplicates: c.alreadyImported + a.duplicateSourceRows,
+    unmatchedProduct: a.unmatchedRows + a.ambiguousRows, invalid: a.invalidRows,
+  };
 }

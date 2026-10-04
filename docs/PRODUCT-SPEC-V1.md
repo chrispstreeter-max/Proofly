@@ -146,6 +146,10 @@ storefront-branding rules allow).
 
 ## 11. Migration workflow
 
+> **Checkpoint 6 status:** the import engine (upload → validation + matching → resumable batched import → date-ordered
+> admission) is implemented with a minimal admin page. Steps 3–4's merchant UI (manual matching), safe `https` image
+> fetching, error-CSV download and the guided wizard are checkpoint 8. Engine details: [IMPORT.md](IMPORT.md).
+
 1. **Source** — generic CSV template or a provider preset (adapters): legacy-provider recovery exports, Judge.me, Loox,
    Okendo and others where their official exports allow. Adapters only map columns; no scraping, no calls to other
    providers' private APIs. The merchant confirms they are authorised to use the data.
@@ -162,13 +166,14 @@ storefront-branding rules allow).
    Ambiguous or unmatched → **flagged**, never guessed; unresolved rows are skipped and reported.
 5. **Validate** — rating 1–5, body present, date parseable, lengths, image references resolvable, duplicates.
 6. **Confirm** — publish now or hold for moderation; imported reviews are always unverified.
-7. **Import** — background job with live progress; batched writes; images from the ZIP or `https` URLs fetched safely
+7. **Import** — background job with live progress; batched writes; images from the ZIP (implemented) or `https` URLs fetched safely (checkpoint 8)
    (public addresses only, size/type limits, timeouts) → private original + optimised WebP copies.
 8. **Summary** — imported, published, pending, skipped, errors, products matched, images imported; downloadable error
    report.
 
 **Idempotency:** reviews keyed by `(shop, source, source_review_id)`; when absent, a deterministic id from source
-product + reviewer + date + body. Re-imports never duplicate and never overwrite moderation decisions.
+product + reviewer + date + body (SHA-256, [IMPORT.md §4](IMPORT.md)). Re-imports never duplicate and never overwrite
+moderation decisions. A source id that appears twice with different content is imported for neither row (order-independent).
 **Duplicates:** same reviewer + body on the same product and cross-product repeats are imported but **flagged** for
 review, never silently dropped.
 
@@ -187,12 +192,12 @@ PROOFLY DATABASE → published review count/rating → Shopify compatibility fie
 | `shops` | id, shopify_shop_id (uniq), shop_domain (uniq), shop_name, access_token_encrypted, scopes, plan_id, subscription_status, installed_at, uninstalled_at, redact_requested_at, deleted_at, created_at, updated_at |
 | `shop_settings` | shop_id (PK), widget_enabled, review_submission_enabled, photo_reviews_enabled, moderation_enabled, attribution_enabled (default false), theme_settings jsonb, display_settings jsonb, created_at, updated_at |
 | `subscriptions` | id, shop_id, shopify_subscription_id, plan_id, status, trial_ends_at, current_period_end, created_at, updated_at |
-| `products` | id, shop_id, shopify_product_id, handle, title, status, image, skus text[], review_count, average_rating, rating_1…rating_5, synced_count, synced_average, deleted_at, created_at, updated_at · **unique (shop_id, shopify_product_id)** |
+| `products` | id, shop_id, shopify_product_id, handle, title, status, image, review_count, average_rating, rating_1…rating_5, synced_count, synced_average, deleted_at, created_at, updated_at · **unique (shop_id, shopify_product_id)** |
 | `reviews` | id, shop_id, product_id, source, source_review_id, source_product_ref, rating, title, body, reviewer_name, review_date, status (pending/published/rejected/hidden), hold_reason (moderation/plan_limit), imported, import_job_id, flags text[], content_hash, verified_purchase (false in V1), moderated_at, moderated_by, created_at, updated_at · **unique (shop_id, source, source_review_id)** |
 | `review_images` | id, shop_id, review_id, media_status (published/storage_limited/processing/failed), storage_key (private original), thumb_key, large_key, original_filename, original_url, content_type, file_size, sha256, width, height, position, created_at |
 | `review_replies` | id, shop_id, review_id (uniq), reply, created_at, updated_at |
 | `import_jobs` | id, shop_id, source, status, mapping jsonb, file_key, images_key, analysis jsonb, counts jsonb, report jsonb, created_at, finished_at |
-| `import_product_matches` | id, shop_id, import_job_id, source_product_ref, product_id (null = skipped), method (id/handle/sku/identifier/manual), created_at |
+| `import_product_matches` | id, shop_id, import_job_id, source_product_ref, status (matched/unmatched/ambiguous), method (id/handle/sku/manual), product_id (null unless matched), reason, candidates jsonb (suggestions, incl. exact-title — never automatic), rows, created_at |
 | `audit_log` | id, shop_id, actor, action, entity_type, entity_id, metadata jsonb, created_at |
 | `moderation_actions` | id, shop_id, review_id, action, from_status, to_status, actor, note, created_at |
 | `usage_counters` | shop_id, published_reviews, storage_bytes, updated_at (entitlement metering) |

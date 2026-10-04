@@ -13,7 +13,7 @@ before(async () => {
 });
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
-const TABLES = ["shop_settings", "billing_state", "subscriptions", "products", "reviews", "review_images", "review_replies", "review_requests", "moderation_actions", "import_jobs", "audit_log"];
+const TABLES = ["shop_settings", "billing_state", "subscriptions", "products", "reviews", "review_images", "review_replies", "review_requests", "moderation_actions", "import_jobs", "import_product_matches", "audit_log"];
 
 test("the application role is not a superuser and cannot bypass RLS", async () => {
   const [r] = await prisma.$queryRaw<{ rolsuper: boolean; rolbypassrls: boolean }[]>`select rolsuper, rolbypassrls from pg_roles where rolname = current_user`;

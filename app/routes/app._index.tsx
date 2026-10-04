@@ -17,6 +17,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return withTenant(shop.id, async (t) => {
     const { db, shopId } = t;
     const planStatus = await getPlanStatus(t);
+    const lastImport = await db.importJob.findFirst({ where: { shopId }, orderBy: { createdAt: "desc" }, select: { status: true, counts: true, analysis: true } });
     const [settings, byStatus, total, withPhotos, verified, flagged, products, unsynced] = await Promise.all([
       db.shopSettings.findUnique({ where: { shopId } }),
       db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
@@ -38,6 +39,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return {
       stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, verified, flagged, products },
       unsynced: Number(unsynced[0]?.n ?? 0),
+      lastImport: lastImport && {
+        status: lastImport.status.replaceAll("_", " "),
+        imported: (lastImport.counts as Record<string, number>).imported ?? 0, published: (lastImport.counts as Record<string, number>).published ?? 0,
+        planLimited: (lastImport.counts as Record<string, number>).planLimited ?? 0,
+        unmatched: (lastImport.analysis as Record<string, number>).unmatchedRows ?? 0, ambiguous: (lastImport.analysis as Record<string, number>).ambiguousRows ?? 0,
+      },
       plan: {
         name: planStatus.plan.name, allowance: planStatus.plan.publishedReviewAllowance, media: formatBytes(planStatus.plan.publicMediaBytes),
         published: planStatus.usage.publishedReviews, planLimited: planStatus.usage.planLimitedReviews, awaiting: planStatus.usage.awaitingModeration,
@@ -108,7 +115,7 @@ const Stat = ({ label, value, href }: { label: string; value: number; href?: str
 );
 
 export default function Dashboard() {
-  const { stats, unsynced, onboarding, ratings, catalog, proxy, plan } = useLoaderData<typeof loader>();
+  const { stats, unsynced, onboarding, ratings, catalog, proxy, plan, lastImport } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   return (
@@ -160,6 +167,12 @@ export default function Dashboard() {
             </s-paragraph></s-banner>
           )}
           {plan.planLimited > 0 && plan.room > 0 && <s-paragraph>You have reviews ready to publish. <s-link href="/app/plan">Publish eligible reviews</s-link></s-paragraph>}
+          {lastImport && (
+            <s-paragraph>
+              Latest import: {lastImport.status} — {lastImport.imported} imported, {lastImport.published} published, {lastImport.planLimited} plan-limited,
+              {" "}{lastImport.unmatched} unmatched, {lastImport.ambiguous} ambiguous. <s-link href="/app/imports">Imports</s-link>
+            </s-paragraph>
+          )}
           <s-paragraph>Public photo storage: {plan.mediaUsed} of {plan.media}{plan.storageLimited ? ` · ${plan.storageLimited} storage-limited photo${plan.storageLimited === 1 ? "" : "s"}` : ""}.{plan.unverified ? " Plan not yet confirmed with Shopify." : ""}</s-paragraph>
         </s-stack>
       </s-section>

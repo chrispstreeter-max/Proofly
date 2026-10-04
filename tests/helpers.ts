@@ -85,6 +85,8 @@ export class FakeShopify {
   calls: { op: string; variables?: Record<string, unknown> }[] = [];
   products: { legacyResourceId: string; handle: string; title: string; status: string; updatedAt: string }[] = [];
   missingProducts = new Set<string>(); // product gids Shopify no longer has
+  /** Variant SKUs of this shop's Shopify catalogue: sku → Shopify product ids. */
+  skus = new Map<string, bigint[]>();
   /** App Pricing subscriptions as Shopify reports them (newest last). Empty = no subscription (Free). */
   subscriptions: { id: string; name: string; status: string; planHandle: string | null; interval?: "EVERY_30_DAYS" | "ANNUAL"; amount?: string; test?: boolean; createdAt?: string }[] = [];
   pageSize = 2;
@@ -168,6 +170,11 @@ export class FakeShopify {
           activeSubscriptions: this.subscriptions.filter((x) => ["ACTIVE", "FROZEN"].includes(x.status)).map(node),
           allSubscriptions: { nodes: [...this.subscriptions].reverse().map(node) },
         } } });
+      }
+      case "ProoflySkuLookup": {
+        const wanted = [...String(v.query).matchAll(/sku:"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\(.)/g, "$1"));
+        const nodes = wanted.flatMap((sku) => (this.skus.get(sku) ?? []).map((id) => ({ sku, product: { legacyResourceId: String(id) } })));
+        return Response.json({ data: { productVariants: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } });
       }
       case "ProoflyEnableRatingDefinition":
         return Response.json({ data: { standardMetafieldDefinitionEnable: { userErrors: [] } } });

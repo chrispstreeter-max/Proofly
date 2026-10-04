@@ -427,3 +427,12 @@ Imported replies are retained regardless of plan. Public reply visibility is fea
   parameter or header can change it. Without the entitlement the storefront response is exactly as if the review had
   no reply (`reply: null`) — no placeholder, no hidden-reply metadata.
 - Reviews keep their own rules: the reply entitlement never makes a held, hidden, rejected or pending review public.
+
+### 11.11 Import engine (checkpoint 6)
+Generic CSV import with validation and matching before any write, resumable batched writes (cursor committed with each
+batch), deterministic identity and idempotent re-imports, one active import per shop, and per-shop private file
+storage. Product matching is Shopify id → handle → SKU (exact title only as a suggestion). Admission (reviews and
+photos) runs once per import by date order through `entitlements.server`; aggregates go through `recomputeProduct`
+and the Shopify cache through `rating-cache.server`. Equal review dates are resolved by `(source, source_review_id)`,
+so results never depend on row order. Details: [IMPORT.md](IMPORT.md).
+
