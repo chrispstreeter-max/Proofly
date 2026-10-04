@@ -53,8 +53,8 @@ Reviews are stored in the merchant's own Shopify store (as Shopify custom data),
 shoppers for an email address, and we do not store their IP address, customer account or order. Abuse limits use
 short-lived, one-way hashed counters that are deleted within a day. We do not access orders or customer records.
 
-From imports, we store the review files the merchant uploads, in private storage, for up to 30 days after the import
-finishes. Files are kept longer only while some of their products still need the merchant's decision.
+From imports, we store the review files the merchant uploads, privately in our database, for up to 30 days after the
+import finishes. Files are kept longer only while some of their products still need the merchant's decision.
 
 **How we use it.** We use this information only to display, moderate and manage the merchant's reviews and to sync
 product ratings to the merchant's store. We do not sell data and do not use it for advertising.
@@ -86,7 +86,8 @@ import needs them). Proofly uses no separate file storage. Reviews are stored in
 4. **Admin → Reviews:** approve it. It appears on the product page, and the product's rating updates on cards.
 5. Reply to it (needs Starter or above; on Free the reply is stored but not shown).
 6. **Import:**
-   - Upload the sample CSV supplied with the submission (synthetic data).
+   - Upload the sample CSV supplied with the submission: a few synthetic rows for the demo store's products in the
+     template columns ([IMPORT.md](IMPORT.md)), including one row that needs a manual match **[decide: demo store]**.
    - Resolve one unmatched product with **Confirm match**, then start the import.
    - Download the problem report.
 7. **Plan:** the plans open Shopify's hosted plan page. A test charge upgrades the plan, and held reviews are published

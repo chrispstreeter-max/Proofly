@@ -7,7 +7,7 @@ real-Shopify PASS: the **Env** column says where each result came from.
 - **Store:** Proofly Test (`proofly-test-g3yjndjl.myshopify.com`, development store, org My Store 2), published theme
   Horizon 4.2.0. App: Proofly Dev (development app), plan Free (no subscription; no charges of any kind).
 - **App server:** local dev server behind a Cloudflare quick tunnel; API version 2026-10.
-- **Date:** 2026-10-04. Code at the time of the final run: see "Code state" below.
+- **Date:** 2026-10-04 (live checks ran against the code up to commit `d880888`; later changes: CSV formula neutralisation now also covers a leading `-` and the problem report (offline-tested), CI step order, documentation).
 - **Test data (locked decision):** the fictional reviews on Proofly Test are kept for later validation. They are
   synthetic; no customer data was used anywhere.
 
@@ -185,6 +185,27 @@ The browser pane was hidden, so no screenshots and no access to the app frame's 
 - **Imports created:** 2 synthetic (`validationcsv`: 7 rows; `validation2csv`: 4 rows).
 - **Test reviews created:** 9 (1 storefront submission, 8 imported). Total fictional reviews in the store: 313.
 - **Customer data used:** no.
+
+## Remaining items: offline coverage and the minimum action to verify
+
+Every item below is covered offline by the test named, except where stated; none has a regression gap that justifies
+more tests.
+What is missing is only the real-world run.
+
+| Items | Offline coverage | Minimum action | Who |
+|---|---|---|---|
+| A5, A8, E6, G5 (uninstall, reinstall) | `lifecycle`, `projection` (uninstall/reinstall), `isolation` | Uninstall Proofly Dev on Proofly Test, open a product page (widget gone), reinstall, open the app; then run maintenance once and reload the page (widget renders from the projection again) | You (Shopify admin), then me |
+| G6, G7 (customer webhooks) | `privacy` (compliance topics) | Create a synthetic customer on Proofly Test; use "Request customer data" and "Erase personal data"; I check the audit log | You (Shopify admin) |
+| G9 (`app/scopes_update`) | `lifecycle` checks the scope configuration; the handler is Shopify's template (updates the stored session's scope), not tested separately | Only when the scopes next change: deploy and approve | You (deploy) |
+| G8 (`shop/redact`) | `privacy` (redact) | Not run by design (deletes the tenant 48 h after an uninstall) | — |
+| C6 (card stars) | `storefront` (card embed) | Turn on the "Product card stars" app embed on a theme, view a collection page | You (Theme Editor) |
+| E8, E9 (changed / locale proxy path) | `sync` (proxy paths), `storefront` (locale) | Change the app proxy path in the store; publish a second language | You (store settings) |
+| B4, B5 (stale / duplicate webhooks) | `sync` (stale updates, idempotent webhooks) | None: Shopify cannot be made to produce them on demand | — |
+| D4 (another shop) | `isolation`; app-owned metafields are per app and shop (Shopify) | A second development store with the app installed | You (create a store) |
+| H10–H13 (downloads, error and loading states, frame console) | `privacy` (export route), `guided-import` (report), `isolation` (404s) | Keep the browser pane visible during one admin pass | You (show the pane) |
+| K1, K2 (Lighthouse, Web Vitals) | `storefront` (JS/CSS budgets) | Run Lighthouse on a product page of a storefront without a password (production or a demo store) | Infrastructure |
+| I1–I3 (image), I14, I15 (managed DB, scheduler) | `production` (image contents, start command, environment) | Build the image where Docker exists; provision hosting and managed Postgres; schedule `npm run maintenance` hourly and alert on exit 1 | Infrastructure |
+| J5 (maintenance cases with nothing due) | `privacy` (retention, stale imports, rate limits) | None: they run as data becomes due | — |
 
 ## Authorisation needed for the remaining items
 

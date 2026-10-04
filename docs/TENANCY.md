@@ -10,10 +10,11 @@ Every Shopify store that installs Proofly is an independent tenant (`shops` row)
 | Storefront (app proxy) | `authenticate.public.appProxy` verifies Shopify's HMAC → stored offline session for that signed shop → active `shops` row → signed `path_prefix` must equal that shop's configured proxy path (`requireProxyTenant`) |
 | Webhooks | `authenticate.webhook` verifies Shopify's HMAC → `shop` → `shops` row (product webhooks: active shops only; body fields such as shop ids are ignored) |
 | Install / reinstall | Shopify-managed installation → token exchange → `afterAuth` hook → Admin API `shop { id name myshopifyDomain primaryDomain }` → create or reactivate tenant (`upsertShopFromAuth`); refused if the reported domain differs from the session's |
-| Uninstall | `app/uninstalled` → sessions deleted, `uninstalled_at` set (idempotent); admin and storefront stop serving the tenant; data retained until `shop/redact`, which deletes all of it ([PRIVACY.md](PRIVACY.md)) |
+| Uninstall | `app/uninstalled` → sessions deleted, `uninstalled_at` set (idempotent); admin and storefront stop serving the tenant; data retained until `shop/redact`, which deletes all of it ([PRIVACY.md](PRIVACY.md)). Shopify deletes the app's own metafields on uninstall, so Proofly marks them unpublished and republishes them on reinstall |
 
 Never used as tenant authority: shop domains, shop ids or tenant ids in query strings, bodies or headers; hard-coded or
-development store domains (the fictional dev shop exists only behind `NODE_ENV=development`).
+development store domains (there is no development-shop fallback; `NODE_ENV=development` only allows the local
+storefront origins in `STOREFRONT_ORIGINS`).
 
 ## Install, authentication and session lifecycle (Checkpoint 2)
 
@@ -47,8 +48,8 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
    (admin session, app-proxy offline session, or the offline session for background work), which cannot see another
    shop's data; review ids from another shop are simply not found. Uniqueness of `(source, source review id)` is the
    entry handle (a hash of both).
-4. **Storage** — the only stored files are import CSVs, in private storage under `s/<shop_id>/`. No route serves a
-   stored file, and there is no cross-tenant read.
+4. **Storage** — the only stored files are import CSVs, in the `import_files` table (RLS, composite foreign key to
+   their import, deleted with it). Proofly has no other file storage; no route serves a stored file.
 5. **Same response for missing and foreign** — admin detail/actions return the same 404; storefront endpoints return
    the same empty result for unknown and other-shop products.
 6. **Secrets** — Shopify access/refresh tokens are encrypted at rest (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`).
@@ -56,8 +57,8 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
    that shop's own hosts; each shop's proxy path is its own (no global default accepted).
 8. **Billing is per shop** — `billing_state` and `subscriptions` are row-level-security tenant tables; plan state is
    read from the shop's own Admin API; no request field can choose a plan ([BILLING.md](BILLING.md)).
-9. **Imports are per shop** — `import_jobs` and `import_product_matches` are RLS tenant tables; import files live under
-   `s/<shop>/imports/`; the shop comes from the authenticated session, never from the file or the request.
+9. **Imports are per shop** — `import_jobs`, `import_product_matches` and `import_files` are RLS tenant tables; the shop
+   comes from the authenticated session, never from the file or the request.
 10. **Shopify writes are per shop** — catalogue sync, rating-cache sync and reconciliation use the shop's own Admin API
    client and only that shop's (RLS-scoped) rows; Proofly writes rating metafields only for its `proofly_managed`
    products.
@@ -70,7 +71,8 @@ install → authenticate → onboard → uninstall → reinstall with a bystande
 configuration), `tests/storefront.test.ts`, `tests/import.test.ts` (import engine: matching, idempotency, resume, cross-tenant collisions, limits, privacy),
 `tests/replies.test.ts` (reply visibility), `tests/billing.test.ts` (plans, billing reconciliation, entitlements, imports, fairness, billing isolation),
 `tests/sync.test.ts` (product sync, webhooks, aggregation, rating
-ownership and reconciliation, proxy paths, public media), `tests/security.test.ts`, `tests/unit.test.ts`.
+ownership and reconciliation, proxy paths), `tests/projection.test.ts` (storefront projection), `tests/bulk.test.ts`
+(bulk imports and releases), `tests/security.test.ts`, `tests/unit.test.ts`.
 
 ## Production database setup (see [LAUNCH.md](LAUNCH.md) §1)
 

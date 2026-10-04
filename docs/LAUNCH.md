@@ -97,7 +97,7 @@ to 50 MB per import in progress.
 | Moderation | `admin`: bulk approve/hide/reject/restore through the allowance; `isolation`: no cross-shop moderation |
 | Manual product resolution | `guided-import`; `title-matching` 8 (only the shop's own products) |
 | Errors understandable | `guided-import`: plain-English explanations and problem report; `import` 4–5, 16 |
-| Retention | `privacy`: import-file retention, orphan sweep, stale imports, `shop/redact`, compliance topics |
+| Retention | `privacy`: import-file retention (files in Postgres), per-shop failure isolation, stale imports, `shop/redact`, compliance topics |
 | No real merchant data; no references to the private archive or its providers | `security`: merchant-data scan (repository + build, committed and private denylists); fixtures are synthetic; `git grep` clean |
 | Production build clean; security scans pass | gates: typecheck, lint, build, Theme Check, scans, secret scans, network guard |
 | Production configuration | `production`: environment checks, health check, image contents |

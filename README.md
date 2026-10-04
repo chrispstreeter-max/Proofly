@@ -3,9 +3,11 @@
 **Proofly** is a Shopify App Store app for product reviews: bring your existing reviews with you, manage them in one
 place, and display them beautifully across your store.
 
-> Status: **Reviews stored in Shopify — Phase 1 built.** Reviews live in each merchant's own Shopify store
-> ([docs/SHOPIFY-DATA.md](docs/SHOPIFY-DATA.md)); Proofly keeps settings, imports, billing and logs. Real-Shopify
-> validation runs on a development store only ([docs/LAUNCH.md](docs/LAUNCH.md) §4); nothing is deployed to production. Import: [docs/IMPORT.md](docs/IMPORT.md) · Billing:
+> Status: **V1 built (reviews in Shopify, Phases 1–4); validated on a development store.** Reviews live in each
+> merchant's own Shopify store ([docs/SHOPIFY-DATA.md](docs/SHOPIFY-DATA.md)); the storefront renders from an app-owned
+> product metafield. Proofly's server keeps settings, product cache, imports (CSV in Postgres), billing and logs —
+> PostgreSQL is its only storage, with row-level security. Validation log:
+> [docs/REAL-SHOPIFY-VALIDATION.md](docs/REAL-SHOPIFY-VALIDATION.md); nothing is deployed to production. Import: [docs/IMPORT.md](docs/IMPORT.md) · Billing:
 > [docs/BILLING.md](docs/BILLING.md) · Privacy and retention: [docs/PRIVACY.md](docs/PRIVACY.md).
 > Import rule: title is never an automatic product-matching key (ID → handle → SKU → other exact identifiers →
 > merchant-confirmed manual match; exact titles are suggestions only). See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
@@ -40,8 +42,9 @@ npm run fixtures:generate && npm run fixtures:check   # synthetic, fictional dat
 npm run scan:merchant-data                            # fails if merchant/customer data could ship
 ```
 
-Scheduled job (production: hourly): `npm run maintenance` — import-file retention, stalled imports, orphaned
-storage, rate-limit counters ([docs/PRIVACY.md](docs/PRIVACY.md)).
+Scheduled job (production: hourly): `npm run maintenance` — import-file retention, stalled imports, rate-limit
+counters, the daily review recount and storefront-projection retries; exits 1 if any shop failed
+([docs/PRIVACY.md](docs/PRIVACY.md)).
 
 Real merchant datasets never live in this repository. Authorised local testing against a private dataset uses files
 outside the repo and, optionally, a private hashed denylist (`PROOFLY_PRIVATE_DENYLIST`).
