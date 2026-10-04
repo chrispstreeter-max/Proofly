@@ -3,8 +3,8 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import { planSelectionUrl, reconcileBilling, reconcileIfStale } from "../lib/billing.server";
-import { getPlanStatus, releaseEligibleMedia, releaseEligibleReviews } from "../lib/entitlements.server";
-import { annualSavingPercent, FEATURES, formatBytes, PLAN_ORDER, PLANS, planHasFeature, type Feature } from "../lib/plans";
+import { getPlanStatus, releaseEligibleReviews } from "../lib/entitlements.server";
+import { annualSavingPercent, FEATURES, PLAN_ORDER, PLANS, planHasFeature, type Feature } from "../lib/plans";
 import { syncAfterRatingChange } from "../lib/rating-cache.server";
 import { withTenant } from "../lib/tenant.server";
 
@@ -14,9 +14,8 @@ import { withTenant } from "../lib/tenant.server";
 
 const COMPARISON: { label: string; feature?: Feature }[] = [
   { label: "Review widget, rating summary and product-card stars", feature: "reviewDisplay" },
-  { label: "Photo reviews", feature: "photoReviews" },
   { label: "Review moderation", feature: "moderation" },
-  { label: "Review import (CSV and photos)", feature: "reviewImport" },
+  { label: "Review import (CSV)", feature: "reviewImport" },
   { label: "Review export (CSV)", feature: "csvExport" },
   { label: "Public replies to reviews", feature: "replies" },
   { label: "Priority support", feature: "prioritySupport" },
@@ -37,12 +36,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       verifiedAt: status.state.verifiedAt?.toISOString().slice(0, 16).replace("T", " ") ?? null, checkError: status.state.checkError,
       currentPeriodEnd: status.state.currentPeriodEnd?.toISOString().slice(0, 10) ?? null,
     },
-    usage: status.usage, reviewRoom: status.reviewRoom, mediaRoom: status.mediaRoom,
-    overReviews: status.overReviewAllowance, overMedia: status.overMediaAllowance,
+    usage: status.usage, reviewRoom: status.reviewRoom,
+    overReviews: status.overReviewAllowance,
     changePlanUrl: planSelectionUrl(shop.shopDomain),
     plans: PLAN_ORDER.map((k) => ({
       key: k, name: PLANS[k].name, monthly: PLANS[k].monthlyPriceUsd, annual: PLANS[k].annualPriceUsd, saving: annualSavingPercent(k),
-      reviews: PLANS[k].publishedReviewAllowance, media: formatBytes(PLANS[k].publicMediaBytes), mediaBytes: PLANS[k].publicMediaBytes,
+      reviews: PLANS[k].publishedReviewAllowance,
       mostPopular: PLANS[k].mostPopular, features: ROWS.map((c) => (c.feature ? planHasFeature(k, c.feature) : false)),
     })),
     comparison: ROWS.map((c) => c.label),
@@ -60,10 +59,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const r = await withTenant(shop.id, (t) => releaseEligibleReviews(t, { actor }));
     await syncAfterRatingChange(shop.id, admin.graphql);
     return { message: r.released ? `Published ${r.released} review${r.released === 1 ? "" : "s"}${r.stillHeld ? `; ${r.stillHeld} still held by your plan limit` : ""}.` : "No room in your current plan to publish more reviews." };
-  }
-  if (intent === "process_media") {
-    const r = await withTenant(shop.id, (t) => releaseEligibleMedia(t, { actor }));
-    return { message: r.released ? `${r.released} photo${r.released === 1 ? " is" : "s are"} now public${r.stillLimited ? `; ${r.stillLimited} still over your media allowance` : ""}.` : "No room in your media allowance for more photos." };
   }
   return { message: "Unknown action." };
 };
@@ -122,16 +117,6 @@ export default function PlanPage() {
               </s-stack>
             </Form>
           )}
-          <s-paragraph>Public photo storage: {formatBytes(d.usage.publicMediaBytes)} of {current.media} · Storage-limited photos: {n(d.usage.storageLimitedPhotos)}</s-paragraph>
-          {d.usage.storageLimitedPhotos > 0 && (
-            <Form method="post">
-              <s-stack gap="small-200">
-                <s-paragraph>Storage-limited photos are kept privately and not shown on your store until there is room in your media allowance.</s-paragraph>
-                <input type="hidden" name="intent" value="process_media" />
-                {d.mediaRoom > 0 && <s-button type="submit" loading={busy || undefined}>Publish eligible photos</s-button>}
-              </s-stack>
-            </Form>
-          )}
         </s-stack>
       </s-section>
 
@@ -145,13 +130,12 @@ export default function PlanPage() {
             <s-table-row><s-table-cell>Monthly</s-table-cell>{d.plans.map((p) => <s-table-cell key={p.key}>{p.monthly === 0 ? "$0" : `$${p.monthly}`}</s-table-cell>)}</s-table-row>
             <s-table-row><s-table-cell>Yearly</s-table-cell>{d.plans.map((p) => <s-table-cell key={p.key}>{p.annual === 0 ? "$0" : `$${p.annual} (save ${p.saving}%)`}</s-table-cell>)}</s-table-row>
             <s-table-row><s-table-cell>Published review allowance</s-table-cell>{d.plans.map((p) => <s-table-cell key={p.key}>{n(p.reviews)}</s-table-cell>)}</s-table-row>
-            <s-table-row><s-table-cell>Public photo storage</s-table-cell>{d.plans.map((p) => <s-table-cell key={p.key}>{p.media}</s-table-cell>)}</s-table-row>
             {d.comparison.map((label, i) => (
               <s-table-row key={label}><s-table-cell>{label}</s-table-cell>{d.plans.map((p) => <s-table-cell key={p.key}>{p.features[i] ? "✓" : "—"}</s-table-cell>)}</s-table-row>
             ))}
           </s-table-body>
         </s-table>
-        <s-paragraph>Prices in USD. Shopify shows the final price, including any applicable taxes, before you confirm a plan. Reviews and photos are never deleted because of a plan limit.</s-paragraph>
+        <s-paragraph>Prices in USD. Shopify shows the final price, including any applicable taxes, before you confirm a plan. Reviews are never deleted because of a plan limit.</s-paragraph>
       </s-section>
     </s-page>
   );

@@ -13,7 +13,7 @@ before(async () => {
 });
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
-const TABLES = ["shop_settings", "billing_state", "subscriptions", "products", "reviews", "review_images", "review_replies", "review_requests", "moderation_actions", "import_jobs", "import_product_matches", "product_match_confirmations", "audit_log"];
+const TABLES = ["shop_settings", "billing_state", "subscriptions", "products", "reviews", "review_replies", "review_requests", "moderation_actions", "import_jobs", "import_product_matches", "product_match_confirmations", "audit_log"];
 
 test("the application role is not a superuser and cannot bypass RLS", async () => {
   const [r] = await prisma.$queryRaw<{ rolsuper: boolean; rolbypassrls: boolean }[]>`select rolsuper, rolbypassrls from pg_roles where rolname = current_user`;
@@ -30,7 +30,6 @@ test("RLS is enabled and forced on every merchant-owned table", async () => {
 test("without a tenant context the application sees NO merchant rows (fail closed)", async () => {
   assert.equal(await prisma.review.count(), 0);
   assert.equal(await prisma.product.count(), 0);
-  assert.equal(await prisma.reviewImage.count(), 0);
   assert.equal(await prisma.shopSettings.count(), 0);
   assert.equal(await prisma.importJob.count(), 0);
   assert.equal(await prisma.moderationAction.count(), 0);
@@ -39,7 +38,7 @@ test("without a tenant context the application sees NO merchant rows (fail close
 test("inside shop A's context, even UNFILTERED queries only return shop A's rows", async () => {
   await withTenant(A.shopId, async ({ db }) => {
     for (const [name, rows] of Object.entries({
-      reviews: await db.review.findMany(), products: await db.product.findMany(), images: await db.reviewImage.findMany(),
+      reviews: await db.review.findMany(), products: await db.product.findMany(),
       replies: await db.reviewReply.findMany(), settings: await db.shopSettings.findMany(), jobs: await db.importJob.findMany(),
       moderation: await db.moderationAction.findMany(), audit: await db.auditLog.findMany(),
     })) {
@@ -76,9 +75,7 @@ test("composite foreign keys forbid linking shop A's review to shop B's product 
     /Foreign key|foreign key/,
   );
   await assert.rejects(
-    owner.reviewImage.create({
-      data: { shopId: A.shopId, reviewId: B.reviewId, originalFilename: "x", storageKey: "x", thumbKey: "x", largeKey: "x", contentType: "image/jpeg", fileSize: 1, sha256: "1".repeat(64) },
-    }),
+    owner.reviewReply.create({ data: { shopId: A.shopId, reviewId: B.reviewId, reply: "cross-shop" } }),
     /Foreign key|foreign key/,
   );
 });

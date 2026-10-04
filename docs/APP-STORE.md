@@ -10,13 +10,13 @@ listing copy are not invented here.
 - **Introduction:** Move your existing product reviews into Shopify in minutes, moderate them in one place, and display
   them with fast, theme-native blocks.
 - **Key benefits:**
-  - **Migration first:** import a CSV and photos (a ZIP or `https` links). Proofly matches products by ID, handle or SKU.
+  - **Migration first:** import your reviews from a CSV. Proofly matches products by ID, handle or SKU.
     It never guesses, so anything uncertain waits for your decision.
   - **Native storefront:** a review widget, a rating summary and product-card stars built as theme app blocks. There are
     no theme code edits, and they use Shopify's standard rating fields.
   - **Fair plans:** nothing is ever deleted because of a plan limit. Reviews over the allowance are kept and published
     oldest first when you have room.
-- **Features (V1):** photo reviews, moderation (approve, hide, reject, plus bulk actions), public replies (Starter and
+- **Features (V1):** text reviews with star ratings, moderation (approve, hide, reject, plus bulk actions), public replies (Starter and
   above), CSV review export, and product-rating sync to Shopify.
   - Do not list unreleased features: verified purchases, review requests, advanced analytics and API access.
 - **Pricing:** the five plans in `app/lib/plans.ts` / [BILLING.md](BILLING.md), billed by Shopify.
@@ -43,8 +43,9 @@ From shoppers who submit a review:
 - a star rating;
 - an optional title;
 - the review text;
-- the display name they choose;
-- optional photos.
+- the display name they choose.
+
+Proofly does not accept or store photos.
 
 We do not ask shoppers for an email address. We store a salted one-way hash of the submitter's IP address to prevent
 abuse. We do not access orders or customer records.
@@ -54,9 +55,6 @@ finishes. Files are kept longer only while some of their products still need the
 
 **How we use it.** We use this information only to display, moderate and manage the merchant's reviews and to sync
 product ratings to the merchant's store. We do not sell data and do not use it for advertising.
-
-**Photos.** Originals are kept privately. Only resized copies with metadata removed are published, and only for
-published reviews.
 
 **Retention and deletion**
 
@@ -78,7 +76,7 @@ published reviews.
    - Use **Add review widget** and **Add rating summary**. The Theme Editor opens with the block preselected; save.
    - Use **Open app embeds** and turn on **Product card stars**.
    - Then use **Finish setup**. Products import in the background (**Products** page).
-3. **Storefront:** open a product page and choose **Write a review**. Submit a rating, text, a name and a photo. The
+3. **Storefront:** open a product page and choose **Write a review**. Submit a rating, text and a name. The
    review is pending: it is not visible yet.
 4. **Admin → Reviews:** approve it. It appears on the product page, and the product's rating updates on cards.
 5. Reply to it (needs Starter or above; on Free the reply is stored but not shown).

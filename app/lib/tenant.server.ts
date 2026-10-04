@@ -1,7 +1,7 @@
 import type { Prisma, Shop } from "@prisma/client";
 import { createHash } from "node:crypto";
 import prisma from "../db.server";
-import { deleteShopObjects } from "./media.server";
+import { deleteShopObjects } from "./storage.server";
 import { DEFAULT_PROXY_PATH, publishAppMetafields, publishProxyPath, STOREFRONT_SETTINGS_METAFIELD } from "./proxy-path.server";
 
 /**
@@ -88,19 +88,10 @@ export async function publishShopProxyPath(shopId: string, graphql: GraphqlFn, o
   return true;
 }
 
-/** Publishes the storefront switches (submissions, photos) to the app-data metafield the extension reads. */
+/** Publishes the storefront switch (accepting submissions) to the app-data metafield the extension reads. */
 export async function publishStorefrontSettings(shopId: string, graphql: GraphqlFn) {
   const s = await withTenant(shopId, ({ db }) => db.shopSettings.findUniqueOrThrow({ where: { shopId } }));
-  await publishAppMetafields(graphql, [{ ...STOREFRONT_SETTINGS_METAFIELD, value: JSON.stringify({ submissions: s.reviewSubmissionEnabled, photos: s.photoReviewsEnabled }) }]);
-}
-
-/**
- * Public media resolver — the only cross-tenant read in the app. Maps an opaque public asset id to its internal
- * storage key, and ONLY while the photo is public (see proofly_public_media_key in the checkpoint 4 migration).
- */
-export async function publicMediaKey(publicId: string, size: 320 | 1600): Promise<string | null> {
-  const rows = await prisma.$queryRaw<{ key: string | null }[]>`SELECT proofly_public_media_key(${publicId}, ${size}::int) AS key`;
-  return rows[0]?.key ?? null;
+  await publishAppMetafields(graphql, [{ ...STOREFRONT_SETTINGS_METAFIELD, value: JSON.stringify({ submissions: s.reviewSubmissionEnabled }) }]);
 }
 
 /** Creates the tenant (and its default settings) or reactivates it on reinstall. Data of a reinstalled shop is kept. */
@@ -141,7 +132,6 @@ export async function redactShop(domain: string) {
   if (!shop.uninstalledAt) return { deleted: false as const, reason: "reinstalled" };
   const counts = await withTenant(shop.id, async ({ db }) => ({
     reviews: await db.review.count({ where: { shopId: shop.id } }),
-    images: await db.reviewImage.count({ where: { shopId: shop.id } }),
     products: await db.product.count({ where: { shopId: shop.id } }),
     imports: await db.importJob.count({ where: { shopId: shop.id } }),
   }));

@@ -1,5 +1,5 @@
 /* Proofly — Review Widget. Inherits the theme font; all colours are tokens on .pf. */
-.pf, .pf-dialog, .pf-lightbox {
+.pf, .pf-dialog {
   --pf-ink: #111;
   --pf-text: #374151;
   --pf-muted: #6b7280;
@@ -51,7 +51,7 @@
 .pf-btn { appearance: none; border: 0; border-radius: 8px; background: var(--pf-ink); color: #fff; font: inherit; font-weight: 600; padding: 12px 22px; min-height: 44px; cursor: pointer; transition: opacity .15s; }
 .pf-btn:hover { opacity: .88; }
 .pf-btn:disabled { opacity: .6; cursor: progress; }
-.pf-btn:focus-visible, .pf-chip:focus-visible, .pf-pill:focus-visible, .pf-more:focus-visible, .pf-photo:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: 2px; }
+.pf-btn:focus-visible, .pf-chip:focus-visible, .pf-pill:focus-visible, .pf-more:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: 2px; }
 .pf-btn--full { width: 100%; }
 .pf-chip { appearance: none; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--pf-line); background: #fff; color: var(--pf-ink); border-radius: 8px; font: inherit; font-size: 14px; padding: 10px 14px; min-height: 44px; cursor: pointer; }
 .pf-chip[aria-pressed="true"] { border-color: var(--pf-ink); background: var(--pf-ink); color: #fff; }
@@ -77,10 +77,6 @@
 .pf-body { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
 .pf-review > .pf-body:first-of-type { margin-top: 12px; }
 .pf-title + .pf-body { margin-top: 0; }
-.pf-photos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.pf-photo { all: unset; cursor: zoom-in; border-radius: 8px; overflow: hidden; width: 80px; height: 80px; background: var(--pf-soft); }
-.pf-photo img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s; }
-.pf-photo:hover img { transform: scale(1.04); }
 .pf-reply { margin-top: 14px; padding: 12px 16px; background: var(--pf-soft); border-radius: var(--pf-radius); border-left: 3px solid var(--pf-ink); }
 .pf-reply-h { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--pf-ink); }
 .pf-empty { padding: 32px 0; color: var(--pf-muted); text-align: center; }
@@ -92,7 +88,7 @@
 
 /* Dialogs */
 .pf-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); border: 0; border-radius: 14px; padding: 0; color: var(--pf-text); box-shadow: 0 20px 60px rgba(0,0,0,.25); }
-.pf-dialog::backdrop, .pf-lightbox::backdrop { background: rgba(0,0,0,.55); }
+.pf-dialog::backdrop { background: rgba(0,0,0,.55); }
 .pf-form, .pf-thanks { display: grid; gap: 14px; padding: 20px; }
 .pf-form[hidden], .pf-thanks[hidden] { display: none; }
 .pf-dialog-head { display: flex; justify-content: space-between; align-items: center; }
@@ -115,9 +111,6 @@
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.6l2.8 6 6.6.7-4.9 4.5 1.4 6.5L12 17l-5.9 3.3 1.4-6.5-4.9-4.5 6.6-.7z'/%3E%3C/svg%3E") center / contain no-repeat; }
 .pf-rate-stars input:checked ~ label, .pf-rate-stars label:hover, .pf-rate-stars label:hover ~ label { background: var(--pf-star); }
 .pf-rate-stars input:focus-visible + label { outline: 2px solid var(--pf-ink); outline-offset: 2px; border-radius: 4px; }
-.pf-lightbox { border: 0; padding: 0; background: transparent; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: visible; }
-.pf-lightbox img { display: block; width: auto; height: auto; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 10px; }
-.pf-lightbox .pf-x { position: absolute; top: -48px; right: 0; color: #fff; }
 
 @media (min-width: 750px) {
   .pf { padding: 0 24px; }
@@ -128,9 +121,8 @@
   .pf-review-head { grid-template-columns: 44px 1fr auto; }
   .pf-avatar { width: 44px; height: 44px; }
   .pf-review > :not(.pf-review-head) { margin-left: 56px; }
-  .pf-photo { width: 96px; height: 96px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pf-bar-fill, .pf-photo img { transition: none; }
+  .pf-bar-fill { transition: none; }
   .pf-skel { animation: none; }
 }

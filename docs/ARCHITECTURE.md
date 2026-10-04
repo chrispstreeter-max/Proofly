@@ -5,6 +5,10 @@
 > §11 is authoritative for what the code does today.
 > **Commercial rules resolved 2026-10-03 (§9). Test-data policy: §10.**
 
+> **Decision 2026-10-04 — no review photos.** Proofly has no photos anywhere: no storefront uploads, no photo import
+> (ZIP or links), no photo display, no media storage allowance in plans. Every passage below that describes photos,
+> media, storage-limited media or public media ids is superseded (removed in code; see ARCHITECTURE §11.16).
+
 **Principle:** Shopify hosts and serves everything it is good at; Proofly stores and processes only what Shopify
 cannot appropriately provide. The storefront must render ratings and reviews **without depending on a Proofly server
 being reachable**; Proofly's backend handles writes, management, migration and image processing.
@@ -443,6 +447,16 @@ role). Customer compliance topics never store the customer id. Scheduled mainten
 an import finishes unless unresolved products remain, marks stalled imports resumable, sweeps unreferenced objects older
 than 24 h and purges rate-limit counters. Review export is a formula-safe CSV in import-template columns. Details:
 [PRIVACY.md](PRIVACY.md).
+
+### 11.16 No review photos (product decision, 2026-10-04)
+Removed: storefront photo uploads (the form has no file field; the submission route reads text fields only and refuses
+requests over 64 KB), photo import (ZIP archives and `https` links — photo columns are ignored like any unknown
+column; the ZIP reader and the SSRF-safe image fetcher are gone), photo display (list images, photo filter, lightbox),
+the public media route and resolver, the public bucket, `sharp`, media allowances and storage-limited admission, the
+"allow photos" setting, and the schema (`review_images`, `MediaStatus`, `products.photo_review_count`,
+`shop_settings.photo_reviews_enabled`, `import_jobs.images_key`; migration `20261010090000_remove_review_photos`).
+Proofly now stores only one kind of file: merchants' import CSVs, privately (`app/lib/storage.server.ts`). Prices and
+review allowances are unchanged.
 
 ### 11.12 Product matching for imports (locked, checkpoint 6)
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →

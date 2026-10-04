@@ -1,4 +1,4 @@
-// Checkpoint 5: plans, Shopify App Pricing reconciliation, entitlements, imports, upgrade/downgrade, media limits,
+// Checkpoint 5: plans, Shopify App Pricing reconciliation, entitlements, imports, upgrade/downgrade,
 // fairness, security. Shopify is FakeShopify; tests/no-network.ts blocks any real network access.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -8,7 +8,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { decide as decideRaw, planSelectionUrl, reconcileBilling, reconcileIfStale } from "../app/lib/billing.server";
 import {
-  admitMedia, getPlanStatus, getUsage, MEDIA_ADMISSION_ORDER, releaseEligibleMedia, releaseEligibleReviews, REVIEW_ADMISSION_ORDER,
+  getPlanStatus, getUsage, releaseEligibleReviews, REVIEW_ADMISSION_ORDER,
 } from "../app/lib/entitlements.server";
 import { importReviews, type ImportRow } from "../app/lib/import.server";
 import { moderate } from "../app/lib/moderation.server";
@@ -20,8 +20,6 @@ import { loader as dashboardLoader } from "../app/routes/app._index";
 import { action as reviewAction } from "../app/routes/app.reviews.$id";
 import { adminRequest, args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, resetDb, run, type Merchant } from "./helpers";
 
-const MB = 1024 ** 2;
-const GB = 1024 ** 3;
 let A: Merchant, B: Merchant;
 before(async () => {
   await resetDb();
@@ -55,13 +53,13 @@ const rows = (n: number, productId: bigint, o: { start?: number; rating?: (i: nu
 // ---------------------------------------------------------------------------------------------------------------
 describe("Plans: one canonical configuration", () => {
   test("five plans with the final prices and allowances", () => {
-    const table = PLAN_ORDER.map((k) => [k, PLANS[k].name, PLANS[k].monthlyPriceUsd, PLANS[k].annualPriceUsd, PLANS[k].publishedReviewAllowance, PLANS[k].publicMediaBytes]);
+    const table = PLAN_ORDER.map((k) => [k, PLANS[k].name, PLANS[k].monthlyPriceUsd, PLANS[k].annualPriceUsd, PLANS[k].publishedReviewAllowance]);
     assert.deepEqual(table, [
-      ["FREE", "Free", 0, 0, 100, 500 * MB],
-      ["STARTER", "Starter", 9, 90, 1_000, 2 * GB],
-      ["GROWTH", "Growth", 19, 190, 5_000, 10 * GB],
-      ["PRO", "Pro", 39, 390, 25_000, 50 * GB],
-      ["SCALE", "Scale", 79, 790, 100_000, 250 * GB],
+      ["FREE", "Free", 0, 0, 100],
+      ["STARTER", "Starter", 9, 90, 1_000],
+      ["GROWTH", "Growth", 19, 190, 5_000],
+      ["PRO", "Pro", 39, 390, 25_000],
+      ["SCALE", "Scale", 79, 790, 100_000],
     ]);
     assert.deepEqual(PLAN_ORDER.map((k) => annualSavingPercent(k)), [0, 17, 17, 17, 17]);
     assert.deepEqual(PLAN_ORDER.filter((k) => PLANS[k].mostPopular), ["GROWTH"]);
@@ -96,7 +94,7 @@ describe("Plans: one canonical configuration", () => {
 
 // ---------------------------------------------------------------------------------------------------------------
 describe("New merchant starts on Free", () => {
-  test("install with no Shopify subscription → Free confirmed: 100 reviews, 500 MB, zero reviews", async () => {
+  test("install with no Shopify subscription → Free confirmed: 100 reviews, zero reviews", async () => {
     const shopify = new FakeShopify({ myshopifyDomain: DOMAIN_C, id: 9_700_000_000_003n, name: "Store C", host: "store-c.example.com" });
     await afterAuth({ session: { shop: DOMAIN_C }, admin: shopify });
     const c = await owner.shop.findUniqueOrThrow({ where: { shopDomain: DOMAIN_C } });
@@ -104,7 +102,6 @@ describe("New merchant starts on Free", () => {
     assert.deepEqual([s.plan, s.verification, s.shopifyStatus], ["FREE", "confirmed", "none"]);
     const st = await as({ shopId: c.id }, (t) => getPlanStatus(t));
     assert.equal(st.plan.publishedReviewAllowance, 100);
-    assert.equal(st.plan.publicMediaBytes, 500 * MB);
     assert.equal(st.usage.publishedReviews, 0);
     assert.equal(await owner.review.count({ where: { shopId: c.id } }), 0);
   });
@@ -233,7 +230,7 @@ describe("Billing security: client input never decides the plan", () => {
   });
 
   test("the storefront never touches billing: no billing code on storefront paths or in the extension", () => {
-    for (const f of ["app/routes/proxy.reviews.tsx", "app/routes/proxy.ratings.tsx", "app/routes/proxy.products.$id.reviews.tsx", "app/lib/proxy.server.ts", "app/lib/submit.server.ts", "app/routes/media.$.tsx"]) {
+    for (const f of ["app/routes/proxy.reviews.tsx", "app/routes/proxy.ratings.tsx", "app/routes/proxy.products.$id.reviews.tsx", "app/lib/proxy.server.ts", "app/lib/submit.server.ts"]) {
       assert.doesNotMatch(readFileSync(f, "utf8"), /billing\.server/, f);
     }
     const r = spawnSync("git", ["grep", "--untracked", "-il", "-E", "billing|subscription", "--", "extensions"], { encoding: "utf8" });
@@ -295,16 +292,15 @@ describe("Fairness: date order only (regression guards)", () => {
   test("admission orderings are chronological and use no quality signal", () => {
     const keys = (o: readonly object[]) => o.map((x) => JSON.stringify(x));
     assert.deepEqual(keys(REVIEW_ADMISSION_ORDER), ['{"reviewDate":"asc"}', '{"source":"asc"}', '{"sourceReviewId":"asc"}']);
-    assert.deepEqual(keys(MEDIA_ADMISSION_ORDER), ['{"review":{"reviewDate":"asc"}}', '{"review":{"source":"asc"}}', '{"review":{"sourceReviewId":"asc"}}', '{"position":"asc"}', '{"id":"asc"}']);
     const banned = /rating|sentiment|body|title|reviewerName|verified|images|photo|product|flags|helpful|score|createdAt/i;
-    for (const o of [...REVIEW_ADMISSION_ORDER, ...MEDIA_ADMISSION_ORDER]) assert.doesNotMatch(JSON.stringify(o), banned);
+    for (const o of REVIEW_ADMISSION_ORDER) assert.doesNotMatch(JSON.stringify(o), banned);
   });
 
   test("every allowance decision in the entitlement layer uses those orderings", () => {
     const src = readFileSync("app/lib/entitlements.server.ts", "utf8");
     const orderBys = src.match(/orderBy:[^,}]+/g) ?? [];
-    assert.ok(orderBys.length >= 2);
-    for (const o of orderBys) assert.match(o, /orderBy: \[\.\.\.(REVIEW|MEDIA)_ADMISSION_ORDER\]/, o);
+    assert.ok(orderBys.length >= 1); // review admission is the only allowance decision (no photo allowance since 2026-10-04)
+    for (const o of orderBys) assert.match(o, /orderBy: \[\.\.\.REVIEW_ADMISSION_ORDER\]/, o);
   });
 
   test("high ratings never jump the queue when publishing eligible reviews", async () => {
@@ -351,14 +347,11 @@ describe("Upgrade and downgrade", () => {
     assert.deepEqual([st.usage.publishedReviews, st.usage.planLimitedReviews], [150, 0]);
   });
 
-  test("downgrade: published reviews and public photos stay visible (grandfathered); only new ones are limited; nothing deleted", async () => {
-    // Give H a public photo, then downgrade to Free (150 published > 100 allowance).
-    const r0 = await owner.review.findFirstOrThrow({ where: { shopId: m.shopId, holdReason: null, status: "published" } });
-    await as(m, ({ db, shopId }) => db.reviewImage.create({ data: { shopId, reviewId: r0.id, originalFilename: "a.jpg", storageKey: "s/x/originals/a.jpg", thumbKey: "s/x/r/a-320.webp", largeKey: "s/x/r/a-1600.webp", contentType: "image/jpeg", fileSize: 10, sha256: "a".repeat(64), publicBytes: 300 * MB, mediaStatus: "published" } }));
+  test("downgrade: published reviews stay visible (grandfathered); only new ones are limited; nothing deleted", async () => {
+    // Downgrade to Free (150 published > 100 allowance).
     await reconcileBilling(m.shopId, shopifyWith(sub("starter", { status: "CANCELLED" })).graphql);
     let st = await as(m, (t) => getPlanStatus(t));
     assert.deepEqual([st.plan.key, st.usage.publishedReviews, st.overReviewAllowance, st.reviewRoom], ["FREE", 150, true, 0]);
-    assert.equal(await owner.reviewImage.count({ where: { shopId: m.shopId, mediaStatus: "published" } }), 1);
     // Future imports and approvals are held; nothing becomes hidden, nothing is deleted.
     const imp = await importReviews(m.shopId, { source: "csv", rows: rows(10, 9_700_000_000_300n, { start: 5000 }), actor: "test" });
     assert.deepEqual([imp.imported, imp.published, imp.planLimited], [10, 0, 10]);
@@ -388,54 +381,6 @@ describe("Upgrade and downgrade", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-describe("Public media allowance", () => {
-  let m: Merchant;
-  let reviewId: string;
-  const img = (name: string, bytes: number, date: string, status: "published" | "storage_limited" = "storage_limited") =>
-    as(m, async ({ db, shopId }) => {
-      const r = await db.review.create({ data: { shopId, productId: (await db.product.findFirstOrThrow({ where: { shopId } })).id, source: "media", sourceReviewId: `m-${name}`, rating: 5, body: name, reviewerName: "M", reviewDate: new Date(date), status: "published" } });
-      reviewId = r.id;
-      return db.reviewImage.create({ data: { shopId, reviewId: r.id, originalFilename: `${name}.jpg`, storageKey: `s/${shopId}/originals/${name}.jpg`, thumbKey: `s/${shopId}/r/${name}-320.webp`, largeKey: `s/${shopId}/r/${name}-1600.webp`, contentType: "image/jpeg", fileSize: 1, sha256: name.padEnd(64, "0"), publicBytes: bytes, mediaStatus: status } });
-    });
-  before(async () => {
-    m = await installMerchant("proofly-test-i.myshopify.com", "I"); // Free: 500 MB
-    await newProduct(m, 9_700_000_000_400n);
-  });
-
-  test("under, exactly at, and over the limit — strict date order; originals always kept; nothing deleted", async () => {
-    await img("existing", 400 * MB, "2020-01-01", "published");
-    const a = await img("a-older-60mb", 60 * MB, "2021-01-01");
-    const b = await img("b-50mb", 50 * MB, "2021-02-01");
-    const c = await img("c-newest-small", 1 * MB, "2021-03-01");
-    let r = await as(m, (t) => releaseEligibleMedia(t));
-    // Room 100 MB: a (60) fits; b (50) does not → stop; c is NOT released ahead of b even though it fits.
-    assert.deepEqual(r, { released: 1, stillLimited: 2 });
-    const status = async (id: string) => (await owner.reviewImage.findUniqueOrThrow({ where: { id } })).mediaStatus;
-    assert.deepEqual([await status(a.id), await status(b.id), await status(c.id)], ["published", "storage_limited", "storage_limited"]);
-    // Exactly at the limit: 40 MB room, a 40 MB photo fits exactly.
-    const exact = await img("exact-40mb", 40 * MB, "2020-06-01");
-    r = await as(m, (t) => releaseEligibleMedia(t, { imageIds: [exact.id] }));
-    assert.equal(r.released, 1);
-    assert.equal((await as(m, (t) => getUsage(t))).publicMediaBytes, 500 * MB);
-    // Over: nothing more fits; held photos keep their private original; every row still exists.
-    r = await as(m, (t) => releaseEligibleMedia(t));
-    assert.deepEqual(r, { released: 0, stillLimited: 2 });
-    for (const x of [a, b, c, exact]) assert.ok((await owner.reviewImage.findUniqueOrThrow({ where: { id: x.id } })).storageKey.includes("/originals/"));
-  });
-
-  test("new photos are storage-limited when there is no room; the review itself still publishes; upgrade makes room", async () => {
-    const d = await img("d-new", 5 * MB, "2022-01-01", "published");
-    await as(m, (t) => admitMedia(t, [d.id]));
-    assert.equal((await owner.reviewImage.findUniqueOrThrow({ where: { id: d.id } })).mediaStatus, "storage_limited");
-    assert.equal((await owner.review.findUniqueOrThrow({ where: { id: reviewId } })).status, "published");
-    await setPlan(m, "starter"); // 2 GB
-    assert.equal((await owner.reviewImage.findUniqueOrThrow({ where: { id: d.id } })).mediaStatus, "storage_limited"); // no auto-release
-    const r = await as(m, (t) => releaseEligibleMedia(t));
-    assert.deepEqual(r, { released: 3, stillLimited: 0 });
-  });
-});
-
-// ---------------------------------------------------------------------------------------------------------------
 describe("Every plan's allowances are what the entitlement layer enforces", () => {
   for (const k of PLAN_ORDER) {
     test(`${k}`, async () => {
@@ -443,7 +388,6 @@ describe("Every plan's allowances are what the entitlement layer enforces", () =
       const st = await as(B, (t) => getPlanStatus(t));
       assert.equal(st.plan.key, k as PlanKey);
       assert.equal(st.reviewRoom, Math.max(0, PLANS[k].publishedReviewAllowance - st.usage.publishedReviews));
-      assert.equal(st.mediaRoom, Math.max(0, PLANS[k].publicMediaBytes - st.usage.publicMediaBytes));
     });
   }
 });

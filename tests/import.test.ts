@@ -1,25 +1,21 @@
 // Checkpoint 6: import engine + CSV importer. Numbers refer to the checkpoint's required test list.
 // Offline: Shopify is FakeShopify; tests/no-network.ts blocks real network access; data is fictional.
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { crc32, deflateRawSync } from "node:zlib";
 import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import sharp from "sharp";
 import prisma from "../app/db.server";
 import { computeAggregate } from "../app/lib/aggregates.server";
 import { reconcileBilling } from "../app/lib/billing.server";
-import { getPlanStatus, releaseEligibleMedia, releaseEligibleReviews } from "../app/lib/entitlements.server";
+import { getPlanStatus, releaseEligibleReviews } from "../app/lib/entitlements.server";
 import {
   analyseRecords, cancelImport, createImport, fallbackId, getImport, IMPORT_LIMITS, ImportError, parseReviewDate, runImport, skuLookupFromAdmin,
 } from "../app/lib/import.server";
-import { readPrivate } from "../app/lib/media.server";
+import { listObjects } from "../app/lib/storage.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { action as importsAction, loader as importsLoader } from "../app/routes/app.imports._index";
-import { loader as mediaLoader } from "../app/routes/media.$";
-import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
-import { adminRequest, args, FakeShopify, installMerchant, owner, proxyRequest, resetDb, run, type Merchant } from "./helpers";
+import { adminRequest, args, FakeShopify, installMerchant, owner, resetDb, run, type Merchant } from "./helpers";
 
 after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 
@@ -41,31 +37,14 @@ const csvOf = (rows: Record<string, string>[]) => {
   return Buffer.from([cols.join(","), ...rows.map((r) => cols.map((c) => q(r[c] ?? "")).join(","))].join("\n"));
 };
 const row = (o: Record<string, string> = {}) => ({ review_id: `r${++n}`, product_id: "9800000000001", rating: "5", title: "Fine", body: `Body ${n}`, reviewer_name: "Pat Example", review_date: "2025-01-01T10:00:00Z", ...o });
-/** ZIP writer for tests (stored or deflated entries; names are used verbatim). */
-function zipOf(files: Record<string, Buffer>, deflate = true) {
-  const locals: Buffer[] = [], centrals: Buffer[] = [];
-  let offset = 0;
-  for (const [name, data] of Object.entries(files)) {
-    const nameBuf = Buffer.from(name);
-    const body = deflate ? deflateRawSync(data) : data;
-    const crc = crc32(data) >>> 0;
-    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(deflate ? 8 : 0, 8); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(body.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(nameBuf.length, 26);
-    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(deflate ? 8 : 0, 10); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(body.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(nameBuf.length, 28); ch.writeUInt32LE(offset, 42);
-    locals.push(lh, nameBuf, body); centrals.push(ch, nameBuf);
-    offset += 30 + nameBuf.length + body.length;
-  }
-  const cd = Buffer.concat(centrals);
-  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, cd, end]);
-}
-const png = (hue: number, w = 60) => sharp({ create: { width: w, height: 40, channels: 3, background: { r: hue, g: 120, b: 200 } } }).png().toBuffer();
-async function importNow(m: Merchant, rows: Record<string, string>[], o: { images?: Buffer; publishMode?: "publish" | "moderate"; shopify?: FakeShopify; source?: string; batchRows?: number; fetchImage?: (url: string) => Promise<Buffer> } = {}) {
-  const { jobId } = await createImport(m.shopId, { csv: csvOf(rows), images: o.images ?? null, options: { publishMode: o.publishMode ?? "publish", source: o.source }, actor: "test", skuLookup: o.shopify ? skuLookupFromAdmin(o.shopify.graphql) : null });
-  await runImport(m.shopId, jobId, { batchRows: o.batchRows, fetchImage: o.fetchImage });
+async function importNow(m: Merchant, rows: Record<string, string>[], o: { publishMode?: "publish" | "moderate"; shopify?: FakeShopify; source?: string; batchRows?: number } = {}) {
+  const { jobId } = await createImport(m.shopId, { csv: csvOf(rows), options: { publishMode: o.publishMode ?? "publish", source: o.source }, actor: "test", skuLookup: o.shopify ? skuLookupFromAdmin(o.shopify.graphql) : null });
+  await runImport(m.shopId, jobId, { batchRows: o.batchRows });
   return (await getImport(m.shopId, jobId))!;
 }
 const C = (j: { counts: unknown }) => j.counts as Record<string, number>;
-const A = (j: { analysis: unknown }) => j.analysis as Record<string, number> & { problems: { record: number; code: string | null; warnings: string[]; images: string[] }[] };
+const listObjectsOf = async (m: Merchant) => (await listObjects(`s/${m.shopId}/`)).map((o) => o.key);
+const A = (j: { analysis: unknown }) => j.analysis as Record<string, number> & { problems: { record: number; code: string | null; warnings: string[] }[] };
 const reviewsOf = (m: Merchant) => owner.review.findMany({ where: { shopId: m.shopId }, orderBy: { sourceReviewId: "asc" } });
 const publishedIds = async (m: Merchant) => (await owner.review.findMany({ where: { shopId: m.shopId, status: "published", holdReason: null }, select: { sourceReviewId: true } })).map((r) => r.sourceReviewId).sort();
 const setPlan = (m: Merchant, handle: string | null) => { const s = new FakeShopify(); if (handle) s.subscriptions = [{ id: `gid://shopify/AppSubscription/${handle}`, name: handle, status: "ACTIVE", planHandle: handle }]; return reconcileBilling(m.shopId, s.graphql); };
@@ -153,22 +132,20 @@ describe("Basics", () => {
 
 // ---------------------------------------------------------------------------------------------------------------
 describe("Idempotency, retry and resume", () => {
-  test("8. re-importing the same CSV changes nothing: no duplicate reviews, replies, media, moderation rows, dates, states or allowance use", async () => {
+  test("8. re-importing the same CSV changes nothing: no duplicate reviews, replies, moderation rows, dates, states or allowance use", async () => {
     const m = await emptyShop("q");
     await addProducts(m, [P1]);
-    const zip = zipOf({ "a.png": await png(10), "b.png": await png(90) });
-    const rows = [row({ review_id: "i-1", reply: "Thanks!", image_files: "a.png" }), row({ review_id: "i-2", image_files: "b.png", status: "pending" }), row({ review_id: "i-3" })];
-    const first = await importNow(m, rows, { images: zip });
+    const rows = [row({ review_id: "i-1", reply: "Thanks!" }), row({ review_id: "i-2", status: "pending" }), row({ review_id: "i-3" })];
+    const first = await importNow(m, rows);
     const snap = async () => ({
       reviews: await reviewsOf(m), // entire rows, including updatedAt: a re-import must not touch them
       replies: await owner.reviewReply.findMany({ where: { shopId: m.shopId }, orderBy: { reviewId: "asc" } }),
-      images: await owner.reviewImage.findMany({ where: { shopId: m.shopId }, orderBy: { publicId: "asc" } }),
       moderation: await owner.moderationAction.count({ where: { shopId: m.shopId } }),
       usage: (await withTenant(m.shopId, (t) => getPlanStatus(t))).usage,
     });
     const before = await snap();
-    const second = await importNow(m, rows, { images: zip });
-    assert.deepEqual([C(second).imported, C(second).alreadyImported, C(second).published, C(second).planLimited, C(second).mediaAccepted], [0, 3, 0, 0, 0]);
+    const second = await importNow(m, rows);
+    assert.deepEqual([C(second).imported, C(second).alreadyImported, C(second).published, C(second).planLimited], [0, 3, 0, 0]);
     assert.deepEqual(await snap(), before);
     assert.equal(C(first).repliesImported, 1);
   });
@@ -391,86 +368,26 @@ describe("Plan limits on import (date order only)", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-describe("Photos", () => {
-  let m: Merchant;
-  before(async () => {
-    m = await emptyShop("y");
-    await addProducts(m, [P1, P2]);
-  });
-
-  test("37 + 39 + 40 + 41. path traversal, remote URLs, oversized, zip-bomb, unsupported and >5 images are rejected deterministically", async () => {
-    const big = Buffer.alloc(IMPORT_LIMITS.imageBytes + 1, 1);
-    const zip = zipOf({
-      "ok-1.png": await png(1), "ok-2.png": await png(2), "ok-3.png": await png(3), "ok-4.png": await png(4), "ok-5.png": await png(5), "ok-6.png": await png(6),
-      "big.png": big, "bomb.png": Buffer.alloc(25 * 1024 * 1024, 0), "anim.gif": Buffer.from("GIF89a....."), "notes.txt": Buffer.from("hello"),
-      "../escape.png": await png(7),
-    });
+describe("Photos are not supported (product decision 2026-10-04)", () => {
+  test("photo columns (files or https links) are ignored: the review imports, nothing photo-related is stored, fetched or reported", async () => {
+    const m = await emptyShop("y");
+    await addProducts(m, [P1]);
     const j = await importNow(m, [
-      row({ review_id: "img-many", image_files: "ok-1.png;ok-2.png;ok-3.png;ok-4.png;ok-5.png;ok-6.png" }),
-      row({ review_id: "img-bad", image_files: "../escape.png|/etc/passwd|C:/x.png|a/../../b.png|https://example.com/x.jpg|big.png|bomb.png|anim.gif|notes.txt|ok-1.png" }),
-    ], { images: zip, fetchImage: async () => { throw new Error("remote fetch not expected for refused refs"); } });
-    const many = await owner.reviewImage.findMany({ where: { review: { sourceReviewId: "img-many", shopId: m.shopId } }, orderBy: { position: "asc" } });
-    assert.deepEqual(many.map((i) => i.position), [0, 1, 2, 3, 4]); // first five listed, sixth refused
-    const bad = A(j).problems.find((p) => p.record === 2)!;
-    // Listed order decides: the first five references are checked, everything after the fifth is refused. (The https
-    // link in fifth place is a valid reference — downloaded SSRF-safely at run time since checkpoint 8.)
-    assert.deepEqual(bad.images, ["invalid_path", "invalid_path", "invalid_path", "invalid_path", ...Array(5).fill("too_many_images")]);
-    assert.equal(await owner.reviewImage.count({ where: { review: { sourceReviewId: "img-bad", shopId: m.shopId } } }), 0);
-    assert.equal(C(j).mediaAccepted, 5);
-  });
-
-  test("28 + 29 + 30 + 46. storage-limited photos: original kept privately, never public, strict date order, photo count excludes them", async () => {
-    const s = await emptyShop("z");
-    await addProducts(s, [P1]);
-    // Fill the Free 500 MB public allowance completely (an earlier, already public photo).
-    await withTenant(s.shopId, async ({ db, shopId }) => {
-      const p = await db.product.findFirstOrThrow({ where: { shopId } });
-      const r = await db.review.create({ data: { shopId, productId: p.id, source: "seed", sourceReviewId: "filler", rating: 5, body: "f", reviewerName: "F", reviewDate: new Date("2019-01-01"), status: "published" } });
-      await db.reviewImage.create({ data: { shopId, reviewId: r.id, originalFilename: "f", storageKey: `s/${shopId}/originals/f.jpg`, thumbKey: "x", largeKey: "y", contentType: "image/jpeg", fileSize: 1, sha256: "f".repeat(64), publicBytes: 500 * 1024 ** 2, mediaStatus: "published" } });
-    });
-    const zip = zipOf({ "early-large.png": await png(30, 900), "late-small.png": await png(60, 20) });
-    await importNow(s, [
-      row({ review_id: "early", image_files: "early-large.png", review_date: "2024-01-01T00:00:00Z" }),
-      row({ review_id: "late", image_files: "late-small.png", review_date: "2024-06-01T00:00:00Z" }),
-    ], { images: zip });
-    const imgs = await owner.reviewImage.findMany({ where: { shopId: s.shopId, review: { sourceReviewId: { in: ["early", "late"] } } }, include: { review: true } });
-    assert.ok(imgs.every((i) => i.mediaStatus === "storage_limited"));
-    for (const i of imgs) {
-      assert.ok(await readPrivate(i.storageKey)); // original retained privately
-      assert.equal((await run(() => mediaLoader(args<LoaderFunctionArgs>(new Request(`http://x/media/${i.publicId}-320.webp`), { "*": `${i.publicId}-320.webp` })))).response?.status, 404);
-    }
-    const body = JSON.stringify(await (await proxyList(args<LoaderFunctionArgs>(proxyRequest(s.domain, `products/${P1.id}/reviews`, { summary: "1" }), { id: String(P1.id) }))).json());
-    for (const i of imgs) assert.ok(!body.includes(i.publicId));
-    // The reviews themselves are public; photo-review count excludes storage-limited photos.
-    assert.deepEqual(await publishedIds(s), ["early", "filler", "late"]);
-    const p = await owner.product.findFirstOrThrow({ where: { shopId: s.shopId } });
-    assert.equal(p.photoReviewCount, 1); // only the filler's public photo
-    // Room only for the later, smaller photo: it must NOT jump ahead of the earlier, larger one.
-    const early = imgs.find((i) => i.review.sourceReviewId === "early")!;
-    const late = imgs.find((i) => i.review.sourceReviewId === "late")!;
-    assert.ok(late.publicBytes < early.publicBytes);
-    await owner.reviewImage.updateMany({ where: { shopId: s.shopId, sha256: "f".repeat(64) }, data: { publicBytes: 500 * 1024 ** 2 - late.publicBytes } });
-    assert.deepEqual(await withTenant(s.shopId, (t) => releaseEligibleMedia(t)), { released: 0, stillLimited: 2 });
-    await owner.reviewImage.updateMany({ where: { shopId: s.shopId, sha256: "f".repeat(64) }, data: { publicBytes: 1 } });
-    assert.deepEqual(await withTenant(s.shopId, (t) => releaseEligibleMedia(t)), { released: 2, stillLimited: 0 });
-  });
-
-  test("31. photos of hidden (or pending / rejected) imported reviews are never served", async () => {
-    const zip = zipOf({ "h.png": await png(120), "p.png": await png(140) });
-    await importNow(m, [row({ review_id: "hid", status: "hidden", image_files: "h.png" }), row({ review_id: "pen", status: "pending", image_files: "p.png" })], { images: zip });
-    const imgs = await owner.reviewImage.findMany({ where: { shopId: m.shopId, review: { sourceReviewId: { in: ["hid", "pen"] } } } });
-    assert.equal(imgs.length, 2);
-    for (const i of imgs) assert.equal((await run(() => mediaLoader(args<LoaderFunctionArgs>(new Request(`http://x/media/${i.publicId}-320.webp`), { "*": `${i.publicId}-320.webp` })))).response?.status, 404);
+      row({ review_id: "img-file", image_files: "a.png;b.jpg" }),
+      row({ review_id: "img-link", photos: "https://example.com/x.jpg", images: "../escape.png" }),
+    ]);
+    assert.equal(j.status, "completed");
+    assert.deepEqual([C(j).imported, C(j).published], [2, 2]);
+    assert.ok(!/image|photo|media/i.test(JSON.stringify({ analysis: j.analysis, counts: j.counts })));
+    assert.deepEqual(await listObjectsOf(m), [`s/${m.shopId}/imports/${j.id}/source.csv`]); // only the CSV itself
   });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
 describe("Limits, privacy, aggregates and the rating cache", () => {
-  test("38. oversized CSV and archive are refused before anything is stored", async () => {
+  test("38. an oversized CSV is refused before anything is stored", async () => {
     const m = await emptyShop("aa");
     await assert.rejects(createImport(m.shopId, { csv: Buffer.alloc(IMPORT_LIMITS.csvBytes + 1, 0x61), options: { publishMode: "publish" }, actor: "x" }), (e: unknown) => e instanceof ImportError && e.code === "csv_too_large");
-    await assert.rejects(createImport(m.shopId, { csv: csvOf([row()]), images: { length: IMPORT_LIMITS.archiveBytes + 1 } as Buffer, options: { publishMode: "publish" }, actor: "x" }), (e: unknown) => e instanceof ImportError && e.code === "archive_too_large");
-    await assert.rejects(createImport(m.shopId, { csv: csvOf([row()]), images: Buffer.from("not a zip"), options: { publishMode: "publish" }, actor: "x" }), (e: unknown) => e instanceof ImportError && e.code === "archive_invalid");
     assert.equal(await owner.importJob.count({ where: { shopId: m.shopId } }), 0);
   });
 
@@ -508,7 +425,7 @@ describe("Limits, privacy, aggregates and the rating cache", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-describe("Synthetic fixture end to end (~1,150 reviews, 90 products, 160 images)", () => {
+describe("Synthetic fixture end to end (~1,150 reviews, 90 products)", () => {
   test("imports with the exact expected outcome on Free", async () => {
     const dir = path.resolve("fixtures/synthetic");
     const exp = JSON.parse(await readFile(path.join(dir, "expectations.json"), "utf8"));
@@ -518,9 +435,7 @@ describe("Synthetic fixture end to end (~1,150 reviews, 90 products, 160 images)
     await addProducts(m, catalogue.map((p) => ({ id: BigInt(p.id), handle: p.handle, title: p.title })));
     const shopify = new FakeShopify();
     for (const p of catalogue) for (const s of p.skus) shopify.skus.set(s, [BigInt(p.id)]);
-    const files: Record<string, Buffer> = {};
-    for (const f of await readdir(path.join(dir, "images"))) files[f] = await readFile(path.join(dir, "images", f));
-    const { jobId } = await createImport(m.shopId, { csv: await readFile(path.join(dir, "reviews.csv")), images: zipOf(files), options: { publishMode: "publish", source: "synthetic" }, actor: "test", skuLookup: skuLookupFromAdmin(shopify.graphql) });
+    const { jobId } = await createImport(m.shopId, { csv: await readFile(path.join(dir, "reviews.csv")), options: { publishMode: "publish", source: "synthetic" }, actor: "test", skuLookup: skuLookupFromAdmin(shopify.graphql) });
     await runImport(m.shopId, jobId);
     const j = (await getImport(m.shopId, jobId))!;
     assert.equal(j.status, "completed_with_warnings");
@@ -535,7 +450,6 @@ describe("Synthetic fixture end to end (~1,150 reviews, 90 products, 160 images)
     const titleOnly = j.matches.filter((x) => x.reason === "title_only_needs_confirmation");
     assert.equal(titleOnly.length, 9); // 8 unique titles + 1 shared title
     assert.ok(titleOnly.every((x) => x.status === "unmatched" && x.productId === null));
-    assert.ok(C(j).mediaRejected >= exp.images_missing + exp.images_corrupt);
     assert.ok(await owner.review.count({ where: { shopId: m.shopId, flags: { has: "cross_product_repeat" } } }) >= exp.cross_product_rows - 5);
     assert.ok(await owner.review.count({ where: { shopId: m.shopId, flags: { has: "possible_duplicate" } } }) >= exp.duplicate_same_product_extra_rows);
   });

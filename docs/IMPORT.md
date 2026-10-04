@@ -1,13 +1,12 @@
 # Proofly — Review import (Checkpoints 6 and 8)
 
-Implementation: `app/lib/import.server.ts` (engine), `app/lib/csv.ts` (RFC 4180 parser), `app/lib/zip.server.ts`
-(read-only image archive reader), `app/lib/remote-image.server.ts` (SSRF-safe photo downloads), admin routes
+Implementation: `app/lib/import.server.ts` (engine), `app/lib/csv.ts` (RFC 4180 parser), admin routes
 `app.imports._index.tsx` (upload, column mapping, history), `app.imports.$id.tsx` (analysis, manual matching, start,
 resume, cancel, re-import), `app.imports.$id_.report.tsx` (problem report CSV).
 
 ## 0. Guided flow (checkpoint 8)
 
-1. **Upload** CSV (+ optional photos ZIP) and choose "publish" or "hold for moderation". If the required columns
+1. **Upload** the CSV and choose "publish" or "hold for moderation". If the required columns
    aren't recognised, the merchant maps each field to a column and uploads again.
 2. **Check file:** Proofly validates and matches every row and **writes nothing**. The import page shows counts,
    problems in plain English, and the products that need a decision.
@@ -30,12 +29,12 @@ resume, cancel, re-import), `app.imports.$id_.report.tsx` (problem report CSV).
 | Run | `runImport(shopId, jobId)` | Yes, in batches |
 | Finalize | inside `runImport` | Admission only |
 
-- **Upload** checks the limits and stores the CSV and images archive privately (`s/<shop>/imports/<job>/…`, never
+- **Upload** checks the limits and stores the CSV privately (`s/<shop>/imports/<job>/…`, never
   served). It then parses, validates and matches every record and saves the analysis and per-product matches.
   Job → `queued`.
 - **Run** claims the job (`running`) and writes 50 records per transaction, committing the job's cursor and counts in
   the same transaction.
-- **Finalize** admits the job's reviews and photos (date order), recomputes aggregates, flags duplicates and records
+- **Finalize** admits the job's reviews (date order), recomputes aggregates, flags duplicates and records
   the outcome. Job → `completed` or `completed_with_warnings`.
 
 Upload no longer starts the run: the merchant reviews the analysis and starts it (§0). Other states: `failed` (resumable: run again and it continues at the cursor) and `cancelled` (stops at the next batch;
@@ -60,12 +59,12 @@ uninstalled shops can't import.
 | Review date | `review_date`, `date`, `created_at` | yes | ISO 8601 date or date-time, or `YYYY-MM-DD HH:MM[:SS]` (UTC unless an offset is given). Ambiguous formats like `03/04/2024` are refused, never guessed. Not in the future (+1 day), not before 1990 |
 | Status | `status`, `state` | no | §5 |
 | Reply | `reply`, `reply_content`, `merchant_reply`, `store_reply` | no | stored; public visibility feature-gated ([BILLING.md §10](BILLING.md)) |
-| Photos | `image_files`, `images`, `photos` | no | archive member names separated by `;` or `\|` (§6) |
 
-- **Other columns are ignored and never stored.** This includes email, phone, customer and order columns. V1 stores no
+- **Other columns are ignored and never stored.** This includes email, phone, customer, order and photo columns
+  (Proofly has no review photos, product decision 2026-10-04). V1 stores no
   reviewer contact or customer/order identity.
 - **Explicit mapping:** `options.mapping` may name the column for any field (provider presets only map columns).
-- **Report contents:** problem rows (record number, code, warnings, image problems, source id) — never bodies, names,
+- **Report contents:** problem rows (record number, code, warnings, source id) — never bodies, names,
   emails or file paths.
 
 ## 3. Product matching
@@ -101,7 +100,7 @@ Rules:
 - **Same id twice in one file:** identical records → imported once (`duplicate_source_row`); different content → none
   imported (`conflicting_duplicate_id`), so the result never depends on row order.
 - **Re-importing the same file:** creates nothing and changes nothing. Existing reviews keep their dates, states,
-  replies, photos and moderation history, and use no extra allowance.
+  replies and moderation history, and use no extra allowance.
   - **One exception:** rows created by an import that never finished (failed or cancelled) are adopted by the new
     import, so they're admitted in date order with the rest.
 - **Content duplicates** (same reviewer and text): imported, flagged `possible_duplicate` (same product) or
@@ -122,19 +121,8 @@ Imported reviews are always unverified.
 
 ## 6. Photos
 
-- **Sources:** members of the optional ZIP archive (by name) and `https://` links. Links are downloaded SSRF-safely:
-  - https on port 443 only, no credentials in the URL;
-  - every DNS answer must be a public unicast address, and the connection is pinned to the vetted address (no DNS
-    rebinding);
-  - redirects are re-validated, at most 3;
-  - 10 s timeout and a 20 MB cap while streaming.
-
-  `http://` and other schemes are refused. A failed download is reported per row by code, never with its URL.
-- **Refused** (the review still imports): path-like references (`..`, absolute, drive letters), more than 5 per review
-  (the first five listed are kept), members over 20 MB (refused before and during inflation, zip-bomb safe), types
-  other than JPEG/PNG/WebP (sniffed), corrupt files, and the same image twice.
-- **Accepted photos:** private original + optimised WebP copies + an opaque public id. Each starts storage-limited and
-  is admitted at finalize.
+Not supported. Photo columns (file names or links) are ignored like any other unknown column: nothing is downloaded,
+stored or reported, and the review itself imports normally.
 
 ## 7. Plan limits (locked rules; implemented by `entitlements.server`)
 
@@ -143,17 +131,13 @@ Imported reviews are always unverified.
   `(source, source_review_id)`; it never depends on rating, content or row order.
 - **Grandfathering:** published reviews stay public after a downgrade, and imports then hold new reviews.
 - **No automatic publication on upgrade:** the merchant uses "Publish eligible reviews".
-- **Photos:** admitted by date order while the public-media allowance has room. The first photo that doesn't fit stops
-  the release, so a later, smaller photo never jumps ahead. Storage-limited photos keep their private original, are
-  never served, and their review can still publish.
 - **Aggregates and rating cache:** aggregates are recomputed through `recomputeProduct`; the Shopify rating cache is
   synced through `rating-cache.server` (Proofly-managed products only). The importer never writes metafields or
   product data.
 
 ## 8. Limits (import safety, not retention)
 
-CSV ≤ 50 MB, images archive ≤ 2 GB (no ZIP64, no encryption), image ≤ 20 MB, ≤ 5 images per review, JPEG/PNG/WebP
-only, one active import per shop. Exceeding a limit refuses the upload or the item; it never deletes previously
+CSV ≤ 50 MB, one active import per shop. Exceeding a limit refuses the upload or the item; it never deletes previously
 imported data.
 
 ## 9. Merchant-visible outcome
@@ -163,7 +147,6 @@ imported data.
 - **Matching:** unmatched and ambiguous rows, plus per-product matches with candidates.
 - **Reviews:** imported, already imported, adopted, published, plan-limited, awaiting moderation, hidden and rejected.
 - **Replies:** imported, publicly visible, and suppressed by plan.
-- **Media:** accepted, rejected, public and storage-limited.
 - **Other:** warnings, status and error.
 
 The dashboard shows the latest import, and `/app/imports` shows history with resume and cancel.

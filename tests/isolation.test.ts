@@ -9,6 +9,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { moderate, moderationHistory, saveReply } from "../app/lib/moderation.server";
 import { listReviews, parseListParams, ratingsByHandle } from "../app/lib/reviews.server";
+import { importFileKey } from "../app/lib/storage.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
 import { action as reviewAction, loader as reviewLoader } from "../app/routes/app.reviews.$id";
 import { loader as reviewsListLoader } from "../app/routes/app.reviews._index";
@@ -72,18 +73,14 @@ describe("2. Merchant A cannot modify Merchant B's review", () => {
   });
 });
 
-describe("3. Merchant A cannot read Merchant B's images", () => {
-  test("library: B's image records are invisible to A", async () => {
-    assert.deepEqual(await asA(({ db }) => db.reviewImage.findMany({ where: { reviewId: B.reviewId } })), []);
-    assert.equal(await asA(({ db }) => db.reviewImage.findFirst({ where: { id: B.imageId } })), null);
-  });
-  test("storefront: A's product list for B's product never returns B's reviews or image URLs", async () => {
+describe("3. Merchant A cannot read Merchant B's reviews or stored files", () => {
+  test("storefront: A's product list for B's product never returns B's reviews", async () => {
     const res = await asA((t) => listReviews(t, B.productId, parseListParams(new URL("http://x/?page=1")), { replies: true }));
     assert.deepEqual(res.reviews, []);
   });
-  test("storage keys are namespaced per shop", async () => {
-    const imgs = await owner.reviewImage.findMany();
-    for (const i of imgs) for (const k of [i.storageKey, i.thumbKey, i.largeKey]) assert.ok(k.startsWith(`s/${i.shopId}/`), k);
+  test("stored import files are namespaced per shop", () => {
+    for (const m of [A, B]) assert.ok(importFileKey(m.shopId, m.importJobId).startsWith(`s/${m.shopId}/imports/`));
+    assert.notEqual(importFileKey(A.shopId, "same-job"), importFileKey(B.shopId, "same-job"));
   });
 });
 

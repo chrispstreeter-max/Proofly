@@ -6,20 +6,16 @@
  */
 export type PlanKey = "FREE" | "STARTER" | "GROWTH" | "PRO" | "SCALE";
 
-const MB = 1024 ** 2;
-const GB = 1024 ** 3;
-
 /**
  * Features. `released: false` = exists in the commercial model but is not built: never enabled, never shown.
  * Turning a feature on is a code change here once it ships — never a per-plan flag alone.
  */
 export const FEATURES = {
   reviewDisplay: { label: "Review widget, rating summary and product-card stars", released: true },
-  photoReviews: { label: "Photo reviews", released: true },
   moderation: { label: "Review moderation", released: true },
   replies: { label: "Public replies to reviews", released: true },
   prioritySupport: { label: "Priority support", released: true },
-  reviewImport: { label: "Review import (CSV and photos)", released: true }, // guided importer: checkpoints 6 + 8
+  reviewImport: { label: "Review import (CSV)", released: true }, // guided importer: checkpoints 6 + 8
   csvExport: { label: "Review export (CSV)", released: true },
   unlimitedMigration: { label: "Unlimited review migration", released: false },
   advancedCustomisation: { label: "Advanced widget customisation", released: false },
@@ -37,7 +33,6 @@ export interface Plan {
   monthlyPriceUsd: number;
   annualPriceUsd: number;
   publishedReviewAllowance: number;
-  publicMediaBytes: number;
   isFree: boolean;
   mostPopular: boolean;
   features: readonly Feature[];
@@ -45,17 +40,17 @@ export interface Plan {
   reviewRequestsPerMonth: number;
 }
 
-const BASE: Feature[] = ["reviewDisplay", "photoReviews", "moderation", "reviewImport", "csvExport"];
+const BASE: Feature[] = ["reviewDisplay", "moderation", "reviewImport", "csvExport"];
 const STARTER: Feature[] = [...BASE, "replies", "advancedCustomisation"];
 const GROWTH: Feature[] = [...STARTER, "unlimitedMigration", "advancedAnalytics", "prioritySupport", "reviewRequests", "verifiedPurchase"];
 const PRO: Feature[] = [...GROWTH, "apiAccess"];
 
 export const PLANS: Readonly<Record<PlanKey, Plan>> = Object.freeze({
-  FREE: { key: "FREE", name: "Free", shopifyPlanHandle: "free", monthlyPriceUsd: 0, annualPriceUsd: 0, publishedReviewAllowance: 100, publicMediaBytes: 500 * MB, isFree: true, mostPopular: false, features: BASE, reviewRequestsPerMonth: 0 },
-  STARTER: { key: "STARTER", name: "Starter", shopifyPlanHandle: "starter", monthlyPriceUsd: 9, annualPriceUsd: 90, publishedReviewAllowance: 1_000, publicMediaBytes: 2 * GB, isFree: false, mostPopular: false, features: STARTER, reviewRequestsPerMonth: 0 },
-  GROWTH: { key: "GROWTH", name: "Growth", shopifyPlanHandle: "growth", monthlyPriceUsd: 19, annualPriceUsd: 190, publishedReviewAllowance: 5_000, publicMediaBytes: 10 * GB, isFree: false, mostPopular: true, features: GROWTH, reviewRequestsPerMonth: 0 },
-  PRO: { key: "PRO", name: "Pro", shopifyPlanHandle: "pro", monthlyPriceUsd: 39, annualPriceUsd: 390, publishedReviewAllowance: 25_000, publicMediaBytes: 50 * GB, isFree: false, mostPopular: false, features: PRO, reviewRequestsPerMonth: 0 },
-  SCALE: { key: "SCALE", name: "Scale", shopifyPlanHandle: "scale", monthlyPriceUsd: 79, annualPriceUsd: 790, publishedReviewAllowance: 100_000, publicMediaBytes: 250 * GB, isFree: false, mostPopular: false, features: PRO, reviewRequestsPerMonth: 25_000 },
+  FREE: { key: "FREE", name: "Free", shopifyPlanHandle: "free", monthlyPriceUsd: 0, annualPriceUsd: 0, publishedReviewAllowance: 100, isFree: true, mostPopular: false, features: BASE, reviewRequestsPerMonth: 0 },
+  STARTER: { key: "STARTER", name: "Starter", shopifyPlanHandle: "starter", monthlyPriceUsd: 9, annualPriceUsd: 90, publishedReviewAllowance: 1_000, isFree: false, mostPopular: false, features: STARTER, reviewRequestsPerMonth: 0 },
+  GROWTH: { key: "GROWTH", name: "Growth", shopifyPlanHandle: "growth", monthlyPriceUsd: 19, annualPriceUsd: 190, publishedReviewAllowance: 5_000, isFree: false, mostPopular: true, features: GROWTH, reviewRequestsPerMonth: 0 },
+  PRO: { key: "PRO", name: "Pro", shopifyPlanHandle: "pro", monthlyPriceUsd: 39, annualPriceUsd: 390, publishedReviewAllowance: 25_000, isFree: false, mostPopular: false, features: PRO, reviewRequestsPerMonth: 0 },
+  SCALE: { key: "SCALE", name: "Scale", shopifyPlanHandle: "scale", monthlyPriceUsd: 79, annualPriceUsd: 790, publishedReviewAllowance: 100_000, isFree: false, mostPopular: false, features: PRO, reviewRequestsPerMonth: 25_000 },
 } satisfies Record<PlanKey, Plan>);
 for (const p of Object.values(PLANS)) Object.freeze(p);
 
@@ -74,5 +69,3 @@ export const annualSavingPercent = (plan: PlanKey) => {
   const p = PLANS[plan];
   return p.isFree ? 0 : Math.round((1 - p.annualPriceUsd / (12 * p.monthlyPriceUsd)) * 100);
 };
-
-export const formatBytes = (n: number) => (n >= GB ? `${+(n / GB).toFixed(1)} GB` : `${Math.round(n / MB)} MB`);

@@ -25,10 +25,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         orderBy: { title: "asc" }, take: 20, select: { id: true, title: true, handle: true },
       }))
     : [];
-  const a = job.analysis as { problems?: { record: number; code: string | null; warnings: string[]; images: string[] }[] } & Record<string, unknown>;
+  const a = job.analysis as { problems?: { record: number; code: string | null; warnings: string[] }[] } & Record<string, unknown>;
   return {
     job: { ...job, createdAt: job.createdAt.toISOString().slice(0, 16).replace("T", " "), finishedAt: job.finishedAt?.toISOString().slice(0, 16).replace("T", " ") ?? null },
-    problems: (a.problems ?? []).slice(0, 50).map((p) => ({ record: p.record, text: [p.code, ...p.warnings, ...p.images].filter(Boolean).map((c) => explain(c as string)).join(" ") })),
+    problems: (a.problems ?? []).slice(0, 50).map((p) => ({ record: p.record, text: [p.code, ...p.warnings].filter(Boolean).map((c) => explain(c as string)).join(" ") })),
     attention: job.matches.filter((m) => m.status !== "matched" || m.method === "manual").map((m) => ({ ...m, refKey: JSON.stringify(m.ref), explanation: m.reason ? explain(m.reason) : "" })),
     pq, search, retentionDays: IMPORT_FILE_RETENTION_DAYS,
   };
@@ -96,7 +96,7 @@ export default function ImportDetail() {
         <s-paragraph>
           {live && <>Importing… {job.processedRows} of {job.totalRows} rows processed. </>}
           {a.totalRows} rows · {a.validRows} ready to import · {a.invalidRows} with errors · {a.duplicateSourceRows} duplicates ·
-          {" "}{a.unmatchedRows} unmatched product · {a.ambiguousRows} ambiguous product · {a.imagesReferenced} photos referenced. Started {job.createdAt} UTC.
+          {" "}{a.unmatchedRows} unmatched product · {a.ambiguousRows} ambiguous product. Started {job.createdAt} UTC.
         </s-paragraph>
         <s-stack direction="inline" gap="base">
           {job.status === "queued" && <Form method="post"><input type="hidden" name="intent" value="start" /><s-button type="submit" variant="primary" loading={busy || undefined}>{unresolved ? `Start import (${unresolved} product${unresolved === 1 ? "" : "s"} unresolved — those rows are skipped)` : "Start import"}</s-button></Form>}
@@ -113,7 +113,7 @@ export default function ImportDetail() {
         <s-section heading="Result">
           <s-paragraph>
             {c.imported} imported · {c.published ?? 0} published · {c.planLimited ?? 0} held by your plan limit · {c.awaitingModeration ?? 0} awaiting moderation ·
-            {" "}{c.alreadyImported ?? 0} already imported earlier · {c.mediaAccepted ?? 0} photos ({c.mediaStorageLimited ?? 0} over your storage allowance, {c.mediaRejected ?? 0} rejected) ·
+            {" "}{c.alreadyImported ?? 0} already imported earlier ·
             {" "}{c.repliesImported ?? 0} replies ({c.repliesSuppressed ?? 0} hidden until your plan includes replies). Nothing is deleted because of a plan limit.
           </s-paragraph>
         </s-section>

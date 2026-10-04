@@ -31,12 +31,11 @@ export interface Merchant {
   domain: string;
   productId: string;
   reviewId: string;
-  imageId: string;
   importJobId: string;
   moderationActionId: string;
 }
 
-/** Installs a fictional merchant: shop row + encrypted offline session + one product/review/image/reply/etc. */
+/** Installs a fictional merchant: shop row + encrypted offline session + one product/review/reply/etc. */
 export async function installMerchant(domain: string, label: string): Promise<Merchant> {
   const shop = await registerShop({
     shopDomain: domain, shopifyShopId: BigInt(9_100_000_000_000 + Math.floor(Math.random() * 1e6)), shopName: `Fixture Store ${label}`,
@@ -53,17 +52,10 @@ export async function installMerchant(domain: string, label: string): Promise<Me
         body: `Fictional review body for store ${label}.`, reviewerName: `Reviewer ${label} Example`, reviewDate: new Date("2026-01-01T00:00:00Z"), status: "published",
       },
     });
-    const image = await db.reviewImage.create({
-      data: {
-        shopId, reviewId: review.id, originalFilename: "fixture.jpg", storageKey: `s/${shopId}/originals/${review.id}/x.jpg`,
-        thumbKey: `s/${shopId}/r/${review.id}/x-320.webp`, largeKey: `s/${shopId}/r/${review.id}/x-1600.webp`,
-        contentType: "image/jpeg", fileSize: 1234, sha256: "0".repeat(64),
-      },
-    });
     await db.reviewReply.create({ data: { shopId, reviewId: review.id, reply: `Reply from store ${label}` } });
     const job = await db.importJob.create({ data: { shopId, source: "csv", status: "finished" } });
     const action = await db.moderationAction.create({ data: { shopId, reviewId: review.id, action: "approve", fromStatus: "pending", toStatus: "published", actor: "fixture" } });
-    return { shopId, reviewBody: review.body, domain, productId: product.id, reviewId: review.id, imageId: image.id, importJobId: job.id, moderationActionId: action.id };
+    return { shopId, reviewBody: review.body, domain, productId: product.id, reviewId: review.id, importJobId: job.id, moderationActionId: action.id };
   });
 }
 

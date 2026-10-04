@@ -1,11 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { admitMedia, admitReviews } from "./entitlements.server";
-import { ALLOWED_TYPES, sniffType, storeReviewImage } from "./media.server";
+import { admitReviews } from "./entitlements.server";
 import type { Tenant } from "./tenant.server";
 
 type AdminContext = { graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response> } | undefined;
 
-export const LIMITS = { title: 120, body: 5000, name: 60, images: 5, imageBytes: 10 * 1024 * 1024 };
+export const LIMITS = { title: 120, body: 5000, name: 60 };
 
 export class SubmitError extends Error {
   constructor(public field: string, message: string, public status = 400) { super(message); }
@@ -26,16 +25,7 @@ export async function parseSubmission(form: FormData) {
   if (body.length > LIMITS.body) throw new SubmitError("body", `Keep the review under ${LIMITS.body} characters.`);
   if (!name || name.length > LIMITS.name) throw new SubmitError("name", "Enter the name to show with your review.");
 
-  const files = form.getAll("images").filter((f): f is File => typeof f !== "string" && f.size > 0);
-  if (files.length > LIMITS.images) throw new SubmitError("images", `Add up to ${LIMITS.images} photos.`);
-  const images: Buffer[] = [];
-  for (const f of files) {
-    if (f.size > LIMITS.imageBytes) throw new SubmitError("images", "Each photo must be under 10 MB.");
-    const buf = Buffer.from(await f.arrayBuffer());
-    if (!sniffType(buf)) throw new SubmitError("images", `Photos must be ${Object.values(ALLOWED_TYPES).join(", ").toUpperCase()}.`);
-    images.push(buf);
-  }
-  return { rating, title, body, name, images }; // no email: V1 stores no reviewer contact data
+  return { rating, title, body, name }; // no email, no photos: only these fields are ever read from the form
 }
 
 export const PRODUCT_LOOKUP_QUERY = `#graphql
@@ -88,16 +78,9 @@ export async function createReview(
       submitterIpHash: input.ipHash,
     },
   });
-  const imageIds: string[] = [];
-  for (const [position, buf] of data.images.entries()) {
-    const stored = await storeReviewImage(shopId, review.id, buf);
-    imageIds.push((await db.reviewImage.create({ data: { shopId, reviewId: review.id, position, originalFilename: `upload-${position + 1}`, ...stored } })).id);
-  }
-  // Photos count toward the public-media allowance; ones that don't fit are kept privately as storage-limited.
-  await admitMedia(t, imageIds, "storefront");
   if (autoPublish) await admitReviews(t, [review.id], "storefront");
   await db.auditLog.create({
-    data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id, details: { images: data.images.length } },
+    data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id, },
   });
   return review;
 }

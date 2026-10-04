@@ -5,7 +5,6 @@ import { requireAdminTenant } from "../lib/admin.server";
 import { recomputeAll } from "../lib/aggregates.server";
 import { reconcileIfStale } from "../lib/billing.server";
 import { getPlanStatus } from "../lib/entitlements.server";
-import { formatBytes } from "../lib/plans";
 import { syncCatalog } from "../lib/products.server";
 import { ensureRatingDefinitions, reconcileRatingCache, syncRatingCache } from "../lib/rating-cache.server";
 import { withTenant } from "../lib/tenant.server";
@@ -17,11 +16,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { db, shopId } = t;
     const planStatus = await getPlanStatus(t);
     const lastImport = await db.importJob.findFirst({ where: { shopId }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, counts: true, analysis: true } });
-    const [settings, byStatus, total, withPhotos, flagged, products, unsynced] = await Promise.all([
+    const [settings, byStatus, total, flagged, products, unsynced] = await Promise.all([
       db.shopSettings.findUnique({ where: { shopId } }),
       db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
       db.review.count({ where: { shopId } }),
-      db.review.count({ where: { shopId, images: { some: {} } } }),
       db.review.count({ where: { shopId, NOT: { flags: { isEmpty: true } } } }),
       db.product.count({ where: { shopId, reviewCount: { gt: 0 } } }),
       db.$queryRaw<{ n: bigint; managed: bigint; errors: bigint }[]>`select
@@ -35,7 +33,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const key = process.env.SHOPIFY_API_KEY;
     const status = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
     return {
-      stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, flagged, products },
+      stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, flagged, products },
       unsynced: Number(unsynced[0]?.n ?? 0),
       lastImport: lastImport && {
         id: lastImport.id,
@@ -45,9 +43,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         unmatched: (lastImport.analysis as Record<string, number>).unmatchedRows ?? 0, ambiguous: (lastImport.analysis as Record<string, number>).ambiguousRows ?? 0,
       },
       plan: {
-        name: planStatus.plan.name, allowance: planStatus.plan.publishedReviewAllowance, media: formatBytes(planStatus.plan.publicMediaBytes),
+        name: planStatus.plan.name, allowance: planStatus.plan.publishedReviewAllowance,
         published: planStatus.usage.publishedReviews, planLimited: planStatus.usage.planLimitedReviews, awaiting: planStatus.usage.awaitingModeration,
-        storageLimited: planStatus.usage.storageLimitedPhotos, mediaUsed: formatBytes(planStatus.usage.publicMediaBytes),
         over: planStatus.overReviewAllowance, room: planStatus.reviewRoom, unverified: planStatus.state.verification === "unverified",
       },
       ratings: { managed: Number(unsynced[0]?.managed ?? 0), errors: Number(unsynced[0]?.errors ?? 0) },
@@ -166,7 +163,7 @@ export default function Dashboard() {
               {" "}{lastImport.unmatched} unmatched, {lastImport.ambiguous} ambiguous. <s-link href={`/app/imports/${lastImport.id}`}>{lastImport.unmatched + lastImport.ambiguous ? "Resolve products" : "View import"}</s-link>
             </s-paragraph>
           )}
-          <s-paragraph>Public photo storage: {plan.mediaUsed} of {plan.media}{plan.storageLimited ? ` · ${plan.storageLimited} storage-limited photo${plan.storageLimited === 1 ? "" : "s"}` : ""}.{plan.unverified ? " Plan not yet confirmed with Shopify." : ""}</s-paragraph>
+          {plan.unverified && <s-paragraph>Plan not yet confirmed with Shopify.</s-paragraph>}
         </s-stack>
       </s-section>
 
@@ -177,7 +174,6 @@ export default function Dashboard() {
           <Stat label="Pending" value={stats.pending} href="/app/reviews?status=pending" />
           <Stat label="Rejected" value={stats.rejected} href="/app/reviews?status=rejected" />
           <Stat label="Hidden" value={stats.hidden} href="/app/reviews?status=hidden" />
-          <Stat label="With photos" value={stats.withPhotos} href="/app/reviews?photos=yes" />
           <Stat label="Flagged for review" value={stats.flagged} href="/app/reviews?flagged=yes" />
           <Stat label="Products with reviews" value={stats.products} />
         </s-grid>

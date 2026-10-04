@@ -60,7 +60,6 @@ model Shop {
   subscriptions     Subscription[]
   products          Product[]
   reviews           Review[]
-  reviewImages      ReviewImage[]
   reviewReplies     ReviewReply[]
   reviewRequests    ReviewRequest[]
   moderationActions ModerationAction[]
@@ -74,7 +73,6 @@ model ShopSettings {
   shopId                  String    @id @map("shop_id") @db.Uuid
   widgetEnabled           Boolean   @default(true) @map("widget_enabled")
   reviewSubmissionEnabled Boolean   @default(true) @map("review_submission_enabled")
-  photoReviewsEnabled     Boolean   @default(true) @map("photo_reviews_enabled")
   moderationEnabled       Boolean   @default(true) @map("moderation_enabled")
   themeSettings           Json      @default("{}") @map("theme_settings")
   displaySettings         Json      @default("{}") @map("display_settings")
@@ -186,14 +184,6 @@ enum RatingOwnership {
   proofly_managed
 }
 
-/// Public (optimised) media state. Only `published` media is ever served on the storefront.
-enum MediaStatus {
-  published
-  storage_limited
-  processing
-  failed
-}
-
 model Product {
   id               String          @id @default(uuid()) @db.Uuid
   shopId           String          @map("shop_id") @db.Uuid
@@ -218,8 +208,6 @@ model Product {
   rating3          Int             @default(0) @map("rating_3")
   rating4          Int             @default(0) @map("rating_4")
   rating5          Int             @default(0) @map("rating_5")
-  /// Public reviews with at least one public (published, not storage-limited) photo.
-  photoReviewCount Int             @default(0) @map("photo_review_count")
   ratingOwnership  RatingOwnership @default(unmanaged) @map("rating_ownership")
   ratingManagedAt  DateTime?       @map("rating_managed_at")
   // Last values confirmed written to Shopify's rating metafields (derived cache). Differs from the aggregate = needs sync.
@@ -273,7 +261,6 @@ model Review {
 
   shop              Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
   product           Product            @relation(fields: [shopId, productId], references: [shopId, id], onDelete: Cascade)
-  images            ReviewImage[]
   reply             ReviewReply?
   request           ReviewRequest?
   moderationActions ModerationAction[]
@@ -285,36 +272,6 @@ model Review {
   @@index([shopId, contentHash])
   @@index([shopId, status, reviewDate(sort: Desc)])
   @@map("reviews")
-}
-
-model ReviewImage {
-  id               String      @id @default(uuid()) @db.Uuid
-  shopId           String      @map("shop_id") @db.Uuid
-  reviewId         String      @map("review_id") @db.Uuid
-  originalFilename String      @map("original_filename")
-  storageKey       String      @map("storage_key") // private original (s/<shop>/originals/…)
-  thumbKey         String      @map("thumb_key") // public WebP 320px (s/<shop>/r/…)
-  largeKey         String      @map("large_key") // public WebP 1600px
-  originalUrl      String?     @map("original_url")
-  contentType      String      @map("content_type")
-  fileSize         Int         @map("file_size")
-  sha256           String
-  width            Int?
-  height           Int?
-  position         Int         @default(0)
-  mediaStatus      MediaStatus @default(published) @map("media_status")
-  /// Bytes of the two optimised public derivatives (320 + 1600) — what counts toward the public media allowance.
-  publicBytes      Int         @default(0) @map("public_bytes")
-  /// Opaque public asset id (128 random bits, hex). The ONLY identifier in public media URLs.
-  publicId         String      @unique @default(dbgenerated("replace((gen_random_uuid())::text, '-'::text, ''::text)")) @map("public_id")
-  createdAt        DateTime    @default(now()) @map("created_at")
-
-  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  review Review @relation(fields: [shopId, reviewId], references: [shopId, id], onDelete: Cascade)
-
-  @@unique([reviewId, sha256])
-  @@index([shopId, reviewId])
-  @@map("review_images")
 }
 
 model ReviewReply {
@@ -385,7 +342,6 @@ model ImportJob {
   /// publishMode, column mapping — never a shop or tenant id
   options           Json      @default("{}")
   fileKey           String?   @map("file_key")
-  imagesKey         String?   @map("images_key")
   /// validation + matching result computed before any review is written
   analysis          Json      @default("{}")
   counts            Json      @default("{}")
@@ -398,7 +354,7 @@ model ImportJob {
   heartbeatAt       DateTime? @map("heartbeat_at")
   cancelRequestedAt DateTime? @map("cancel_requested_at")
   finalizedAt       DateTime? @map("finalized_at")
-  /// Set when the retention job deleted the stored source file / images archive (report rows are kept).
+  /// Set when the retention job deleted the stored source file (report rows are kept).
   filesDeletedAt    DateTime? @map("files_deleted_at")
   createdAt         DateTime  @default(now()) @map("created_at")
   finishedAt        DateTime? @map("finished_at")

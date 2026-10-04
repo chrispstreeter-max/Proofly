@@ -1,11 +1,11 @@
 // Security probes (multi-tenant versions of the prototype's probes).
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
 import { after, before, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { action as proxySubmit } from "../app/routes/proxy.reviews";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
-import { loader as media } from "../app/routes/media.$";
 import { loader as devIndex } from "../app/routes/dev._index";
 import { loader as devPreview } from "../app/routes/dev.preview";
 import { loader as devProxy } from "../app/routes/apps.$";
@@ -25,12 +25,25 @@ const submit = (domain: string, label: string, fields: Record<string, string | B
   return proxySubmit(args<ActionFunctionArgs>(proxyRequest(domain, "reviews", {}, { method: "POST", body: fd, headers: { Origin: `https://${storefrontHost(label)}`, "x-forwarded-for": ip } })));
 };
 
-test("honeypot, invalid rating and non-image uploads are rejected", async () => {
+test("honeypot and invalid rating are rejected", async () => {
   assert.equal((await submit(DOMAIN_A, "A", { website: "spam" }, "203.0.113.1")).status, 400);
   assert.equal((await submit(DOMAIN_A, "A", { rating: "9" }, "203.0.113.1")).status, 400);
-  const fake = new File([Buffer.from("not an image")], "x.jpg", { type: "image/jpeg" });
-  assert.equal((await submit(DOMAIN_A, "A", { images: fake }, "203.0.113.1")).status, 400);
   assert.equal(await owner.review.count({ where: { source: "storefront" } }), 0);
+});
+
+// Product decision (2026-10-04): no review photos anywhere.
+test("photos can't be submitted: oversized requests are refused, a file field is ignored and nothing is stored", async () => {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries({ product_id: String(SAME_PRODUCT_ID), rating: "5", body: "Photo probe.", name: "Riley Example" })) fd.set(k, v);
+  fd.set("images", new File([Buffer.alloc(70 * 1024, 1)], "x.jpg", { type: "image/jpeg" }));
+  const big = await proxySubmit(args<ActionFunctionArgs>(proxyRequest(DOMAIN_A, "reviews", {}, { method: "POST", body: fd, headers: { Origin: `https://${storefrontHost("A")}`, "x-forwarded-for": "203.0.113.9", "content-length": String(80 * 1024) } })));
+  assert.equal(big.status, 413);
+  const small = await submit(DOMAIN_A, "A", { body: "Photo probe 2.", images: new File([Buffer.from([0xff, 0xd8, 0xff, 0])], "x.jpg", { type: "image/jpeg" }) }, "203.0.113.9");
+  assert.equal(small.status, 201);
+  assert.equal(await owner.review.count({ where: { source: "storefront", body: "Photo probe 2." } }), 1);
+  const cols = await owner.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM information_schema.columns WHERE table_schema = 'public' AND ((column_name ~ '(photo|image|media)' AND table_name <> 'products') OR table_name = 'review_images')`);
+  assert.equal(cols[0].n, 0n);
+  await owner.review.deleteMany({ where: { source: "storefront", body: "Photo probe 2." } });
 });
 
 test("rate limits are per shop: exhausting shop A does not block shop B", async () => {
@@ -46,11 +59,9 @@ test("public review JSON contains no private fields", async () => {
   for (const k of ["email", "reviewerEmail", "shopifyCustomerId", "shopifyOrderId", "submitterIpHash", "shopId", "shop_id"]) assert.ok(!text.includes(k), k);
 });
 
-test("media route rejects path traversal and private originals", async () => {
-  for (const p of ["../.env", "s/x/originals/y/z.jpg", "..%2F..%2Fpackage.json", "x.txt"]) {
-    const r = await run(() => media(args<LoaderFunctionArgs>(new Request(`http://localhost/media/${p}`), { "*": p })));
-    assert.equal(r.response?.status, 404, p);
-  }
+test("there is no public file or media route: nothing Proofly stores is ever served", () => {
+  assert.equal(existsSync("app/routes/media.$.tsx"), false);
+  assert.deepEqual(readdirSync("app/routes").filter((f) => /media|upload|file|asset/i.test(f) && !f.startsWith("dev.")), []);
 });
 
 test("dev-only routes are 404 outside development", async () => {

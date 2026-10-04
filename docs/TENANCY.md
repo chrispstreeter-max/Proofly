@@ -8,7 +8,6 @@ Every Shopify store that installs Proofly is an independent tenant (`shops` row)
 |---|---|
 | Embedded admin | `authenticate.admin` validates the App Bridge session token → `session.shop` → active `shops` row (`requireAdminTenant`) |
 | Storefront (app proxy) | `authenticate.public.appProxy` verifies Shopify's HMAC → stored offline session for that signed shop → active `shops` row → signed `path_prefix` must equal that shop's configured proxy path (`requireProxyTenant`) |
-| Public media | No tenant input at all: an opaque asset id → `proofly_public_media_key()` → storage key only while the photo is public |
 | Webhooks | `authenticate.webhook` verifies Shopify's HMAC → `shop` → `shops` row (product webhooks: active shops only; body fields such as shop ids are ignored) |
 | Install / reinstall | Shopify-managed installation → token exchange → `afterAuth` hook → Admin API `shop { id name myshopifyDomain primaryDomain }` → create or reactivate tenant (`upsertShopFromAuth`); refused if the reported domain differs from the session's |
 | Uninstall | `app/uninstalled` → sessions deleted, `uninstalled_at` set (idempotent); admin and storefront stop serving the tenant; data retained until `shop/redact`, which deletes all of it ([PRIVACY.md](PRIVACY.md)) |
@@ -41,11 +40,10 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
 2. **Row-level security** — merchant tables have RLS enabled and forced; policies compare `shop_id` with the
    per-transaction `app.shop_id` set by `withTenant`. No setting → no rows (fail closed). The app connects as
    `proofly_app` (no superuser, no BYPASSRLS); migrations run as the schema owner.
-3. **Database constraints** — composite foreign keys `(shop_id, id)` between products, reviews, images, replies,
+3. **Database constraints** — composite foreign keys `(shop_id, id)` between products, reviews, replies,
    requests and moderation actions; uniques are per shop: `(shop_id, shopify_product_id)`, `(shop_id, source, source_review_id)`.
-4. **Storage** — object keys are prefixed `s/<shop_id>/` internally. Public URLs expose only an opaque per-photo id.
-   The one cross-tenant read is the SECURITY DEFINER `proofly_public_media_key()` (owner-only SELECT policies). It
-   returns nothing but a storage key for an already-public photo; the app role may only EXECUTE it.
+4. **Storage** — the only stored files are import CSVs, in private storage under `s/<shop_id>/`. No route serves a
+   stored file, and there is no cross-tenant read.
 5. **Same response for missing and foreign** — admin detail/actions return the same 404; storefront endpoints return
    the same empty result for unknown and other-shop products.
 6. **Secrets** — Shopify access/refresh tokens are encrypted at rest (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`).

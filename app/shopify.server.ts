@@ -8,15 +8,14 @@ import { upsertShopFromAuth } from "./lib/tenant.server";
 
 // Fail fast: an empty API secret would make every HMAC/JWT check forgeable, so never start without these.
 const REQUIRED_ENV = ["SHOPIFY_API_KEY", "SHOPIFY_API_SECRET", "SHOPIFY_APP_URL", "SCOPES", "TOKEN_ENCRYPTION_KEY"] as const;
-// Production additionally needs durable shared media storage (local disk is per-instance and ephemeral), separate
-// private/public buckets, a real IP-hash salt and the Shopify app handle (plan page links).
-const PRODUCTION_ENV = ["DATABASE_URL", "IP_HASH_SALT", "SHOPIFY_APP_HANDLE", "MEDIA_PUBLIC_URL", "S3_BUCKET_PRIVATE", "S3_BUCKET_PUBLIC", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"] as const;
+// Production additionally needs durable private file storage for import CSVs (local disk is per-instance and
+// ephemeral), a real IP-hash salt and the Shopify app handle (plan page links).
+const PRODUCTION_ENV = ["DATABASE_URL", "IP_HASH_SALT", "SHOPIFY_APP_HANDLE", "S3_BUCKET_PRIVATE", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"] as const;
 export function envProblems(env: Record<string, string | undefined>) {
   const problems = REQUIRED_ENV.filter((k) => !env[k]).map((k) => `missing ${k}`);
   if (env.NODE_ENV !== "production") return problems;
   problems.push(...PRODUCTION_ENV.filter((k) => !env[k]).map((k) => `missing ${k}`));
   if (env.MEDIA_DRIVER !== "s3") problems.push("MEDIA_DRIVER must be s3 in production");
-  if (env.S3_BUCKET_PRIVATE && env.S3_BUCKET_PRIVATE === env.S3_BUCKET_PUBLIC) problems.push("S3_BUCKET_PRIVATE and S3_BUCKET_PUBLIC must differ");
   if ((env.IP_HASH_SALT ?? "").length < 32) problems.push("IP_HASH_SALT must be at least 32 characters");
   if (!env.SHOPIFY_APP_URL?.startsWith("https://")) problems.push("SHOPIFY_APP_URL must be https");
   return problems;

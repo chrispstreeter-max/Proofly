@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import sharp from "sharp";
 import prisma from "../app/db.server";
 import { reconcileBilling } from "../app/lib/billing.server";
 import { rateLimit } from "../app/lib/http.server";
@@ -82,28 +81,19 @@ describe("Bulk moderation", () => {
 
 describe("Settings are enforced on the storefront", () => {
   test("submissions off → refused (403) and nothing stored; on → accepted", async () => {
-    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", photoReviewsEnabled: "on", moderationEnabled: "on" }))));
+    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", moderationEnabled: "on" }))));
     const s = await run(() => settingsLoader(args<LoaderFunctionArgs>(adminRequest(B.domain, "/app/settings"))));
     assert.equal((s.data as { reviewSubmissionEnabled: boolean }).reviewSubmissionEnabled, false);
     const before = await owner.review.count({ where: { shopId: B.shopId } });
     const res = await submit(B, "MB");
     assert.equal(res.status, 403);
     assert.equal(await owner.review.count({ where: { shopId: B.shopId } }), before);
-    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", photoReviewsEnabled: "on", moderationEnabled: "on" }))));
+    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", moderationEnabled: "on" }))));
     assert.equal((await submit(B, "MB", {}, "198.51.100.21")).status, 201);
   });
 
-  test("photos off → submissions with photos refused; without photos accepted", async () => {
-    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", moderationEnabled: "on" }))));
-    const png = await sharp({ create: { width: 20, height: 20, channels: 3, background: "#123" } }).png().toBuffer();
-    const withPhoto = await submit(B, "MB", { images: new File([png], "p.png", { type: "image/png" }) }, "198.51.100.22");
-    assert.equal(withPhoto.status, 400);
-    assert.equal((await withPhoto.json()).field, "images");
-    assert.equal((await submit(B, "MB", {}, "198.51.100.23")).status, 201);
-  });
-
   test("approval off → new submissions publish immediately within the allowance", async () => {
-    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", photoReviewsEnabled: "on" }))));
+    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on" }))));
     assert.equal((await submit(B, "MB", { body: "Auto-published fictional review." }, "198.51.100.24")).status, 201);
     const r = await owner.review.findFirstOrThrow({ where: { shopId: B.shopId, body: "Auto-published fictional review." } });
     assert.deepEqual([r.status, r.holdReason], ["published", null]);
@@ -115,15 +105,12 @@ describe("Settings are enforced on the storefront", () => {
     assert.deepEqual(await owner.shopSettings.findUniqueOrThrow({ where: { shopId: A.shopId } }), aBefore);
     const shopify = new FakeShopify();
     await publishStorefrontSettings(B.shopId, shopify.graphql);
-    assert.deepEqual(JSON.parse(shopify.metafields.get("gid://shopify/AppInstallation/1|proofly.storefront")!), { submissions: false, photos: false });
+    assert.deepEqual(JSON.parse(shopify.metafields.get("gid://shopify/AppInstallation/1|proofly.storefront")!), { submissions: false });
     const product = liquidProduct({ id: 1, handle: "x", title: "X", average: 4, count: 2 });
-    const off = await renderBlock("reviews", { product, app: { metafields: { proofly: { proxy_path: { value: "/apps/proofly" }, storefront: { value: { submissions: false, photos: false } } } } } });
-    assert.doesNotMatch(off, /data-write|name="images"/);
-    const photosOff = await renderBlock("reviews", { product, app: { metafields: { proofly: { proxy_path: { value: "/apps/proofly" }, storefront: { value: { submissions: true, photos: false } } } } } });
-    assert.match(photosOff, /data-write/);
-    assert.doesNotMatch(photosOff, /name="images"/);
-    assert.match(await renderBlock("reviews", { product }), /name="images"/); // mirror missing → defaults on (server still enforces)
-    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", photoReviewsEnabled: "on", moderationEnabled: "on" }))));
+    const off = await renderBlock("reviews", { product, app: { metafields: { proofly: { proxy_path: { value: "/apps/proofly" }, storefront: { value: { submissions: false } } } } } });
+    assert.doesNotMatch(off, /data-write/);
+    assert.match(await renderBlock("reviews", { product }), /data-write/); // mirror missing → defaults on (server still enforces)
+    await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", reviewSubmissionEnabled: "on", moderationEnabled: "on" }))));
     assert.ok(await owner.auditLog.findFirst({ where: { shopId: B.shopId, action: "settings.updated" } }));
   });
 });

@@ -2,7 +2,6 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { Form, useActionData, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
-import { readDerivative } from "../lib/media.server";
 import { ACTIONS, moderate, moderationHistory, saveReply, type ModerationActionName } from "../lib/moderation.server";
 import { can } from "../lib/entitlements.server";
 import { PLAN_ORDER, PLANS, planHasFeature } from "../lib/plans";
@@ -21,7 +20,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const found = await withTenant(shop.id, async (t) => {
     const r = await t.db.review.findFirst({
       where: { shopId: t.shopId, id: params.id },
-      include: { product: true, images: { orderBy: { position: "asc" } }, reply: true },
+      include: { product: true, reply: true },
     });
     if (!r) return null;
     const history = await moderationHistory(t, r.id);
@@ -29,19 +28,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   });
   if (!found) throw notFound();
   const { r, history, canReply } = found;
-  // The merchant sees ALL of their photos (also pending/hidden/storage-limited) as inline thumbnails, so moderation
-  // never needs the public /media route — which only ever serves currently public photos.
-  const thumbs = await Promise.all(r.images.map(async (i) => {
-    const b = await readDerivative(i.thumbKey);
-    return { id: i.publicId, thumb: b ? `data:image/webp;base64,${b.toString("base64")}` : "", status: i.mediaStatus };
-  }));
   return {
     review: {
       id: r.id, sourceId: r.sourceReviewId, source: r.source, imported: r.imported, status: r.status, rating: r.rating,
       title: r.title, body: r.body, name: r.reviewerName, date: r.reviewDate.toISOString().slice(0, 16).replace("T", " "),
       verified: r.verifiedPurchase, flags: r.flags, heldByPlan: r.holdReason === "plan_limit",
       product: { title: r.product.title, handle: r.product.handle, id: r.product.shopifyProductId.toString() },
-      images: thumbs,
       reply: r.reply?.reply ?? "",
     },
     canReply, repliesFrom: REPLIES_FROM,
@@ -114,13 +106,6 @@ export default function ReviewDetail() {
           </s-stack>
           <s-text>{"★".repeat(r.rating)}{"☆".repeat(5 - r.rating)} · {r.name} · {r.date}</s-text>
           <s-paragraph><span style={{ whiteSpace: "pre-line" }}>{r.body}</span></s-paragraph>
-          {r.images.length > 0 && (
-            <s-stack direction="inline" gap="small">
-              {r.images.map((i) => (
-                <s-stack key={i.id} gap="small-200"><s-thumbnail src={i.thumb} alt="Review photo" size="large" />{i.status !== "published" && <s-badge>{i.status.replace("_", " ")}</s-badge>}</s-stack>
-              ))}
-            </s-stack>
-          )}
           <s-stack direction="inline" gap="small">
             {r.status !== "published" && <Act intent="approve" label="Approve" />}
             {r.status === "published" && <Act intent="hide" label="Hide" />}

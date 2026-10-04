@@ -17,14 +17,14 @@ after(async () => { await prisma.$disconnect(); await owner.$disconnect(); });
 const PROD = {
   NODE_ENV: "production", SHOPIFY_API_KEY: "k", SHOPIFY_API_SECRET: "s", SHOPIFY_APP_URL: "https://app.example.com", SCOPES: "read_products",
   TOKEN_ENCRYPTION_KEY: "x", DATABASE_URL: "postgresql://a", IP_HASH_SALT: "s".repeat(32), SHOPIFY_APP_HANDLE: "proofly",
-  MEDIA_DRIVER: "s3", MEDIA_PUBLIC_URL: "https://media.example.com", S3_BUCKET_PRIVATE: "priv", S3_BUCKET_PUBLIC: "pub", S3_ACCESS_KEY_ID: "a", S3_SECRET_ACCESS_KEY: "b",
+  MEDIA_DRIVER: "s3", S3_BUCKET_PRIVATE: "priv", S3_ACCESS_KEY_ID: "a", S3_SECRET_ACCESS_KEY: "b",
 };
 
-test("production refuses to start without durable storage, separate buckets, a real salt and https", () => {
+test("production refuses to start without durable private storage, a real salt and https", () => {
   assert.deepEqual(envProblems(PROD), []);
   assert.deepEqual(envProblems({ ...PROD, NODE_ENV: "development", MEDIA_DRIVER: "local", IP_HASH_SALT: "" }), []);
-  const bad = envProblems({ ...PROD, MEDIA_DRIVER: "local", S3_BUCKET_PUBLIC: "priv", IP_HASH_SALT: "short", SHOPIFY_APP_URL: "http://app.example.com", SHOPIFY_API_SECRET: "" });
-  for (const p of ["missing SHOPIFY_API_SECRET", "MEDIA_DRIVER must be s3 in production", "S3_BUCKET_PRIVATE and S3_BUCKET_PUBLIC must differ",
+  const bad = envProblems({ ...PROD, MEDIA_DRIVER: "local", IP_HASH_SALT: "short", SHOPIFY_APP_URL: "http://app.example.com", SHOPIFY_API_SECRET: "" });
+  for (const p of ["missing SHOPIFY_API_SECRET", "MEDIA_DRIVER must be s3 in production",
     "IP_HASH_SALT must be at least 32 characters", "SHOPIFY_APP_URL must be https"]) assert.ok(bad.includes(p), p);
 });
 

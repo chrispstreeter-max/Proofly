@@ -1,6 +1,6 @@
 // Checkpoint 3: Shopify-native storefront + theme app extension.
 // Extension build/structure/budgets, generic-merchant Liquid rendering, public visibility (published-only,
-// plan-limited, storage-limited media), rating maths + the metafield cache, card ratings, isolation, privacy.
+// plan-limited), no photos anywhere, rating maths + the metafield cache, card ratings, isolation, privacy.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -115,7 +115,7 @@ describe("Generic merchant rendering (Liquid)", () => {
     const html = await renderBlock("reviews", { product: product(0, 0) });
     assert.match(html, /No reviews yet/);
     assert.match(html, /data-write/);
-    assert.doesNotMatch(html, /data-list|ld\+json|pf-avg|data-lightbox/);
+    assert.doesNotMatch(html, /data-list|ld\+json|pf-avg/);
     const noForm = await renderBlock("reviews", { product: product(0, 0) }, { allow_submissions: false });
     assert.doesNotMatch(noForm, /data-write|<form/);
   });
@@ -159,8 +159,6 @@ const VIS_HANDLE = "visibility-product";
 const PAGED_ID = 9_000_000_000_124n;
 const PRIVATE = { shopifyCustomerId: 4_242_424_242n, shopifyOrderId: 5_353_535_353n, submitterIpHash: "f".repeat(64), flags: ["spam_suspected"] };
 let A: Merchant, B: Merchant;
-/** Deterministic opaque public ids for the fixture photos (32 hex chars). */
-const pid = (label: string, position: number) => `${label === "A" ? "a" : "b"}`.repeat(31) + String(position);
 
 async function seedVisibility(m: Merchant, label: string) {
   return withTenant(m.shopId, async (t) => {
@@ -177,11 +175,6 @@ async function seedVisibility(m: Merchant, label: string) {
     await mk(2, `hidden-${label}`, { status: "hidden" });
     await mk(1, `planlimited-pending-${label}`, { status: "pending", holdReason: "plan_limit" });
     await mk(3, `planlimited-published-${label}`, { holdReason: "plan_limit" }); // defence in depth: still never public
-    const img = (key: string, mediaStatus: "published" | "storage_limited", position: number) => db.reviewImage.create({
-      data: { shopId, reviewId: r5.id, originalFilename: "x.jpg", storageKey: `s/${shopId}/originals/${key}.jpg`, thumbKey: `s/${shopId}/r/${key}-320.webp`, largeKey: `s/${shopId}/r/${key}-1600.webp`, contentType: "image/jpeg", fileSize: 1, sha256: String(position).repeat(64), width: 800, height: 600, position, mediaStatus, publicId: pid(label, position) },
-    });
-    await img(`pub-${label}`, "published", 0);
-    await img(`limited-${label}`, "storage_limited", 1);
     await db.reviewReply.create({ data: { shopId, reviewId: r5.id, reply: `Reply ${label}` } });
     await db.product.create({ data: { shopId, shopifyProductId: 9_000_000_000_125n, handle: "zero-product", title: "Zero" } });
     await recomputeProduct(t, product.id);
@@ -220,16 +213,13 @@ describe("Storefront data", () => {
     assert.equal((await (await list(DOMAIN_A, VIS_ID, { rating: "3" })).json()).reviews.length, 0); // published + plan_limit
   });
 
-  test("plan-limited and storage-limited: excluded from list, counts, photo filter and media", async () => {
-    const body = await (await list(DOMAIN_A, VIS_ID, { summary: "1" })).json();
-    const r5 = body.reviews.find((r: { body: string }) => r.body === "public-5-A");
-    assert.equal(r5.images.length, 1);
-    assert.equal(r5.images[0].thumb, `${process.env.MEDIA_PUBLIC_URL}/${pid("A", 0)}-320.webp`);
-    assert.equal(r5.images[0].large, `${process.env.MEDIA_PUBLIC_URL}/${pid("A", 0)}-1600.webp`);
-    assert.equal(body.summary.withPhotos, 1);
-    const photos = await (await list(DOMAIN_A, VIS_ID, { photos: "1" })).json();
-    assert.deepEqual(photos.reviews.map((r: { body: string }) => r.body), ["public-5-A"]);
-    assert.ok(!JSON.stringify(body).includes(pid("A", 1))); // the storage-limited photo
+  test("no photos anywhere: no photo field, filter, upload or lightbox on the storefront, and none in the JSON", async () => {
+    const body = await (await list(DOMAIN_A, VIS_ID, { summary: "1", photos: "1" })).json();
+    assert.deepEqual(body.reviews.map((r: { body: string }) => r.body).sort(), ["public-4a-A", "public-4b-A", "public-5-A"]); // photos=1 is ignored
+    assert.ok(!/images|photo|thumb|withPhotos/.test(JSON.stringify(body)));
+    for (const f of ["blocks/reviews.liquid", "assets/proofly-reviews.js", "assets/proofly.css"]) {
+      assert.doesNotMatch(readFileSync(ext(f), "utf8"), /type="file"|lightbox|data-photos|pf-photo|name="images"|getAll\("images"\)/i, f);
+    }
   });
 
   test("rating/count calculation uses public reviews only, and the same numbers go to Shopify's metafields", async () => {
@@ -238,7 +228,7 @@ describe("Storefront data", () => {
     assert.equal(Number(p.averageRating), 4.33);
     assert.deepEqual([p.rating1, p.rating2, p.rating3, p.rating4, p.rating5], [0, 0, 0, 2, 1]);
     const body = await (await list(DOMAIN_A, VIS_ID, { summary: "1" })).json();
-    assert.deepEqual(body.summary, { count: 3, average: 4.33, distribution: [0, 0, 0, 2, 1], withPhotos: 1 });
+    assert.deepEqual(body.summary, { count: 3, average: 4.33, distribution: [0, 0, 0, 2, 1] });
 
     const shopify = new FakeShopify();
     await syncRatingCache(A.shopId, shopify.graphql);
@@ -259,7 +249,7 @@ describe("Storefront data", () => {
 
   test("empty review state: a product with no public reviews returns an empty list and zero summary", async () => {
     const body = await (await list(DOMAIN_A, 9_000_000_000_125n, { summary: "1" })).json();
-    assert.deepEqual(body, { reviews: [], page: 1, hasMore: false, summary: { count: 0, average: 0, distribution: [0, 0, 0, 0, 0], withPhotos: 0 } });
+    assert.deepEqual(body, { reviews: [], page: 1, hasMore: false, summary: { count: 0, average: 0, distribution: [0, 0, 0, 0, 0] } });
   });
 
   test("product-card ratings: batched by handle, this shop only, products without public reviews absent", async () => {
@@ -304,17 +294,15 @@ describe("Storefront data", () => {
     const body = JSON.parse(text);
     assert.deepEqual(Object.keys(body).sort(), ["hasMore", "page", "reviews", "summary"]);
     for (const r of body.reviews) {
-      assert.deepEqual(Object.keys(r).sort(), ["body", "date", "images", "name", "rating", "reply", "title", "verified"]);
-      for (const i of r.images) assert.deepEqual(Object.keys(i).sort(), ["h", "large", "thumb", "w"]);
+      assert.deepEqual(Object.keys(r).sort(), ["body", "date", "name", "rating", "reply", "title", "verified"]);
       if (r.reply) assert.deepEqual(Object.keys(r.reply).sort(), ["body", "date"]);
     }
-    for (const s of ["email", String(PRIVATE.shopifyCustomerId), String(PRIVATE.shopifyOrderId), PRIVATE.submitterIpHash, "spam_suspected", "originals", "plan_limit"]) {
+    for (const s of ["email", String(PRIVATE.shopifyCustomerId), String(PRIVATE.shopifyOrderId), PRIVATE.submitterIpHash, "spam_suspected", "plan_limit"]) {
       assert.ok(!text.includes(s), `leaked ${s}`);
     }
-    // No internal id anywhere — media URLs included: they carry only the opaque asset id.
+    // No internal id anywhere.
     const ids = await owner.review.findMany({ where: { shopId: A.shopId }, select: { id: true, productId: true, sourceReviewId: true } });
-    const imgIds = await owner.reviewImage.findMany({ where: { shopId: A.shopId }, select: { id: true } });
-    for (const s of [A.shopId, String(A.shopId).slice(0, 8), ...ids.flatMap((r) => [r.id, r.productId, r.sourceReviewId]), ...imgIds.map((i) => i.id), String(VIS_ID), "s/"]) {
+    for (const s of [A.shopId, String(A.shopId).slice(0, 8), ...ids.flatMap((r) => [r.id, r.productId, r.sourceReviewId]), String(VIS_ID), "s/"]) {
       assert.ok(!text.includes(s), `leaked ${s}`);
     }
     const r = await (await ratings(DOMAIN_A, VIS_HANDLE)).text();

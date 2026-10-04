@@ -3,19 +3,15 @@
  *
  *   npx tsx scripts/fixtures/generate.ts [--out fixtures/synthetic] [--seed 20261003]
  *
- * Produces a dataset roughly the size and shape of a real recovery export (~1,150 reviews, ~90 products,
- * ~160 images) exercising every importer edge case. Output (git-ignored):
+ * Produces a dataset roughly the size and shape of a real recovery export (~1,150 reviews, ~90 products) exercising
+ * every importer edge case. Output (git-ignored):
  *   catalogue.json         fictional Shopify product snapshot (ids in the reserved fictional range ≥ 9e12)
  *   reviews.csv            Proofly import template
- *   images/                generated JPEG/PNG/WebP files (+ one corrupt, two referenced-but-missing)
- *   images-manifest.csv    filename, sha256, bytes, content type
  *   expectations.json      exact counts every importer test can assert against
  */
-import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import sharp from "sharp";
-import { FICTIONAL_ID_BASE, FREE_PUBLISHED_LIMIT, SMALL_MEDIA_ALLOWANCE_BYTES } from "./constants";
+import { FICTIONAL_ID_BASE, FREE_PUBLISHED_LIMIT } from "./constants";
 
 const arg = (k: string, d: string) => { const i = process.argv.indexOf(`--${k}`); return i > -1 ? process.argv[i + 1] : d; };
 const OUT = path.resolve(arg("out", "fixtures/synthetic"));
@@ -47,12 +43,12 @@ interface Product { id: string; handle: string; title: string; status: string; s
 interface Row {
   source_review_id: string; product_id: string; product_handle: string; product_title: string; sku: string;
   rating: string; title: string; body: string; reviewer_name: string; review_date: string; status: string;
-  image_files: string; reply: string;
+  reply: string;
 }
 
 async function main() {
   await rm(OUT, { recursive: true, force: true });
-  await mkdir(path.join(OUT, "images"), { recursive: true });
+  await mkdir(OUT, { recursive: true });
 
   // ---- catalogue: 90 products (5 drafts), two share a title (title-only rows get two suggestions, never a match)
   const products: Product[] = [];
@@ -71,9 +67,7 @@ async function main() {
     invalid_rating: 0, invalid_date: 0, missing_title: 0, reply_like: 0,
     duplicate_same_product_extra_rows: 0, cross_product_groups: 0, cross_product_rows: 0,
     status: { published: 0, pending: 0, hidden: 0, rejected: 0 } as Record<string, number>,
-    images_referenced: 0, images_valid: 0, images_missing: 0, images_corrupt: 0, multi_image_reviews: 0,
     importable_published: 0, plan_limited_under_free: 0,
-    storage_scenario: { allowance_bytes: SMALL_MEDIA_ALLOWANCE_BYTES, expect_storage_limited_at_least: 1 },
   };
   const date = () => {
     const t = Date.UTC(2018, 11, 1) + rand() * (Date.UTC(2026, 5, 30) - Date.UTC(2018, 11, 1));
@@ -88,7 +82,7 @@ async function main() {
       product_id: how === "id" ? p.id : "", product_handle: how === "handle" || how === "id" ? p.handle : "",
       product_title: p.title, sku: how === "sku" ? (p.skus?.[1] ?? "") : "",
       rating: rating(), title: pick(OPEN), body: body(p.title), reviewer_name: `${pick(FIRST)} ${pick(LAST)}`,
-      review_date: date(), status: "published", image_files: "", reply: "", ...over,
+      review_date: date(), status: "published", reply: "", ...over,
     };
     rows.push(r);
     return r;
@@ -127,31 +121,6 @@ async function main() {
   rows[400].reply = "Thank you — glad it worked out.";
   rows[401].reply = "Sorry about the delay, we have improved our dispatch times.";
 
-  // ---- images: ~160 across ~120 reviews (some multi-image), plus corrupt + missing references
-  let imgN = 0;
-  const imgRows: string[] = [];
-  const makeImage = async (fmt: "jpeg" | "png" | "webp") => {
-    const w = int(400, 1800), h = int(400, 1800), name = `syn-img-${String(++imgN).padStart(4, "0")}.${fmt === "jpeg" ? "jpg" : fmt}`;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="hsl(${int(0, 359)},55%,60%)"/><text x="50%" y="50%" font-size="${Math.round(w / 14)}" text-anchor="middle" fill="#fff" font-family="sans-serif">PROOFLY TEST IMAGE ${imgN}</text></svg>`;
-    let img = sharp(Buffer.from(svg));
-    if (imgN % 25 === 0) img = img.withExif({ IFD0: { Artist: "Proofly synthetic fixture", Copyright: "Fictional test data" } });
-    const buf = await img.toFormat(fmt, { quality: 82 }).toBuffer();
-    await writeFile(path.join(OUT, "images", name), buf);
-    imgRows.push([name, createHash("sha256").update(buf).digest("hex"), buf.length, `image/${fmt}`].join(","));
-    return name;
-  };
-  const withImages = rows.filter((r, i) => i % 9 === 3 && r.status === "published").slice(0, 122);
-  for (const [i, r] of withImages.entries()) {
-    const count = i % 10 === 0 ? int(3, 5) : i % 4 === 0 ? 2 : 1;
-    const names: string[] = [];
-    for (let c = 0; c < count && imgN < 158; c++) names.push(await makeImage(pick(["jpeg", "jpeg", "png", "webp"] as const)));
-    r.image_files = names.join(";");
-  }
-  await writeFile(path.join(OUT, "images", "syn-img-corrupt.jpg"), Buffer.from("not really an image"));
-  withImages[1].image_files += ";syn-img-corrupt.jpg";
-  withImages[2].image_files += ";syn-img-missing-1.jpg";
-  withImages[3].image_files += ";syn-img-missing-2.png";
-
   // ---- expectations (exact)
   const prodById = new Map(products.map((p) => [p.id, p]));
   const prodByHandle = new Map(products.map((p) => [p.handle, p]));
@@ -182,17 +151,11 @@ async function main() {
     if (!isDate(r.review_date)) exp.invalid_date++;
     if (!r.title) exp.missing_title++;
     if (r.reviewer_name === "Example Store Team") exp.reply_like++;
-    const files = r.image_files ? r.image_files.split(";") : [];
-    exp.images_referenced += files.length;
-    if (files.length > 1) exp.multi_image_reviews++;
-    exp.images_missing += files.filter((f) => f.includes("missing")).length;
-    exp.images_corrupt += files.filter((f) => f.includes("corrupt")).length;
     const key = `${matched?.id}|${r.reviewer_name}|${r.body}`;
     if (matched) seenText.set(key, (seenText.get(key) ?? 0) + 1);
     // Reply-like rows are ordinary reviews to a generic importer (no name heuristics); they import like any other row.
     if (matched && validRating && isDate(r.review_date) && r.status === "published") importablePublished.push(r);
   }
-  exp.images_valid = imgN;
   exp.products_referenced = referenced.size;
   exp.duplicate_same_product_extra_rows = [...seenText.values()].reduce((a, c) => a + (c > 1 ? c - 1 : 0), 0);
   exp.cross_product_groups = 30;
@@ -205,9 +168,8 @@ async function main() {
   const q = (v: string) => (/[",\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
   await writeFile(path.join(OUT, "reviews.csv"), [cols.join(","), ...rows.map((r) => cols.map((c) => q(r[c])).join(","))].join("\n") + "\n");
   await writeFile(path.join(OUT, "catalogue.json"), JSON.stringify(products, null, 1));
-  await writeFile(path.join(OUT, "images-manifest.csv"), ["filename,sha256,bytes,content_type", ...imgRows].join("\n") + "\n");
   await writeFile(path.join(OUT, "expectations.json"), JSON.stringify(exp, null, 1));
-  console.log(`synthetic fixture → ${path.relative(process.cwd(), OUT)}: ${exp.reviews} reviews, ${products.length} products, ${imgN} images`);
+  console.log(`synthetic fixture → ${path.relative(process.cwd(), OUT)}: ${exp.reviews} reviews, ${products.length} products`);
 }
 
 main().catch((e) => { console.error(e); process.exitCode = 1; });

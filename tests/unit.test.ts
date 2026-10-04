@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import { Session } from "@shopify/shopify-api";
 import { decryptSecret, encryptSecret, isEncrypted } from "../app/lib/crypto.server";
 import { isDev, signProxyParams } from "../app/lib/devsign.server";
-import { shopPrefix } from "../app/lib/media.server";
+import { shopPrefix } from "../app/lib/storage.server";
 import { parseIds } from "../app/lib/reviews.server";
 import { isUuid } from "../app/lib/tenant.server";
 import { sessionStorage } from "../app/shopify.server";

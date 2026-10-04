@@ -28,7 +28,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ...(!status && !flag ? { status: "pending" } : {}),
   };
   const [rows, counts, flagRows] = await Promise.all([
-    db.review.findMany({ where, orderBy: { reviewDate: "desc" }, take: 50, include: { product: true, reply: true, _count: { select: { images: true } } } }),
+    db.review.findMany({ where, orderBy: { reviewDate: "desc" }, take: 50, include: { product: true, reply: true } }),
     db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
     db.$queryRaw<{ flag: string; n: bigint }[]>`select regexp_replace(unnest(flags), '_x[0-9]+$', '') as flag, count(*) as n from reviews where shop_id = ${shopId}::uuid group by 1 order by 2 desc`,
   ]);
@@ -39,7 +39,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   <header><b>${esc(r.product.title)}</b> <span class="st st-${r.status}">${r.status}</span>
     ${r.flags.map((f) => `<span class="fl">${esc(f)}</span>`).join("")}
     ${r.verifiedPurchase ? '<span class="vp">Verified</span>' : ""}</header>
-  <p class="meta">${"★".repeat(r.rating)} · ${esc(r.reviewerName)} · ${r.reviewDate.toISOString().slice(0, 10)} · ${r.source}${r._count.images ? ` · ${r._count.images} photo(s)` : ""}</p>
+  <p class="meta">${"★".repeat(r.rating)} · ${esc(r.reviewerName)} · ${r.reviewDate.toISOString().slice(0, 10)} · ${r.source}</p>
   ${r.title ? `<h3>${esc(r.title)}</h3>` : ""}<p class="body">${esc(r.body)}</p>
   <form method="post" class="acts"><input type="hidden" name="id" value="${r.id}">
     ${r.status !== "published" ? '<button name="intent" value="approve" class="pri">Approve</button>' : '<button name="intent" value="hide">Hide</button>'}

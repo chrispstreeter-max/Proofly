@@ -19,7 +19,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const rating = Number(sp.get("rating"));
   const status = STATUSES.find((s) => s === sp.get("status"));
   const yesNo = (k: string) => (sp.get(k) === "yes" ? true : sp.get(k) === "no" ? false : undefined);
-  const photos = yesNo("photos");
   const flagged = yesNo("flagged");
   const held = yesNo("held");
   const source = sp.get("source")?.trim().slice(0, 40) ?? "";
@@ -33,7 +32,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ...(product ? { product: { OR: [{ handle: { contains: product, mode: "insensitive" } }, { title: { contains: product, mode: "insensitive" } }] } } : {}),
     ...(rating >= 1 && rating <= 5 ? { rating } : {}),
     ...(status ? { status } : {}),
-    ...(photos === true ? { images: { some: {} } } : photos === false ? { images: { none: {} } } : {}),
     ...(held === true ? { holdReason: "plan_limit" } : held === false ? { OR: [{ holdReason: null }, { holdReason: "moderation" }] } : {}),
     ...(source ? { source } : {}),
     ...(flagged === true ? { NOT: { flags: { isEmpty: true } } } : flagged === false ? { flags: { isEmpty: true } } : {}),
@@ -42,7 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const [rows, count] = await withTenant(shop.id, ({ db }) => Promise.all([
     db.review.findMany({
       where, orderBy: [{ reviewDate: "desc" }, { id: "desc" }], skip: (page - 1) * PER_PAGE, take: PER_PAGE,
-      include: { product: { select: { title: true, handle: true } }, _count: { select: { images: true } }, reply: { select: { id: true } } },
+      include: { product: { select: { title: true, handle: true } }, reply: { select: { id: true } } },
     }),
     db.review.count({ where }),
   ]));
@@ -51,7 +49,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     rows: rows.map((r) => ({
       id: r.id, date: r.reviewDate.toISOString().slice(0, 10), product: r.product.title, rating: r.rating,
       title: r.title, excerpt: r.body.slice(0, 110), name: r.reviewerName, status: r.status,
-      verified: r.verifiedPurchase, images: r._count.images, flags: r.flags, replied: !!r.reply, source: r.source, held: r.holdReason === "plan_limit",
+      verified: r.verifiedPurchase, flags: r.flags, replied: !!r.reply, source: r.source, held: r.holdReason === "plan_limit",
     })),
   };
 };
@@ -104,7 +102,6 @@ export default function Reviews() {
                 <s-option value="">Any</s-option>
                 {STATUSES.map((s) => <s-option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</s-option>)}
               </s-select>
-              {yn("photos", "Has photos")}
               {yn("flagged", "Flagged")}
               {yn("held", "Held by plan limit")}
               <s-text-field name="source" label="Source (e.g. csv, storefront)" value={v("source")} />
@@ -150,7 +147,6 @@ export default function Reviews() {
                 <s-table-cell>
                   <s-link href={`/app/reviews/${r.id}`}>{r.title || "(no title)"}</s-link>
                   <s-text color="subdued"> {r.excerpt}{r.excerpt.length >= 110 ? "…" : ""}</s-text>
-                  {r.images > 0 && <s-badge>{`${r.images} photo${r.images > 1 ? "s" : ""}`}</s-badge>}
                   {r.flags.length > 0 && <s-badge tone="caution">{r.flags.map((f) => f.replace(/_x\d+$/, "")).join(", ")}</s-badge>}
                 </s-table-cell>
                 <s-table-cell>{r.name}{r.verified && <> <s-badge tone="success">Verified</s-badge></>}</s-table-cell>

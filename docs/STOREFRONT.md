@@ -9,7 +9,7 @@ theme snippet, template or `theme.liquid` is required.
 
 | File | Kind | JS | What it does |
 |---|---|---|---|
-| `blocks/reviews.liquid` | App block (product) | `proofly-reviews.js` (deferred) | Review widget: average, stars, count, rating breakdown, review list, photos + lightbox, rating filter, photo filter, sort, load more, empty state, write-a-review, optional JSON-LD |
+| `blocks/reviews.liquid` | App block (product) | `proofly-reviews.js` (deferred) | Review widget: average, stars, count, rating breakdown, review list, rating filter, sort, load more, empty state, write-a-review, optional JSON-LD |
 | `blocks/rating-summary.liquid` | App block (any section offering app blocks; product auto-filled) | none | Stars, average and review count; links to the widget. The controlled way to show ratings on product cards and featured products |
 | `blocks/card-ratings.liquid` | App embed (body) | `proofly-cards.js` (deferred) | Automatic product-card stars where neither a theme rating nor the Rating summary block is present |
 | `assets/proofly.css` | Widget stylesheet | — | |
@@ -44,10 +44,10 @@ re-runs only when the theme adds product links. Neither script makes third-party
 
 ## Store settings
 
-The merchant's switches (accept new reviews, allow photos, approve before publishing) are enforced by the submission
-route on every request: 403 when submissions are off, 400 for photos when photos are off, immediate publication within
-the plan allowance when approval is off. The theme reads the mirror `app.metafields.proofly.storefront.value` only to
-hide the button or photo field.
+The merchant's switches (accept new reviews, approve before publishing) are enforced by the submission route on every
+request: 403 when submissions are off, immediate publication within the plan allowance when approval is off. The theme
+reads the mirror `app.metafields.proofly.storefront.value` only to hide the button. Reviews are text only: the form has
+no photo field, the route reads only rating, title, body and name, and refuses requests over 64 KB (413).
 
 ## Proxy path
 
@@ -61,30 +61,25 @@ The store's app proxy path belongs to the merchant (default `/apps/proofly`; mer
 
 ## How full reviews are retrieved
 
-`GET {locale root}{proxy path}/products/<productId>/reviews?page=&sort=recent|highest|lowest&rating=&photos=1&summary=1`
+`GET {locale root}{proxy path}/products/<productId>/reviews?page=&sort=recent|highest|lowest&rating=&summary=1`
 goes through the shop's own Shopify app proxy:
 
 - **Tenant.** Shopify signs each request (HMAC). The tenant is the signed shop plus its stored session, and the signed
   `path_prefix` must be that shop's configured proxy path. An unknown or uninstalled shop, or a wrong path, gets a 404.
-- **Data.** Postgres returns 10 public reviews per page, never for deleted products. Only public photos are included
-  (published, not storage-limited). A review whose photos are all storage-limited is shown without photos.
-- **Photos.** `<MEDIA_PUBLIC_URL>/<opaque-id>-320.webp` / `-1600.webp`. The URL carries only a random asset id, and the
-  `/media` resolver serves it only while the photo is public ([ARCHITECTURE.md §11.7](ARCHITECTURE.md)).
-- **Response fields.** The response is an allow-listed JSON shape: rating, title, body, name, date, verified, images
-  (thumb, large, w, h) and reply (body, date). `reply` is included only when the shop's current plan includes Replies;
+- **Data.** Postgres returns 10 public reviews per page, never for deleted products.
+- **Response fields.** The response is an allow-listed JSON shape: rating, title, body, name, date, verified and reply
+  (body, date). `reply` is included only when the shop's current plan includes Replies;
   otherwise it is `null`, exactly as for a review without a reply (the stored reply is kept, never deleted). It has no ids, email, customer or order ids, IP hashes, status or flags.
 - **When it's requested.** The widget asks only if the product has reviews (according to the metafield count), only
   once the widget nears the viewport, and once per page or filter change. The Admin API is never called.
 
 ## Visibility rules
 
-`PUBLIC_REVIEW` / `PUBLIC_MEDIA` in `app/lib/reviews.server.ts` is the single definition used by the list, summary,
+`PUBLIC_REVIEW` in `app/lib/reviews.server.ts` is the single definition used by the list, summary,
 aggregates, metafields and card ratings. The following never reach the storefront:
 
 - pending, rejected and hidden reviews;
 - plan-limited reviews (`hold_reason = plan_limit`, even if the status says published);
-- storage-limited, processing or failed media. Storage limits apply to photos only: they never change review count,
-  average or distribution, only the photo-review count.
 - reviews of products deleted in Shopify (kept for the merchant, never shown).
 
 ## Failure behaviour

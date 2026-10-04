@@ -1,15 +1,13 @@
 /**
  * LOCAL DEVELOPMENT ONLY: (re)creates the fictional dev shop (DEV_SHOP_DOMAIN) with a few fictional products and
  * reviews so /dev/preview can show the storefront blocks. Every review state is represented (pending, rejected,
- * hidden, plan-limited, storage-limited media) to show they stay off the storefront.
+ * hidden, plan-limited) to show they stay off the storefront.
  *   npm run dev:seed
  * Refuses to run unless the database is a local *_dev database. Never run against a real merchant's data.
  */
 import { PrismaClient } from "@prisma/client";
 import { Session } from "@shopify/shopify-api";
-import sharp from "sharp";
 import { recomputeAll } from "../app/lib/aggregates.server";
-import { storeReviewImage } from "../app/lib/media.server";
 import { registerShop, withTenant } from "../app/lib/tenant.server";
 import { sessionStorage } from "../app/shopify.server";
 
@@ -37,14 +35,13 @@ const TEXT = [
   ["Okay", "Works, but the instructions could be clearer."],
 ];
 const PRODUCTS = [
-  { handle: "everyday-backpack", title: "Everyday Backpack", reviews: 27, photos: 4 },
-  { handle: "canvas-tote", title: "Canvas Tote", reviews: 3, photos: 1 },
-  { handle: "travel-mug", title: "Travel Mug", reviews: 0, photos: 0 },
-  { handle: "wool-beanie", title: "Wool Beanie", reviews: 8, photos: 0 },
-  { handle: "linen-shirt", title: "Linen Shirt", reviews: 12, photos: 2 },
-  { handle: "leather-wallet", title: "Leather Wallet", reviews: 5, photos: 0 },
+  { handle: "everyday-backpack", title: "Everyday Backpack", reviews: 27 },
+  { handle: "canvas-tote", title: "Canvas Tote", reviews: 3 },
+  { handle: "travel-mug", title: "Travel Mug", reviews: 0 },
+  { handle: "wool-beanie", title: "Wool Beanie", reviews: 8 },
+  { handle: "linen-shirt", title: "Linen Shirt", reviews: 12 },
+  { handle: "leather-wallet", title: "Leather Wallet", reviews: 5 },
 ];
-const png = (hue: number) => sharp({ create: { width: 900, height: 700, channels: 3, background: { r: 60 + hue, g: 120, b: 200 - hue } } }).png().toBuffer();
 
 let n = 0;
 for (const [pi, def] of PRODUCTS.entries()) {
@@ -67,10 +64,6 @@ for (const [pi, def] of PRODUCTS.entries()) {
           reviewerName: NAMES[(n + i) % NAMES.length], reviewDate: new Date(Date.UTC(2026, 8, 28 - ((n + i) % 200))), ...st,
         },
       });
-      if (st.status === "published" && i < def.photos) {
-        const stored = await storeReviewImage(shopId, review.id, await png((i * 40) % 140));
-        await db.reviewImage.create({ data: { shopId, reviewId: review.id, originalFilename: `photo-${i}.png`, ...stored, mediaStatus: i === 0 && pi === 0 ? "storage_limited" : "published" } });
-      }
       if (i === 1 && st.status === "published") await db.reviewReply.create({ data: { shopId, reviewId: review.id, reply: "Thanks for the kind words!" } });
     }
     n += states.length;

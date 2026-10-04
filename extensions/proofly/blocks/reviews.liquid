@@ -2,7 +2,7 @@
   Proofly — Review Widget (app block, product pages).
   Average, stars and count are rendered server-side by Shopify from the product's standard metafields
   reviews.rating / reviews.rating_count (Proofly mirrors them from its database), so they need no JavaScript and
-  cause no layout shift. The review list (photos, sorting, load more) is fetched from Proofly through the store's own
+  cause no layout shift. The review list (filters, sorting, load more) is fetched from Proofly through the store's own
   app proxy only when the section approaches the viewport, and only if the product has reviews.
 {%- endcomment -%}
 {%- liquid
@@ -32,10 +32,6 @@
   assign allow_submissions = block.settings.allow_submissions
   if sf.submissions == false
     assign allow_submissions = false
-  endif
-  assign allow_photos = true
-  if sf.photos == false
-    assign allow_photos = false
   endif
   assign customer_name = ''
   if customer
@@ -80,12 +76,6 @@
     <div class="pf-actions">
       {%- if allow_submissions -%}
         <button type="button" class="pf-btn" data-write>Write a review</button>
-      {%- endif -%}
-      {%- if count > 0 -%}
-        <button type="button" class="pf-chip" data-photos aria-pressed="false" hidden>
-          <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16"><path fill="currentColor" d="M4 4h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v6.6l3.3-3.3a1 1 0 0 1 1.4 0l3.3 3.3 1.3-1.3a1 1 0 0 1 1.4 0L16 12.6V6H4Zm9 3a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"/></svg>
-          With photos
-        </button>
       {%- endif -%}
     </div>
   </div>
@@ -139,12 +129,6 @@
         <input name="name" maxlength="60" required autocomplete="name" value="{{ customer_name | escape }}">
         <span class="pf-err" data-err="name"></span>
       </label>
-      {%- if allow_photos -%}
-      <label class="pf-field"><span>Photos <span class="pf-hint">(optional, up to 5)</span></span>
-        <input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple>
-        <span class="pf-err" data-err="images"></span>
-      </label>
-      {%- endif -%}
       <p class="pf-err" data-err="form" role="alert"></p>
       <button type="submit" class="pf-btn pf-btn--full">Submit review</button>
     </form>
@@ -153,13 +137,6 @@
       <p>Your review has been received and will appear once it has been checked.</p>
       <button type="button" class="pf-btn" data-close>Close</button>
     </div>
-  </dialog>
-  {%- endif -%}
-
-  {%- if count > 0 -%}
-  <dialog class="pf-lightbox" data-lightbox aria-label="Review photo">
-    <button type="button" class="pf-x" data-close aria-label="Close">×</button>
-    <img alt="" width="1600" height="1600" data-lightbox-img>
   </dialog>
   {%- endif -%}
 </section>

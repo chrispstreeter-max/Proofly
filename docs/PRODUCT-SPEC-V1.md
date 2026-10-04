@@ -4,6 +4,10 @@
 > credentials, Partner app, billing, hosting or deployment exists. No merchant store or theme has been touched. Sequencing: [PUBLIC-APP-ROADMAP.md](PUBLIC-APP-ROADMAP.md).
 > Brand: [BRAND.md](BRAND.md).
 
+> **Decision 2026-10-04 — no review photos.** Proofly has no photos anywhere: no storefront uploads, no photo import
+> (ZIP or links), no photo display, no media storage allowance in plans. Every passage below that describes photos,
+> media, storage-limited media or public media ids is superseded (removed in code; see ARCHITECTURE §11.16).
+
 **Proofly** is the product. The first launch merchant is an ordinary installation — never a hard-coded tenant or
 special case. Legacy review providers exist in Proofly only as optional import *source adapters*; Proofly depends on
 none of them.

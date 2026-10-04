@@ -5,7 +5,7 @@ import { requireAdminTenant } from "../lib/admin.server";
 import { cancelImport, createImport, IMPORT_LIMITS, ImportError, listImports, runImport, skuLookupFromAdmin, type ImportOptions } from "../lib/import.server";
 
 const FIELDS = [["sourceReviewId", "Review id"], ["productId", "Shopify product id"], ["handle", "Product handle"], ["sku", "Product SKU"], ["productTitle", "Product title (suggestions only)"],
-  ["rating", "Rating"], ["title", "Review title"], ["body", "Review text"], ["reviewerName", "Reviewer name"], ["reviewDate", "Review date"], ["status", "Status"], ["reply", "Reply"], ["images", "Photos"]] as const;
+  ["rating", "Rating"], ["title", "Review title"], ["body", "Review text"], ["reviewerName", "Reviewer name"], ["reviewDate", "Review date"], ["status", "Status"], ["reply", "Reply"]] as const;
 
 // Imports: upload → analysis (validation + product matching, nothing written) → the import page, where the merchant
 // resolves products and starts the import. The shop is always the authenticated one; nothing in the form or the file
@@ -25,17 +25,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     if (intent === "upload") {
       const csv = form.get("csv");
-      const images = form.get("images");
       if (!(csv instanceof File) || !csv.size) return { message: "Choose a CSV file." };
       if (csv.size > IMPORT_LIMITS.csvBytes) return { message: "The CSV file is larger than 50 MB." };
-      if (images instanceof File && images.size > IMPORT_LIMITS.archiveBytes) return { message: "The images archive is larger than 2 GB." };
       const mapping: ImportOptions["mapping"] = {};
       for (const [f] of FIELDS) { const v = form.get(`map_${f}`); if (typeof v === "string" && v) mapping[f] = v; }
       const csvBuf = Buffer.from(await csv.arrayBuffer());
       try {
         const { jobId } = await createImport(shop.id, {
           csv: csvBuf,
-          images: images instanceof File && images.size ? Buffer.from(await images.arrayBuffer()) : null,
           options: { source: "csv", publishMode: form.get("publishMode") === "moderate" ? "moderate" : "publish", mapping },
           actor, skuLookup: skuLookupFromAdmin(graphql),
         });
@@ -71,7 +68,6 @@ export default function Imports() {
           <s-stack gap="base">
             <input type="hidden" name="intent" value="upload" />
             <label>Reviews CSV (UTF-8, up to 50 MB) <input type="file" name="csv" accept=".csv,text/csv" required /></label>
-            <label>Photos ZIP (optional, up to 2 GB; JPEG, PNG or WebP, up to 20 MB each) <input type="file" name="images" accept=".zip,application/zip" /></label>
             {result?.headers && (
               <s-grid gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))" gap="base">
                 {FIELDS.map(([f, label]) => (
@@ -108,7 +104,7 @@ export default function Imports() {
                     <s-table-cell>{j.cursor} / {j.totalRows}</s-table-cell>
                     <s-table-cell>
                       {c.imported ?? 0} imported · {c.published ?? 0} published · {c.planLimited ?? 0} plan-limited · {c.awaitingModeration ?? 0} awaiting moderation ·{" "}
-                      {a.unmatchedRows ?? 0} unmatched · {a.ambiguousRows ?? 0} ambiguous · {a.invalidRows ?? 0} invalid · {c.mediaAccepted ?? 0} photos ({c.mediaStorageLimited ?? 0} storage-limited, {c.mediaRejected ?? 0} rejected)
+                      {a.unmatchedRows ?? 0} unmatched · {a.ambiguousRows ?? 0} ambiguous · {a.invalidRows ?? 0} invalid
                     </s-table-cell>
                     <s-table-cell>
                       {["failed", "queued"].includes(j.status) && <Form method="post"><input type="hidden" name="intent" value="resume" /><input type="hidden" name="jobId" value={j.id} /><s-button type="submit">Resume</s-button></Form>}

@@ -1,7 +1,7 @@
 import type { Tenant } from "./tenant.server";
 
 /** Merchant review settings. Enforced server-side (storefront submission, moderation); mirrored to the theme for display. */
-export const SETTING_KEYS = ["moderationEnabled", "reviewSubmissionEnabled", "photoReviewsEnabled"] as const;
+export const SETTING_KEYS = ["moderationEnabled", "reviewSubmissionEnabled"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 export async function updateSettings({ db, shopId }: Tenant, patch: Partial<Record<SettingKey, boolean>>, actor: string) {

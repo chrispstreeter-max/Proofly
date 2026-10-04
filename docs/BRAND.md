@@ -97,8 +97,8 @@ Merchant-first and white-label.
 - Looks native to the merchant's theme: inherits fonts, spacing rhythm and text colour; configurable star and accent
   colours; scoped CSS that never restyles the theme.
 - Premium review layout: summary with average, stars and “Based on N reviews”, rating distribution, filters, sorting,
-  clean review cards, photo gallery, merchant responses — the current reference build is the design baseline.
-- Fast: tiny scripts, lazy-loaded lists and images, no iframes, no layout shift.
+  clean review cards, merchant responses — the current reference build is the design baseline.
+- Fast: tiny scripts, lazy-loaded lists, no iframes, no layout shift.
 - **No “Powered by Proofly” by default.** If attribution is ever offered it is an explicit merchant opt-in and must
   follow Shopify's App Store storefront-branding rules.
 

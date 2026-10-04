@@ -1,6 +1,6 @@
 # Proofly — Privacy, retention and data export (Checkpoint 9)
 
-Proofly stores the minimum needed to show product reviews. V1 requests only `read_products,write_products`; it reads
+Proofly stores the minimum needed to show product reviews. It has no review photos (product decision, 2026-10-04): shoppers cannot upload them and imports ignore photo columns. V1 requests only `read_products,write_products`; it reads
 no orders and no customers, and the storefront form asks for no email address.
 
 ## What Proofly stores
@@ -12,9 +12,8 @@ no orders and no customers, and the storefront form asks for no email address.
 | Reviews: rating, title, body, display name, date, status | `reviews` | Reviewer's chosen display name | `shop/redact` (the merchant can hide or reject a review at any time) |
 | Hashed submitter IP (salted SHA-256, abuse control) | `reviews.submitter_ip_hash` | Pseudonymous | `customers/redact` for a linked customer, or `shop/redact` |
 | Shopify customer id | `reviews.shopify_customer_id` | Yes — never set by V1; only legacy/V1.1 | `customers/redact` (unlinked) or `shop/redact` |
-| Review photos: private original + two public WebP derivatives (EXIF removed) | object storage `s/<shop>/…` | Possibly (image content) | `shop/redact` (only published reviews' photos are public) |
 | Replies | `review_replies` | No | Reply removed by the merchant, or `shop/redact` |
-| Import source files (CSV, images ZIP) | private storage `s/<shop>/imports/<job>/` | Whatever the merchant's export contains | **30 days after the import finishes**, unless products are still unresolved (see below) |
+| Import source files (CSV) | private storage `s/<shop>/imports/<job>/` | Whatever the merchant's export contains | **30 days after the import finishes**, unless products are still unresolved (see below) |
 | Import analysis, match decisions, problem summaries | `import_jobs`, `import_product_matches`, `product_match_confirmations` | No review text | `shop/redact` |
 | Audit log (moderation, settings, exports, compliance events) | `audit_log` | No (staff ids, counts; never a customer id) | `shop/redact` |
 | Rate-limit counters | `rate_limits` | No (SHA-256 of shop + IP hash) | 1 day |
@@ -31,8 +30,8 @@ Plan limits never delete anything (ARCHITECTURE §6.3). Retention below is the o
   the file is kept until the merchant resolves them (or the shop is redacted). The import page then says the file was
   deleted; imported reviews are unaffected, and re-uploading is safe (rows already imported are skipped).
 - **Stalled imports** (no heartbeat for 10 minutes) are marked failed with a resume prompt — never restarted silently.
-- **Orphaned objects** — anything under the shop's storage prefix that no photo or import row references, older than
-  24 hours (e.g. left by a crash mid-batch) — are deleted.
+- **Orphaned files** — anything under the shop's storage prefix that no import references, older than 24 hours
+  (e.g. an upload whose import was refused) — are deleted.
 - **Rate-limit counters** older than a day are deleted.
 
 ## Compliance webhooks
@@ -52,8 +51,7 @@ for, and nothing outside it is read or changed.
 ## Export
 
 Reviews → **Export all reviews (CSV)** (`/app/reviews/export`, all plans) downloads every review the shop owns — any status,
-plan-limited or not, replies included whatever the plan — in import-template columns, with public photo URLs and the
-number of storage-limited photos. Cells a spreadsheet would run as a formula are prefixed with an apostrophe. Each
+plan-limited or not, replies included whatever the plan — in import-template columns. Cells a spreadsheet would run as a formula are prefixed with an apostrophe. Each
 export is audit-logged. Re-importing the file into the same store skips reviews that came from a CSV import; it is a
 backup and portability file, not a sync.
 

@@ -1,22 +1,19 @@
-// Checkpoint 4: product sync, product webhooks, canonical aggregation (storage-limited photos), rating-cache ownership,
-// metafield sync + reconciliation, per-merchant proxy paths, opaque public media ids, API version.
+// Checkpoint 4: product sync, product webhooks, canonical aggregation, rating-cache ownership,
+// metafield sync + reconciliation, per-merchant proxy paths, API version.
 // Shopify is the in-memory FakeShopify (tests/helpers.ts) — no network.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import sharp from "sharp";
 import prisma from "../app/db.server";
 import { recomputeProduct } from "../app/lib/aggregates.server";
-import { storeReviewImage } from "../app/lib/media.server";
 import { moderate, setPlanLimited } from "../app/lib/moderation.server";
 import { syncCatalog } from "../app/lib/products.server";
 import { DEFAULT_PROXY_PATH, parseProxyPath, setProxyPath } from "../app/lib/proxy-path.server";
 import { reconcileRatingCache, syncRatingCache } from "../app/lib/rating-cache.server";
 import { ratingsByHandle } from "../app/lib/reviews.server";
 import { markUninstalled, publishShopProxyPath, withTenant, type Tenant } from "../app/lib/tenant.server";
-import { loader as mediaLoader } from "../app/routes/media.$";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { loader as proxyRatings } from "../app/routes/proxy.ratings";
 import { action as productsWebhook } from "../app/routes/webhooks.products";
@@ -43,22 +40,12 @@ let seq = 0;
 async function product(t: Tenant, shopifyProductId: bigint, handle: string) {
   return t.db.product.create({ data: { shopId: t.shopId, shopifyProductId, handle, title: handle, status: "active", lastSeenAt: new Date() } });
 }
-type Photo = "published" | "storage_limited" | "real";
-async function review(t: Tenant, productId: string, rating: number, o: { status?: "published" | "pending" | "hidden" | "rejected"; hold?: "plan_limit" | "moderation"; photos?: Photo[] } = {}) {
+async function review(t: Tenant, productId: string, rating: number, o: { status?: "published" | "pending" | "hidden" | "rejected"; hold?: "plan_limit" | "moderation" } = {}) {
   const r = await t.db.review.create({
     data: { shopId: t.shopId, productId, source: "csv", sourceReviewId: `s4-${++seq}`, rating, body: `body ${seq}`, reviewerName: "Fixture", reviewDate: new Date(Date.UTC(2026, 0, 1 + seq)), status: o.status ?? "published", holdReason: o.hold ?? null },
   });
-  const ids: string[] = [];
-  for (const [position, kind] of (o.photos ?? []).entries()) {
-    const stored = kind === "real"
-      ? await storeReviewImage(t.shopId, r.id, await sharp({ create: { width: 40, height: 30, channels: 3, background: "#4a7" } }).png().toBuffer())
-      : { publicId: (seq.toString(16) + position).padStart(32, "c"), storageKey: `s/${t.shopId}/originals/x${seq}${position}.jpg`, thumbKey: `s/${t.shopId}/r/${r.id}/x${seq}${position}-320.webp`, largeKey: `s/${t.shopId}/r/${r.id}/x${seq}${position}-1600.webp`, contentType: "image/jpeg", fileSize: 1, sha256: String(position).repeat(64), width: 4, height: 3 };
-    const img = await t.db.reviewImage.create({ data: { shopId: t.shopId, reviewId: r.id, originalFilename: "p.jpg", position, mediaStatus: kind === "storage_limited" ? "storage_limited" : "published", ...stored } });
-    ids.push(img.publicId);
-  }
-  return { ...r, photoIds: ids };
+  return r;
 }
-const media = (name: string, init?: RequestInit) => run(() => mediaLoader(args<LoaderFunctionArgs>(new Request(`http://localhost/media/${name}`, init), { "*": name })));
 const list = async (domain: string, id: bigint, q: Record<string, string> = {}) =>
   (await proxyList(args<LoaderFunctionArgs>(proxyRequest(domain, `products/${id}/reviews`, q), { id: String(id) }))).json();
 const productWebhook = (domain: string, topic: string, payload: unknown) =>
@@ -188,127 +175,36 @@ describe("Product webhooks", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-describe("Canonical aggregation — storage limits apply to photos, never reviews", () => {
+describe("Canonical aggregation — every public review counts; held, pending and hidden never do", () => {
   const PID = 9_500_000_000_001n;
   let p: { id: string };
   const r: Record<string, Awaited<ReturnType<typeof review>>> = {};
   before(async () => {
-    p = await asA((t) => product(t, PID, "photo-product"));
+    p = await asA((t) => product(t, PID, "agg-product"));
     await asA(async (t) => {
-      r.publicPhoto = await review(t, p.id, 5, { photos: ["real"] });                                 // 1
-      r.mixed = await review(t, p.id, 4, { photos: ["published", "storage_limited"] });               // 2
-      r.allLimited = await review(t, p.id, 3, { photos: ["storage_limited", "storage_limited"] });     // 3
-      r.planLimited = await review(t, p.id, 1, { hold: "plan_limit", photos: ["published"] });         // 4
-      r.hidden = await review(t, p.id, 1, { status: "hidden", photos: ["published"] });                // 5
-      r.noPhoto = await review(t, p.id, 4);
+      r.five = await review(t, p.id, 5);
+      r.four = await review(t, p.id, 4);
+      r.three = await review(t, p.id, 3);
+      r.planLimited = await review(t, p.id, 1, { hold: "plan_limit" });
+      r.hidden = await review(t, p.id, 1, { status: "hidden" });
+      r.pending = await review(t, p.id, 2, { status: "pending", hold: "moderation" });
+      r.fourB = await review(t, p.id, 4);
       await recomputeProduct(t, p.id);
     });
   });
 
-  test("aggregate: count/average/distribution ignore photo state; photo_review_count counts only public photos", async () => {
-    const row = await owner.product.findUniqueOrThrow({ where: { id: p.id } });
-    assert.equal(row.reviewCount, 4); // 5,4,3,4 — plan-limited and hidden excluded; all-storage-limited INCLUDED
-    assert.equal(Number(row.averageRating), 4);
-    assert.deepEqual([row.rating1, row.rating2, row.rating3, row.rating4, row.rating5], [0, 0, 1, 2, 1]);
-    assert.equal(row.photoReviewCount, 2); // publicPhoto + mixed; all-storage-limited is not a photo review
-    // Making every storage-limited photo public changes ONLY the photo count.
-    await asA(async (t) => {
-      await t.db.reviewImage.updateMany({ where: { shopId: t.shopId, mediaStatus: "storage_limited", reviewId: { in: [r.mixed.id, r.allLimited.id] } }, data: { mediaStatus: "published" } });
-      const a = await recomputeProduct(t, p.id);
-      assert.deepEqual([a.reviewCount, a.averageRating, a.distribution, a.photoReviewCount], [4, 4, [0, 0, 1, 2, 1], 3]);
-      await t.db.reviewImage.updateMany({ where: { shopId: t.shopId, publicId: { in: [r.mixed.photoIds[1], ...r.allLimited.photoIds] } }, data: { mediaStatus: "storage_limited" } });
-      await recomputeProduct(t, p.id);
-    });
+  test("aggregate and storefront: count/average/distribution over public reviews only", async () => {
+    const row = (await rowA(PID))!;
+    assert.deepEqual([row.reviewCount, Number(row.averageRating), [row.rating1, row.rating2, row.rating3, row.rating4, row.rating5]], [4, 4, [0, 0, 1, 2, 1]]);
+    const body = await list(DOMAIN_A, PID, { summary: "1" });
+    assert.deepEqual(body.reviews.map((x: { body: string }) => x.body).sort(), [r.five.body, r.four.body, r.three.body, r.fourB.body].sort());
+    assert.deepEqual(body.summary, { count: 4, average: 4, distribution: [0, 0, 1, 2, 1] });
   });
 
-  test("storefront: reviews shown per review state; only public photos; photo filter = photo reviews", async () => {
-    const body = await list(DOMAIN_A, PID, { summary: "1", sort: "highest" });
-    const byRating = Object.fromEntries(body.reviews.map((x: { body: string; images: { thumb: string }[] }) => [x.body, x.images.map((i) => i.thumb)]));
-    assert.deepEqual(Object.keys(byRating).sort(), [r.publicPhoto.body, r.mixed.body, r.allLimited.body, r.noPhoto.body].sort());
-    assert.equal(byRating[r.publicPhoto.body].length, 1);
-    assert.equal(byRating[r.mixed.body].length, 1); // photo 1 shown, photo 2 (storage-limited) not
-    assert.ok(byRating[r.mixed.body][0].includes(r.mixed.photoIds[0]));
-    assert.deepEqual(byRating[r.allLimited.body], []); // review displayed, no photos
-    assert.deepEqual(body.summary, { count: 4, average: 4, distribution: [0, 0, 1, 2, 1], withPhotos: 2 });
-    const photos = await list(DOMAIN_A, PID, { photos: "1" });
-    assert.deepEqual(photos.reviews.map((x: { body: string }) => x.body).sort(), [r.publicPhoto.body, r.mixed.body].sort());
-    const text = JSON.stringify(body);
-    for (const id of [r.mixed.photoIds[1], ...r.allLimited.photoIds, ...r.planLimited.photoIds, ...r.hidden.photoIds]) assert.ok(!text.includes(id), id);
-  });
-
-  test("Shopify rating metafields follow the same aggregate (photos never change rating/count)", async () => {
+  test("Shopify rating metafields follow the same aggregate", async () => {
     const shopify = new FakeShopify();
     await syncRatingCache(A.shopId, shopify.graphql, { productIds: [p.id], sleep: noSleep });
     assert.deepEqual(shopify.rating(PID), { average: "4.00", count: 4 });
-  });
-
-  test("public media: a public photo loads; storage-limited, plan-limited and hidden photos never do", async () => {
-    const ok = await media(`${r.publicPhoto.photoIds[0]}-320.webp`);
-    assert.equal(ok.response?.status, 200);
-    assert.equal(ok.response?.headers.get("Content-Type"), "image/webp");
-    assert.equal((await media(`${r.publicPhoto.photoIds[0]}-1600.webp`)).response?.status, 200);
-    for (const id of [r.mixed.photoIds[1], ...r.allLimited.photoIds, ...r.planLimited.photoIds, ...r.hidden.photoIds]) {
-      assert.equal((await media(`${id}-320.webp`)).response?.status, 404, id);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------------------------------------------
-describe("Opaque public media ids", () => {
-  let good: string;
-  let bReview: Awaited<ReturnType<typeof review>>;
-  before(async () => {
-    const pa = await asA((t) => product(t, 9_500_000_000_101n, "media-a"));
-    const ra = await asA((t) => review(t, pa.id, 5, { photos: ["real"] }));
-    good = ra.photoIds[0];
-    const pb = await asB((t) => product(t, 9_500_000_000_101n, "media-a"));
-    bReview = await asB((t) => review(t, pb.id, 5, { photos: ["real"] }));
-  });
-
-  test("ids are 128-bit random hex, unique, unrelated to database or Shopify ids", async () => {
-    const all = await owner.reviewImage.findMany({ select: { publicId: true, id: true, reviewId: true, shopId: true } });
-    assert.equal(new Set(all.map((x) => x.publicId)).size, all.length);
-    for (const x of all) {
-      assert.match(x.publicId, /^[0-9a-f]{32}$/);
-      for (const internal of [x.id, x.reviewId, x.shopId]) assert.ok(!x.publicId.includes(internal.replace(/-/g, "").slice(0, 12)));
-    }
-  });
-
-  test("invalid or manipulated ids, internal keys and originals → the same 404; query/tenant params are ignored", async () => {
-    const flipped = (good[0] === "0" ? "1" : "0") + good.slice(1);
-    const key = await owner.reviewImage.findFirstOrThrow({ where: { publicId: good } });
-    const candidates = [
-      `${flipped}-320.webp`, `${good}-640.webp`, `${good}.webp`, `${good.toUpperCase()}-320.webp`, `${good}-320.webp/..`,
-      key.thumbKey, key.storageKey, `../${key.storageKey}`, `${good}-320.jpg`, "x", "",
-      `${A.shopId}-320.webp`, `${key.reviewId.replace(/-/g, "")}-320.webp`,
-    ];
-    const bodies = new Set<string>();
-    for (const c of candidates) {
-      const res = (await media(c)).response!;
-      assert.equal(res.status, 404, c);
-      bodies.add(await res.text());
-    }
-    assert.equal(bodies.size, 1);
-    const withParams = await run(() => mediaLoader(args<LoaderFunctionArgs>(new Request(`http://localhost/media/${good}-320.webp?shop=${DOMAIN_B}&shop_id=${B.shopId}`), { "*": `${good}-320.webp` })));
-    assert.equal(withParams.response?.status, 200); // the asset id alone decides; extra params change nothing
-  });
-
-  test("another merchant's photo can only be reached by its own public id, and only while public; uninstalling hides it", async () => {
-    const bId = bReview.photoIds[0];
-    assert.equal((await media(`${bId}-320.webp`)).response?.status, 200);
-    // A's storefront never references B's assets, even for the same Shopify product id and handle.
-    assert.ok(!JSON.stringify(await list(DOMAIN_A, 9_500_000_000_101n)).includes(bId));
-    await asB((t) => moderate(t, [bReview.id], "hide", "test"));
-    assert.equal((await media(`${bId}-320.webp`)).response?.status, 404);
-    await asB((t) => moderate(t, [bReview.id], "approve", "test"));
-    assert.equal((await media(`${bId}-320.webp`)).response?.status, 200);
-    // A shop that uninstalls stops serving its photos (data kept).
-    const gone = await installMerchant("proofly-test-d.myshopify.com", "D");
-    const gp = await withTenant(gone.shopId, (t) => product(t, 9_500_000_000_555n, "gone-media"));
-    const gr = await withTenant(gone.shopId, (t) => review(t, gp.id, 5, { photos: ["real"] }));
-    assert.equal((await media(`${gr.photoIds[0]}-320.webp`)).response?.status, 200);
-    await markUninstalled("proofly-test-d.myshopify.com");
-    assert.equal((await media(`${gr.photoIds[0]}-320.webp`)).response?.status, 404);
   });
 });
 

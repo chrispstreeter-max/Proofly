@@ -26,13 +26,16 @@ pages were read directly.
 
 ## 2. Plans (canonical: `app/lib/plans.ts`)
 
-| Plan (id) | Monthly | Annual | Published reviews | Public media | Shopify plan handle |
-|---|---:|---:|---:|---:|---|
-| Free (`FREE`) | $0 | $0 | 100 | 500 MB | `free` |
-| Starter (`STARTER`) | $9 | $90 | 1,000 | 2 GB | `starter` |
-| Growth (`GROWTH`), Most popular | $19 | $190 | 5,000 | 10 GB | `growth` |
-| Pro (`PRO`) | $39 | $390 | 25,000 | 50 GB | `pro` |
-| Scale (`SCALE`) | $79 | $790 | 100,000 | 250 GB | `scale` |
+| Plan (id) | Monthly | Annual | Published reviews | Shopify plan handle |
+|---|---:|---:|---:|---|
+| Free (`FREE`) | $0 | $0 | 100 | `free` |
+| Starter (`STARTER`) | $9 | $90 | 1,000 | `starter` |
+| Growth (`GROWTH`), Most popular | $19 | $190 | 5,000 | `growth` |
+| Pro (`PRO`) | $39 | $390 | 25,000 | `pro` |
+| Scale (`SCALE`) | $79 | $790 | 100,000 | `scale` |
+
+Proofly has no review photos (product decision, 2026-10-04), so plans have no media storage allowance. Prices and
+review allowances are unchanged.
 
 - **Annual saving:** about 17% (derived: 1 − annual / (12 × monthly)). There is no discount engine; the Shopify
   subscription's price is authoritative.
@@ -41,7 +44,7 @@ pages were read directly.
 - **Features:** each feature has a `released` flag. Unreleased features (unlimited
   migration, advanced customisation, advanced analytics, API access, review requests, verified purchases) are never
   enabled or shown, whatever the plan.
-- **Shown today:** review display (widget, summary, card stars), photo reviews and moderation on all plans; public
+- **Shown today:** review display (widget, summary, card stars), moderation on all plans; public
   replies from Starter; priority support from Growth.
 - **Configuration is locked:** frozen at runtime. A test fails if a price, allowance or plan name appears anywhere else
   in `app/` or `extensions/`.
@@ -50,29 +53,18 @@ pages were read directly.
 
 - **Published-review usage:** reviews currently public (`status = published AND hold_reason IS NULL`), from every
   source.
-- **Public-media usage:** bytes of the two optimised WebP derivatives (`public_bytes`) of photos with
-  `media_status = published`. Private originals, backups and recovery copies never count.
-- **Review room** = allowance − usage. **Media room** = allowance − usage. Usage can exceed the allowance after a
+- **Review room** = allowance − usage. Usage can exceed the allowance after a
   downgrade (grandfathering).
-- **Admission:** anything about to become public is first held (`plan_limit` for reviews, `storage_limited` for
-  photos), then released oldest first while there is room. This applies to:
+- **Admission:** a review about to become public is first held (`plan_limit`), then released oldest first while there
+  is room. This applies to:
   - approval (`moderate` approve);
   - auto-published storefront submissions (when moderation is turned off);
-  - storefront photo uploads;
   - imports (`importReviews`);
-  - the merchant actions "Publish eligible reviews" and "Publish eligible photos".
+  - the merchant action "Publish eligible reviews".
 - **Not admitted:** reviews that don't fit stay approved and held. They are never rejected, deleted or reported as
   failed. The admin says "Approved, but currently held by your plan limit."
-- **Fairness:** date order only. Reviews use `reviewDate, createdAt, id`; photos use
-  `review.reviewDate, createdAt, position, id`. Photos are released in strict order: the first photo that doesn't fit
-  stops the release, so a later, smaller photo never jumps the queue. Regression tests fail if any other ordering is
-  introduced or if a high rating could jump the queue.
-- **Storage limits apply to photos, never reviews:**
-  - A review with storage-limited photos still publishes.
-  - Storage-limited photos are kept privately (original and derivatives) and are never served.
-  - Nothing is deleted because of a limit.
-  - **Known trade-off:** optimised derivatives are generated at upload even for storage-limited photos, so their size
-    is known. They cost storage but are not served.
+- **Fairness:** date order only: `reviewDate`, then the stable source identity (`source`, `sourceReviewId`).
+  Regression tests fail if any other ordering is introduced or if a high rating could jump the queue.
 - **Concurrency:** decisions are serialised per shop (`pg_advisory_xact_lock`), so two approvals can't both take the
   last slot.
 
@@ -101,19 +93,18 @@ handle ever upgrades. A client-sent plan, price, interval, shop id or subscripti
 - `billing.plan_upgraded` / `billing.plan_downgraded`;
 - `billing.subscription_<status>` when the Shopify status changes;
 - `billing.verification_failed` on the transition into `unverified` (not on every failed check);
-- `plan.reviews_released` / `plan.media_released` for merchant actions.
+- `plan.reviews_released` for the merchant action.
 
 ## 5. Upgrade
 
 When Shopify confirms the higher plan, the allowance grows. **Nothing publishes automatically.** The Plan page says
 "You have N eligible reviews ready to publish." Then:
 - **Publish eligible reviews** releases held reviews oldest first, up to the new allowance.
-- **Publish eligible photos** releases storage-limited photos oldest first, up to the new media allowance.
 
 ## 6. Downgrade (locked rule: grandfathering)
 
-Published reviews and public photos stay published and visible; nothing is hidden or deleted. The lower allowance
-applies only to what becomes public next: new approvals, imports and photos are held. While over the allowance, the
+Published reviews stay published and visible; nothing is hidden or deleted. The lower allowance
+applies only to what becomes public next: new approvals and imports are held. While over the allowance, the
 dashboard and Plan page say so, for example "You're using 1,240 published reviews on a plan that includes 1,000.
 Your existing reviews remain visible. New reviews will be held until you upgrade."
 
@@ -122,14 +113,13 @@ Your existing reviews remain visible. New reviews will be held until you upgrade
 The import engine ([IMPORT.md](IMPORT.md), checkpoint 6) is provider-neutral. Every valid row is stored, and imports
 are never truncated. Published rows go through admission once per import, by date order across the whole file, and
 duplicates (same source and source review id) are skipped idempotently. Example: Free, 1,000
-rows → 1,000 stored, 100 published (the oldest), 900 plan-limited, 0 rejected. CSV parsing, mapping, images and the
-import UI are checkpoint 8.
+rows → 1,000 stored, 100 published (the oldest), 900 plan-limited, 0 rejected. CSV parsing, mapping and the import UI are checkpoint 8.
 
 ## 8. Security and isolation
 
 - **Isolation:** `billing_state` and `subscriptions` are tenant tables (row-level security, cascade on shop). Merchant A
   cannot read or change B's billing (tests), and reconciling A never touches B.
-- **Routes:** the Plan page accepts only intents (`refresh`, `publish_eligible`, `process_media`) and decides
+- **Routes:** the Plan page accepts only intents (`refresh`, `publish_eligible`) and decides
   everything server-side.
 - **Storefront:** it never imports billing code, never calls a billing API, and the theme extension contains no
   billing code (tests).

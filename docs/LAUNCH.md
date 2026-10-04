@@ -20,9 +20,8 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
   - `DATABASE_URL` (the `proofly_app` role).
   - `IP_HASH_SALT` (at least 32 characters).
   - `SHOPIFY_APP_HANDLE`.
-  - `MEDIA_DRIVER=s3`, with separate `S3_BUCKET_PRIVATE` and `S3_BUCKET_PUBLIC` buckets, plus `S3_ACCESS_KEY_ID` and
+  - `MEDIA_DRIVER=s3`, with a private `S3_BUCKET_PRIVATE` bucket (import CSVs only), plus `S3_ACCESS_KEY_ID` and
     `S3_SECRET_ACCESS_KEY`.
-  - `MEDIA_PUBLIC_URL` (the CDN in front of the public bucket).
   - An `https` app URL.
 - Optional: `S3_ENDPOINT` and `S3_REGION`, for R2 or another S3-compatible store.
 
@@ -34,8 +33,8 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
    role.
 
 **Storage:**
-- The private bucket is never public. It holds originals and import files.
-- The public bucket holds only the WebP derivatives, under opaque ids, and is served through a CDN at `MEDIA_PUBLIC_URL`.
+- One private bucket, never public. It holds only merchants' import CSVs. Proofly has no review photos and serves no
+  stored file to anyone.
 - Do not add lifecycle rules that delete objects: retention is done by `npm run maintenance`.
 
 **Partner Dashboard:**
@@ -68,7 +67,7 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
   - Recommended: move the repository out of iCloud-synced folders before production work.
 - **Imports run in the web process.** If an instance restarts mid-import, the import page offers **Resume** at once (the
   worker heartbeat goes stale after 10 minutes). Maintenance marks it failed within the hour. Nothing is duplicated.
-- **Orphan sweep:** for each shop it lists every object under that shop's prefix. For very large media libraries, make
+- **Orphan sweep:** for each shop it lists every object under that shop's prefix. If a shop ever holds very many imports, make
   it incremental. This is marked in the code.
 
 ## 3. V1 definition of done — offline evidence
@@ -85,7 +84,7 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
 | Imports resumable and idempotent; matching never guesses; title never auto-attaches | `import` 8, 9, 43–44, 15–20; `title-matching` 1–8; `guided-import` |
 | Replies retained and gated | `replies`: Free stores but hides; downgrade hides without deleting; upgrade restores |
 | Plan limits never delete; upgrade never silently publishes; downgrade never deletes | `billing`: at/above limit nothing deleted; upgrade publishes nothing until "Publish eligible reviews"; downgrade grandfathered |
-| Media private by default; public responses expose no private fields | `sync` public media (opaque ids, originals never served); `storefront` exact allow-listed fields; `security` |
+| No photos; public responses expose no private fields | `security`: photos refused or ignored, no photo columns, no media route; `storefront` exact allow-listed fields |
 | Moderation | `admin`: bulk approve/hide/reject/restore through the allowance; `isolation`: no cross-shop moderation |
 | Manual product resolution | `guided-import`; `title-matching` 8 (only the shop's own products) |
 | Errors understandable | `guided-import`: plain-English explanations and problem report; `import` 4–5, 16 |
@@ -110,12 +109,11 @@ live merchant store.
    `proofly.proxy_path` and `proofly.storefront` app-data metafields are read by Liquid.
 6. **Theme app extension:** Theme Editor deep links (add block, activate embed), Dawn plus three other themes, zero
    console errors.
-7. **App proxy:** signed requests, a changed `path_prefix`, customer-locale paths, and request and upload size limits
+7. **App proxy:** signed requests, a changed `path_prefix`, customer-locale paths, and the 64 KB submission size limit
    through Shopify's proxy.
 8. **Webhooks:** `app/uninstalled`, `app/scopes_update`, the compliance topics (including `shop/redact` timing), and
    HMAC verification with the real secret.
-9. **Media:** S3 or R2 buckets (private and public), the CDN in front of the public bucket, maintenance list and delete on
-   the real store, and remote-image import (`https` links) from real hosts.
+9. **Storage:** the private S3 or R2 bucket for import CSVs, and maintenance list and delete against it.
 10. **Performance:** Lighthouse and Web Vitals on a product page with the widget, within the storefront budget.
 11. **Deployment:** building the container image (Docker was not available locally), migrations against managed
     Postgres with the `proofly_app` role, `/healthz` on the host, and the hourly scheduler.

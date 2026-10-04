@@ -1,32 +1,31 @@
 import { createHash, randomUUID } from "node:crypto";
 import { recomputeProduct } from "./aggregates.server";
 import { parseCsv } from "./csv";
-import { can, releaseEligibleMedia, releaseEligibleReviews } from "./entitlements.server";
-import { importFileKey, readPrivate, sniffType, storePrivateFile, storeReviewImage } from "./media.server";
+import { can, releaseEligibleReviews } from "./entitlements.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
-import { fetchRemoteImage, RemoteImageError } from "./remote-image.server";
+import { importFileKey, readPrivate, storePrivateFile } from "./storage.server";
 import { isShopActive, withTenant, type Tenant } from "./tenant.server";
-import { normaliseZipName, readZipDirectory, readZipEntry, ZipError, type ZipEntry } from "./zip.server";
 
 /**
  * Merchant-owned review import engine (generic CSV; provider presets only map columns). docs/IMPORT.md.
  *
- *  createImport  → validates limits, stores the files privately, parses + VALIDATES + MATCHES every record (nothing is
+ *  createImport  → validates limits, stores the CSV privately, parses + VALIDATES + MATCHES every record (nothing is
  *                  written to reviews yet), saves the analysis and per-product matches → job "queued".
  *  runImport     → claims the job and writes records in small batches, each batch committed together with the job's
  *                  cursor (resume = continue at the cursor; no giant transaction). Then FINALIZE once: admit the job's
- *                  reviews and photos to public view by date order (entitlements), recompute aggregates, flag
+ *                  reviews to public view by date order (entitlements), recompute aggregates, flag
  *                  duplicates. Rating cache sync goes through rating-cache.server.
  *  Lifecycle: queued → running → completed | completed_with_warnings | failed (resumable) | cancelled.
  *
  * Locked rules honoured here: imports never truncated (plan limits only hold reviews back, oldest-first admission);
- * nothing deleted; title is never an automatic product-matching key; unknown statuses never become public; a source
+ * nothing deleted; title is never an automatic product-matching key; review photos are not supported (photo columns are
+ * ignored like any other unknown column); unknown statuses never become public; a source
  * "published" row still goes through Proofly's admission; tenant = the authenticated shop only.
  */
 
 const MB = 1024 ** 2;
 export const IMPORT_LIMITS = Object.freeze({
-  csvBytes: 50 * MB, archiveBytes: 2 * 1024 * MB, imageBytes: 20 * MB, imagesPerReview: 5,
+  csvBytes: 50 * MB,
   bodyChars: 20_000, titleChars: 255, nameChars: 255, batchRows: 50, reportProblems: 1_000,
 });
 
@@ -49,7 +48,6 @@ const ALIASES = {
   reviewDate: ["review_date", "date", "created_at"],
   status: ["status", "state"],
   reply: ["reply", "reply_content", "merchant_reply", "store_reply"],
-  images: ["image_files", "images", "photos"],
 } as const;
 type Field = keyof typeof ALIASES;
 export type PublishMode = "publish" | "moderate";
@@ -106,7 +104,6 @@ export interface Analysed {
   sourceReviewId: string;
   ref: string;
   rating: number; title: string; body: string; reviewerName: string; reviewDate: Date; intent: Intent; reply: string;
-  images: { position: number; ref: string; problem?: string }[];
 }
 
 function pickColumns(header: string[], mapping: ImportOptions["mapping"] = {}) {
@@ -143,8 +140,6 @@ export function analyseRecords(csvText: string, opts: ImportOptions, now = Date.
     else if (STATUS_WORDS[rawStatus]) intent = STATUS_WORDS[rawStatus];
     else { intent = "pending"; warnings.push("unknown_status"); } // never public by accident
     if (intent === "published" && opts.publishMode === "moderate") intent = "pending";
-    const refs = get(r, "images").split(/[;|]/).map((s) => s.trim()).filter(Boolean);
-    const images = refs.map((ref, position) => ({ position, ref, problem: position >= IMPORT_LIMITS.imagesPerReview ? "too_many_images" : imageRefProblem(ref) }));
     let code: string | undefined;
     if (!productId && !handle && !sku && !productTitle) code = "missing_product_reference";
     else if (productId && !/^\d{1,20}$/.test(productId)) code = "invalid_product_id";
@@ -157,7 +152,7 @@ export function analyseRecords(csvText: string, opts: ImportOptions, now = Date.
     const rawId = norm(get(r, "sourceReviewId"));
     if (!code && rawId.length > 255) code = "invalid_review_id";
     const sourceReviewId = code ? rawId : rawId || fallbackId(ref, reviewerName, reviewDate!, body);
-    return { record: i + 1, ok: !code, code, warnings, sourceReviewId, ref, rating: rating ?? 0, title, body, reviewerName, reviewDate: reviewDate ?? new Date(0), intent, reply: get(r, "reply").trim(), images };
+    return { record: i + 1, ok: !code, code, warnings, sourceReviewId, ref, rating: rating ?? 0, title, body, reviewerName, reviewDate: reviewDate ?? new Date(0), intent, reply: get(r, "reply").trim() };
   });
 
   // Same source id more than once: identical records → keep one; conflicting → none (never "first wins", which would
@@ -166,23 +161,11 @@ export function analyseRecords(csvText: string, opts: ImportOptions, now = Date.
   for (const a of out) if (a.ok) groups.set(a.sourceReviewId, [...(groups.get(a.sourceReviewId) ?? []), a]);
   for (const g of groups.values()) {
     if (g.length < 2) continue;
-    const sig = (a: Analysed) => JSON.stringify([a.ref, a.rating, a.title, a.body, a.reviewerName, +a.reviewDate, a.intent, a.reply, a.images.map((x) => x.ref)]);
+    const sig = (a: Analysed) => JSON.stringify([a.ref, a.rating, a.title, a.body, a.reviewerName, +a.reviewDate, a.intent, a.reply]);
     if (new Set(g.map(sig)).size === 1) g.slice(1).forEach((a) => { a.ok = false; a.code = "duplicate_source_row"; });
     else g.forEach((a) => { a.ok = false; a.code = "conflicting_duplicate_id"; });
   }
   return { rows: out, columns: col };
-}
-
-/** Image references: archive member names, or https URLs (fetched SSRF-safely at import time). */
-const isRemote = (ref: string) => /^https:\/\//i.test(ref);
-function imageRefProblem(ref: string): string | undefined {
-  if (/^[a-z]:[\\/]/i.test(ref)) return "invalid_path"; // Windows drive path
-  if (isRemote(ref)) return undefined;
-  if (/^http:\/\//i.test(ref)) return "insecure_url";
-  if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return "unsupported_url";
-  const n = normaliseZipName(ref);
-  if (ref.includes("\0") || n.startsWith("/") || /^[a-z]:/i.test(n) || n.split("/").some((seg) => seg === ".." )) return "invalid_path";
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -278,18 +261,15 @@ const sourceLabel = (s?: string) => {
 
 /**
  * Creates an import for the AUTHENTICATED shop (shopId comes from the verified session, never from the file or the
- * client). Validates limits, stores the files privately, analyses and matches every record; writes no reviews.
+ * client). Validates limits, stores the CSV privately, analyses and matches every record; writes no reviews.
  */
-export async function createImport(shopId: string, input: { csv: Buffer; images?: Buffer | null; options: ImportOptions; actor: string; skuLookup?: SkuLookup | null }) {
+export async function createImport(shopId: string, input: { csv: Buffer; options: ImportOptions; actor: string; skuLookup?: SkuLookup | null }) {
   if (!(await isShopActive(shopId))) throw new ImportError("shop_inactive", "This store has uninstalled Proofly.");
   if (input.csv.length > IMPORT_LIMITS.csvBytes) throw new ImportError("csv_too_large", "The CSV file is larger than 50 MB.");
-  if (input.images && input.images.length > IMPORT_LIMITS.archiveBytes) throw new ImportError("archive_too_large", "The images archive is larger than 2 GB.");
   if (input.csv.includes(0)) throw new ImportError("csv_not_text", "The CSV file is not a UTF-8 text file.");
   const options: ImportOptions = { source: sourceLabel(input.options.source), publishMode: input.options.publishMode === "moderate" ? "moderate" : "publish", mapping: input.options.mapping ?? {} };
   const text = input.csv.toString("utf8");
   const { rows } = analyseRecords(text, options);
-  let zip: Map<string, ZipEntry> | null = null;
-  if (input.images) { try { zip = readZipDirectory(input.images); } catch (e) { throw new ImportError("archive_invalid", e instanceof ZipError ? e.message : "The images archive could not be read."); } }
 
   const catalogue = await withTenant(shopId, ({ db }) => db.product.findMany({ where: { shopId }, select: { id: true, shopifyProductId: true, handle: true, title: true, deletedAt: true } }));
   const refs = [...new Set(rows.filter((r) => r.ok).map((r) => r.ref))].sort();
@@ -305,21 +285,18 @@ export async function createImport(shopId: string, input: { csv: Buffer; images?
     if (m && m.status !== "matched" && catalogue.some((p) => p.id === c.productId && !p.deletedAt)) matches.set(c.sourceProductRef, { status: "matched", method: "manual", productId: c.productId, reason: null, candidates: [] });
   }
   for (const r of rows) if (r.ok && matches.get(r.ref)!.status !== "matched") { r.ok = false; r.code = `product_${matches.get(r.ref)!.status}`; }
-  for (const r of rows) for (const img of r.images) if (!img.problem && !isRemote(img.ref) && !(zip?.has(normaliseZipName(img.ref)))) img.problem = zip ? "missing_in_archive" : "no_archive";
 
   const analysis = summarise(rows, matches);
   const jobId = randomUUID();
-  const fileKey = importFileKey(shopId, jobId, "source.csv");
-  const imagesKey = input.images ? importFileKey(shopId, jobId, "images.zip") : null;
+  const fileKey = importFileKey(shopId, jobId);
   await storePrivateFile(fileKey, input.csv, "text/csv");
-  if (input.images && imagesKey) await storePrivateFile(imagesKey, input.images, "application/zip");
 
   return withTenant(shopId, async (t) => {
     const { db } = t;
     await lockImports(t);
     const busy = await db.importJob.findFirst({ where: { shopId, status: { in: ACTIVE }, OR: [{ status: "queued" }, { heartbeatAt: { gt: new Date(Date.now() - STALE_MS) } }] } });
     if (busy) throw new ImportError("import_in_progress", "Another import is already in progress for this store.");
-    await db.importJob.create({ data: { id: jobId, shopId, source: options.source!, status: "queued", options: options as object, fileKey, imagesKey, analysis: analysis as object, totalRows: rows.length, actor: input.actor } });
+    await db.importJob.create({ data: { id: jobId, shopId, source: options.source!, status: "queued", options: options as object, fileKey, analysis: analysis as object, totalRows: rows.length, actor: input.actor } });
     for (const [ref, m] of matches) {
       await db.importProductMatch.create({ data: { shopId, importJobId: jobId, sourceProductRef: ref, status: m.status, method: m.method, productId: m.productId, reason: m.reason, candidates: m.candidates, rows: rows.filter((r) => r.ref === ref).length } });
     }
@@ -330,9 +307,9 @@ export async function createImport(shopId: string, input: { csv: Buffer; images?
 
 function summarise(rows: Analysed[], matches: Map<string, MatchResult>) {
   const count = (code: string) => rows.filter((r) => r.code === code).length;
-  const problems = rows.filter((r) => !r.ok || r.warnings.length || r.images.some((i) => i.problem))
+  const problems = rows.filter((r) => !r.ok || r.warnings.length)
     .slice(0, IMPORT_LIMITS.reportProblems)
-    .map((r) => ({ record: r.record, code: r.code ?? null, warnings: r.warnings, images: r.images.filter((i) => i.problem).map((i) => i.problem), sourceReviewId: r.sourceReviewId.slice(0, 80) || null }));
+    .map((r) => ({ record: r.record, code: r.code ?? null, warnings: r.warnings, sourceReviewId: r.sourceReviewId.slice(0, 80) || null }));
   const m = [...matches.values()];
   return {
     totalRows: rows.length,
@@ -343,24 +320,20 @@ function summarise(rows: Analysed[], matches: Map<string, MatchResult>) {
     unmatchedRows: count("product_unmatched"),
     ambiguousRows: count("product_ambiguous"),
     products: { matched: m.filter((x) => x.status === "matched").length, unmatched: m.filter((x) => x.status === "unmatched").length, ambiguous: m.filter((x) => x.status === "ambiguous").length },
-    imagesReferenced: rows.reduce((n, r) => n + r.images.length, 0),
     warnings: rows.reduce((n, r) => n + r.warnings.length, 0),
     problems,
   };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-type Counts = Record<"imported" | "alreadyImported" | "adopted" | "repliesImported" | "mediaAccepted" | "mediaRejected" | "importedPending" | "importedHidden" | "importedRejected", number>;
-const ZERO: Counts = { imported: 0, alreadyImported: 0, adopted: 0, repliesImported: 0, mediaAccepted: 0, mediaRejected: 0, importedPending: 0, importedHidden: 0, importedRejected: 0 };
+type Counts = Record<"imported" | "alreadyImported" | "adopted" | "repliesImported" | "importedPending" | "importedHidden" | "importedRejected", number>;
+const ZERO: Counts = { imported: 0, alreadyImported: 0, adopted: 0, repliesImported: 0, importedPending: 0, importedHidden: 0, importedRejected: 0 };
 
 /**
  * Runs (or resumes) an import for the authenticated shop. Safe to call again after any failure: it continues at the
  * job's cursor; rows already written are never duplicated ((shop, source, source_review_id) is unique).
  */
-export type FetchImage = (url: string) => Promise<Buffer>;
-const defaultFetchImage: FetchImage = (url) => fetchRemoteImage(url, { maxBytes: IMPORT_LIMITS.imageBytes });
-
-export async function runImport(shopId: string, jobId: string, opts: { graphql?: Parameters<typeof syncAfterRatingChange>[1]; batchRows?: number; failAfterBatches?: number; fetchImage?: FetchImage } = {}) {
+export async function runImport(shopId: string, jobId: string, opts: { graphql?: Parameters<typeof syncAfterRatingChange>[1]; batchRows?: number; failAfterBatches?: number } = {}) {
   const job = await withTenant(shopId, async (t) => {
     const { db } = t;
     await lockImports(t);
@@ -379,8 +352,6 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
     const options = job.options as unknown as ImportOptions;
     const csv = await readPrivate(job.fileKey!);
     if (!csv) throw new ImportError("file_missing", "The uploaded file is no longer available.");
-    const zipBuf = job.imagesKey ? await readPrivate(job.imagesKey) : null;
-    const zip = zipBuf ? readZipDirectory(zipBuf) : null;
     const { rows } = analyseRecords(csv.toString("utf8"), options, +job.createdAt);
     const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
     for (const r of rows) if (r.ok && matches.get(r.ref)?.status !== "matched") { r.ok = false; r.code = "product_not_matched"; }
@@ -394,9 +365,9 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
         return getImport(shopId, jobId);
       }
       if (opts.failAfterBatches !== undefined && batches++ >= opts.failAfterBatches) throw new Error("simulated process failure");
-      await writeBatch(shopId, jobId, rows.slice(cursor, cursor + size), matches, zip, zipBuf, Math.min(cursor + size, rows.length), opts.fetchImage ?? defaultFetchImage);
+      await writeBatch(shopId, jobId, rows.slice(cursor, cursor + size), matches, Math.min(cursor + size, rows.length));
     }
-    await finalize(shopId, jobId, rows);
+    await finalize(shopId, jobId);
   } catch (e) {
     const msg = e instanceof ImportError ? e.message : "The import stopped unexpectedly. It can be resumed.";
     console.warn("import failed", jobId, e instanceof Error ? e.message.slice(0, 120) : "");
@@ -407,36 +378,15 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
   return getImport(shopId, jobId);
 }
 
-async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matches: Map<string, { productId: string | null }>, zip: Map<string, ZipEntry> | null, zipBuf: Buffer | null, nextCursor: number, fetchImage: FetchImage) {
+async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matches: Map<string, { productId: string | null }>, nextCursor: number) {
   const valid = batch.filter((r) => r.ok);
-  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { source: true, counts: true, report: true } }));
-  const mediaErrors: { record: number; code: string }[] = [];
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { source: true, counts: true } }));
   const existing = new Map((await withTenant(shopId, ({ db }) => db.review.findMany({
     where: { shopId, source: job.source, sourceReviewId: { in: valid.map((r) => r.sourceReviewId) } },
     select: { id: true, sourceReviewId: true, importJobId: true },
   }))).map((r) => [r.sourceReviewId, r]));
 
-  // Images for NEW reviews are processed before the transaction (storage + sharp are slow); a crash here only leaves
-  // unreferenced private objects, never duplicate rows.
-  const fresh = valid.filter((r) => !existing.has(r.sourceReviewId)).map((r) => ({ r, id: randomUUID(), images: [] as Awaited<ReturnType<typeof storeReviewImage>>[], rejected: 0 }));
-  for (const f of fresh) {
-    const seen = new Set<string>();
-    for (const img of f.r.images) {
-      if (img.problem) { f.rejected++; continue; }
-      try {
-        const buf = isRemote(img.ref) ? await fetchImage(img.ref) : readZipEntry(zipBuf!, zip!.get(normaliseZipName(img.ref))!, IMPORT_LIMITS.imageBytes);
-        if (buf.length > IMPORT_LIMITS.imageBytes) { f.rejected++; mediaErrors.push({ record: f.r.record, code: "too_large" }); continue; }
-        if (!sniffType(buf)) { f.rejected++; mediaErrors.push({ record: f.r.record, code: "unsupported_type" }); continue; }
-        const stored = await storeReviewImage(shopId, f.id, buf);
-        if (seen.has(stored.sha256)) { f.rejected++; continue; }
-        seen.add(stored.sha256);
-        f.images.push(stored);
-      } catch (e) {
-        f.rejected++;
-        mediaErrors.push({ record: f.r.record, code: e instanceof RemoteImageError ? `remote_${e.code}` : e instanceof ZipError ? "archive_entry_unreadable" : "image_unreadable" });
-      }
-    }
-  }
+  const fresh = valid.filter((r) => !existing.has(r.sourceReviewId)).map((r) => ({ r, id: randomUUID() }));
 
   await withTenant(shopId, async (t) => {
     const { db } = t;
@@ -454,17 +404,12 @@ async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matc
         }],
         skipDuplicates: true,
       });
-      if (!created.count) { c.alreadyImported++; continue; } // created concurrently: its stored images stay unreferenced
+      if (!created.count) { c.alreadyImported++; continue; } // created concurrently
       c.imported++;
       if (r.intent === "pending") c.importedPending++;
       if (r.intent === "hidden") c.importedHidden++;
       if (r.intent === "rejected") c.importedRejected++;
       if (r.reply) { await db.reviewReply.create({ data: { shopId, reviewId: f.id, reply: r.reply.slice(0, 5_000) } }); c.repliesImported++; }
-      for (const [position, s] of f.images.entries()) {
-        await db.reviewImage.create({ data: { shopId, reviewId: f.id, position, originalFilename: `import-${position + 1}`, mediaStatus: "storage_limited", ...s } });
-      }
-      c.mediaAccepted += f.images.length;
-      c.mediaRejected += f.rejected;
     }
     // Already stored: unchanged — unless it belongs to an import that never finished; then this job adopts it so
     // finalize admits it in date order with everything else (no row is ever written twice).
@@ -476,13 +421,11 @@ async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matc
       }
       if (e.importJobId !== jobId) c.alreadyImported++;
     }
-    const report = (job.report ?? {}) as { mediaErrors?: { record: number; code: string }[] };
-    const merged = [...(report.mediaErrors ?? []), ...mediaErrors].slice(0, IMPORT_LIMITS.reportProblems);
-    await db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, report: { ...report, mediaErrors: merged }, heartbeatAt: new Date() } });
+    await db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } });
   });
 }
 
-async function finalize(shopId: string, jobId: string, rows: Analysed[]) {
+async function finalize(shopId: string, jobId: string) {
   await withTenant(shopId, async (t) => {
     const { db } = t;
     const job = await db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } });
@@ -490,8 +433,6 @@ async function finalize(shopId: string, jobId: string, rows: Analysed[]) {
     // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
     const held = await db.review.findMany({ where: { ...mine, status: "published", holdReason: "plan_limit" }, select: { id: true } });
     await releaseEligibleReviews(t, { reviewIds: held.map((r) => r.id), actor: job.actor ?? "import" });
-    const images = await db.reviewImage.findMany({ where: { shopId, mediaStatus: "storage_limited", review: mine }, select: { id: true } });
-    await releaseEligibleMedia(t, { imageIds: images.map((i) => i.id), actor: job.actor ?? "import" });
     // 2. Duplicate flags (admin information only — never used for publication).
     await db.$executeRaw`UPDATE reviews r SET flags = array_append(r.flags, CASE WHEN EXISTS (
         SELECT 1 FROM reviews o WHERE o.shop_id = r.shop_id AND o.content_hash = r.content_hash AND o.id <> r.id AND o.product_id = r.product_id)
@@ -503,20 +444,18 @@ async function finalize(shopId: string, jobId: string, rows: Analysed[]) {
     const products = await db.review.findMany({ where: mine, select: { productId: true }, distinct: ["productId"] });
     for (const p of products) await recomputeProduct(t, p.productId);
     // 4. Outcome.
-    const [published, planLimited, pending, mediaPublic, mediaStorageLimited, replies] = await Promise.all([
+    const [published, planLimited, pending, replies] = await Promise.all([
       db.review.count({ where: { ...mine, status: "published", holdReason: null } }),
       db.review.count({ where: { ...mine, status: "published", holdReason: "plan_limit" } }),
       db.review.count({ where: { ...mine, status: "pending" } }),
-      db.reviewImage.count({ where: { shopId, mediaStatus: "published", review: mine } }),
-      db.reviewImage.count({ where: { shopId, mediaStatus: "storage_limited", review: mine } }),
       db.reviewReply.count({ where: { shopId, review: mine } }),
     ]);
     const repliesVisible = (await can(t, "replies")) ? replies : 0;
-    const c = { ...ZERO, ...(job.counts as Partial<Counts>), published, planLimited, awaitingModeration: pending, mediaPublic, mediaStorageLimited, repliesVisible, repliesSuppressed: replies - repliesVisible };
+    const c = { ...ZERO, ...(job.counts as Partial<Counts>), published, planLimited, awaitingModeration: pending, repliesVisible, repliesSuppressed: replies - repliesVisible };
     const a = job.analysis as { validRows: number; totalRows: number; warnings: number };
-    const warnings = a.validRows < a.totalRows || a.warnings > 0 || c.mediaRejected > 0 || rows.some((r) => r.images.some((i) => i.problem));
+    const warnings = a.validRows < a.totalRows || a.warnings > 0;
     await db.importJob.update({ where: { id: jobId }, data: { status: warnings ? "completed_with_warnings" : "completed", counts: c, finalizedAt: new Date(), finishedAt: new Date(), heartbeatAt: new Date() } });
-    await db.auditLog.create({ data: { shopId, actor: job.actor ?? "import", action: "import.finished", entity: "import", entityId: jobId, details: { imported: c.imported, published, planLimited, mediaStorageLimited } } });
+    await db.auditLog.create({ data: { shopId, actor: job.actor ?? "import", action: "import.finished", entity: "import", entityId: jobId, details: { imported: c.imported, published, planLimited } } });
   }, { timeoutMs: 120_000 });
 }
 
@@ -571,16 +510,6 @@ export const EXPLAIN: Record<string, string> = {
   product_not_matched: "The product for this row was not matched.",
   missing_reviewer_name: "No reviewer name — shown as “Anonymous”.",
   unknown_status: "The status was not recognised, so the review was held for moderation.",
-  invalid_path: "The photo reference is not a file inside your images ZIP.",
-  insecure_url: "Photo links must start with https://.",
-  unsupported_url: "Photo links must be https:// web addresses or files in your images ZIP.",
-  too_many_images: "Reviews can have up to 5 photos; extra photos were skipped.",
-  missing_in_archive: "The photo file was not found in your images ZIP.",
-  no_archive: "The row references a photo file but no images ZIP was uploaded.",
-  too_large: "The photo is larger than 20 MB.",
-  unsupported_type: "The photo is not a JPEG, PNG or WebP image.",
-  archive_entry_unreadable: "The photo inside the ZIP could not be read.",
-  image_unreadable: "The photo file is damaged and could not be processed.",
   title_only_needs_confirmation: "Only the product title matched. Titles are never matched automatically — please confirm the product.",
   identifier_matches_several_products: "This identifier belongs to several products. Choose the right one.",
   identifiers_disagree: "The product id, handle and SKU point to different products. Choose the right one.",
@@ -590,7 +519,7 @@ export const EXPLAIN: Record<string, string> = {
   no_matching_product: "No product in your store matches this reference.",
   skipped_by_merchant: "You chose to skip these reviews.",
 };
-export const explain = (code: string) => EXPLAIN[code] ?? (code.startsWith("remote_") ? `The photo link could not be downloaded safely (${code.slice(7).replaceAll("_", " ")}).` : code);
+export const explain = (code: string) => EXPLAIN[code] ?? code;
 
 /**
  * The merchant explicitly matches (or skips) an unresolved source product. The product must be a live product of the
@@ -632,7 +561,6 @@ export async function refreshAnalysis(shopId: string, jobId: string) {
   const stored = await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }));
   const matches = new Map(stored.map((m) => [m.sourceProductRef, { status: m.status as MatchResult["status"], method: m.method as MatchResult["method"], productId: m.productId, reason: m.reason, candidates: m.candidates as MatchResult["candidates"] }]));
   for (const r of rows) if (r.ok && matches.get(r.ref)?.status !== "matched") { r.ok = false; r.code = `product_${matches.get(r.ref)?.status === "ambiguous" ? "ambiguous" : "unmatched"}`; }
-  for (const r of rows) for (const img of r.images) if (!img.problem && !isRemote(img.ref) && !job.imagesKey) img.problem = "no_archive";
   const analysis = summarise(rows, matches);
   await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { analysis: analysis as object } }));
   return analysis;
@@ -647,8 +575,7 @@ export async function reimportFromJob(shopId: string, jobId: string, actor: stri
   if (!job) throw new ImportError("not_found", "Import not found.");
   const csv = job.fileKey ? await readPrivate(job.fileKey) : null;
   if (!csv) throw new ImportError("file_missing", "The original file is no longer kept (import files are deleted 30 days after an import finishes). Upload it again — rows already imported are skipped.");
-  const images = job.imagesKey ? await readPrivate(job.imagesKey) : null;
-  return createImport(shopId, { csv, images, options: job.options as unknown as ImportOptions, actor, skuLookup });
+  return createImport(shopId, { csv, options: job.options as unknown as ImportOptions, actor, skuLookup });
 }
 
 /** Every row that was not (fully) imported, with a plain-English reason — as CSV. Never includes review text. */
@@ -659,8 +586,6 @@ export async function importProblemReport(shopId: string, jobId: string) {
   if (!csv) return null;
   const { rows } = analyseRecords(csv.toString("utf8"), job.options as unknown as ImportOptions, +job.createdAt);
   const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
-  const mediaErrors = new Map<number, string[]>();
-  for (const e of ((job.report as { mediaErrors?: { record: number; code: string }[] }).mediaErrors ?? [])) mediaErrors.set(e.record, [...(mediaErrors.get(e.record) ?? []), e.code]);
   const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
   const lines = [["record", "review_id", "product_id", "product_handle", "sku", "product_title", "problem", "explanation"].join(",")];
   for (const r of rows) {
@@ -669,7 +594,7 @@ export async function importProblemReport(shopId: string, jobId: string) {
     const problems: string[] = [];
     if (!r.ok && r.code) problems.push(r.code);
     else if (m && m.status !== "matched") problems.push(m.reason ?? `product_${m.status}`);
-    problems.push(...r.warnings, ...r.images.flatMap((i) => (i.problem ? [i.problem] : [])), ...(mediaErrors.get(r.record) ?? []));
+    problems.push(...r.warnings);
     for (const p of [...new Set(problems)]) lines.push([String(r.record), r.sourceReviewId.startsWith("h_") ? "" : r.sourceReviewId, ref.id, ref.handle, ref.sku, ref.title, p, explain(p)].map(q).join(","));
   }
   return lines.join("\n") + "\n";

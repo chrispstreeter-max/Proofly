@@ -9,9 +9,9 @@ export const loader = async () => {
   if (!shop) return new Response("Not found", { status: 404 });
   return withTenant(shop.id, async ({ db, shopId }) => {
   const products = await db.product.findMany({ where: { shopId }, orderBy: [{ reviewCount: "desc" }, { title: "asc" }], include: { _count: { select: { reviews: true } } } });
-  const [total, published, pending, images] = await Promise.all([
+  const [total, published, pending] = await Promise.all([
     db.review.count({ where: { shopId } }), db.review.count({ where: { shopId, status: "published" } }),
-    db.review.count({ where: { shopId, status: "pending" } }), db.reviewImage.count({ where: { shopId } }),
+    db.review.count({ where: { shopId, status: "pending" } }),
   ]);
   const rows = products.map((p) => `<tr><td><a href="/dev/preview?handle=${encodeURIComponent(p.handle)}">${esc(p.title)}</a></td>
     <td>${esc(p.status ?? "")}</td><td class="n">${p.reviewCount}</td><td class="n">${p._count.reviews}</td><td class="n">${Number(p.averageRating).toFixed(2)}</td></tr>`).join("");
@@ -25,7 +25,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;bord
 <p class="note">DEV ONLY — local preview. Not connected to Shopify. Production installation is not yet authorised.</p>
 <h1>Proofly — local preview</h1>
 <div class="stats"><div><b>${total}</b>reviews</div><div><b>${published}</b>published</div><div><b>${pending}</b><a href="/dev/moderation">pending →</a></div>
-<div><b>${products.filter((p) => p._count.reviews > 0).length}</b>products with reviews</div><div><b>${images}</b>images</div></div>
+<div><b>${products.filter((p) => p._count.reviews > 0).length}</b>products with reviews</div></div>
 <p><a href="/dev/moderation">Moderation (pending, flags, approve/reject/hide/restore/reply) →</a></p>
 <div class="wrap"><table><thead><tr><th>Product</th><th>Status</th><th class="n">Published</th><th class="n">Imported</th><th class="n">Average</th></tr></thead>
 <tbody>${rows}</tbody></table></div></main></body></html>`;

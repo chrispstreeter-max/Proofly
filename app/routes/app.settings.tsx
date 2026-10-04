@@ -11,7 +11,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop } = await requireAdminTenant(request);
   const s = await withTenant(shop.id, ({ db, shopId }) => db.shopSettings.findUniqueOrThrow({ where: { shopId } }));
   return {
-    moderationEnabled: s.moderationEnabled, reviewSubmissionEnabled: s.reviewSubmissionEnabled, photoReviewsEnabled: s.photoReviewsEnabled,
+    moderationEnabled: s.moderationEnabled, reviewSubmissionEnabled: s.reviewSubmissionEnabled,
     proxyPath: s.proxyPath, proxyPublished: s.proxyPathPublished === s.proxyPath,
   };
 };
@@ -22,7 +22,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = form.get("intent");
   if (intent === "settings") {
     const on = (k: string) => form.get(k) === "on";
-    await withTenant(shop.id, (t) => updateSettings(t, { moderationEnabled: on("moderationEnabled"), reviewSubmissionEnabled: on("reviewSubmissionEnabled"), photoReviewsEnabled: on("photoReviewsEnabled") }, actor));
+    await withTenant(shop.id, (t) => updateSettings(t, { moderationEnabled: on("moderationEnabled"), reviewSubmissionEnabled: on("reviewSubmissionEnabled") }, actor));
     const ok = await publishStorefrontSettings(shop.id, admin.graphql).then(() => true, () => false);
     return { message: ok ? "Settings saved." : "Settings saved and enforced. Updating your theme's display will be retried." };
   }
@@ -50,7 +50,6 @@ export default function Settings() {
           <s-stack gap="base">
             <input type="hidden" name="intent" value="settings" />
             {box("reviewSubmissionEnabled", "Accept new reviews from customers", d.reviewSubmissionEnabled, "When off, the “Write a review” button is hidden and new submissions are refused.")}
-            {box("photoReviewsEnabled", "Allow photos with reviews", d.photoReviewsEnabled, "When off, submissions with photos are refused. Existing photos are not affected.")}
             {box("moderationEnabled", "Approve new reviews before they appear", d.moderationEnabled, "When off, new reviews publish immediately (within your plan's allowance).")}
             <s-button type="submit" variant="primary" loading={busy || undefined}>Save</s-button>
           </s-stack>

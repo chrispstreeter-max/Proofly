@@ -91,7 +91,7 @@ describe("Reply visibility follows the Replies entitlement; replies are never lo
   });
 
   test("guard: the serializer itself omits a stored reply when not entitled, and the storefront route asks the entitlement layer", async () => {
-    const r = await owner.review.findFirstOrThrow({ where: { shopId: A.shopId, source: "csv", sourceReviewId: "fixture-review-1" }, include: { images: true, reply: true } });
+    const r = await owner.review.findFirstOrThrow({ where: { shopId: A.shopId, source: "csv", sourceReviewId: "fixture-review-1" }, include: { reply: true } });
     assert.ok(r.reply);
     assert.equal(serializeReview(r, { replies: false }).reply, null);
     assert.equal(serializeReview(r, { replies: true }).reply?.body, "Reply from store A");

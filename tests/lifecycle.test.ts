@@ -23,7 +23,7 @@ import {
 } from "./helpers";
 
 const C_IDENTITY = { myshopifyDomain: DOMAIN_C, id: 9_200_000_000_003n, name: "Fixture Store C", host: "store-c.example.com" };
-const TENANT_TABLES = ["product", "review", "reviewImage", "reviewReply", "reviewRequest", "moderationAction", "importJob", "subscription"] as const;
+const TENANT_TABLES = ["product", "review", "reviewReply", "reviewRequest", "moderationAction", "importJob", "subscription"] as const;
 
 let A: Merchant;
 before(async () => {
@@ -43,7 +43,6 @@ async function snapshotA() {
     shop: await owner.shop.findUniqueOrThrow({ where: { id: A.shopId } }),
     settings: await owner.shopSettings.findUniqueOrThrow({ where }),
     reviews: await owner.review.findMany({ where, orderBy: { id: "asc" } }),
-    images: await owner.reviewImage.findMany({ where }),
     replies: await owner.reviewReply.findMany({ where }),
     jobs: await owner.importJob.findMany({ where }),
     moderation: await owner.moderationAction.findMany({ where }),

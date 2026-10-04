@@ -11,7 +11,7 @@
   const $ = (s) => root.querySelector(s);
   const list = $("[data-list]");
   const more = $("[data-more]");
-  const state = { page: 1, sort: "recent", rating: 0, photos: false, summary: null, loading: false };
+  const state = { page: 1, sort: "recent", rating: 0, summary: null, loading: false };
   const dateFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 
   const el = (tag, cls, text) => {
@@ -50,8 +50,6 @@
     };
     filters.append(pill(`All Reviews (${total})`, 0));
     for (let n = 5; n >= 1; n--) filters.append(pill(`${n} ★ (${sum.distribution[n - 1] || 0})`, n));
-    const photos = $("[data-photos]");
-    if (photos) photos.hidden = !sum.withPhotos;
   }
 
   function renderReview(r) {
@@ -73,26 +71,6 @@
     li.append(head);
     if (r.title) li.append(el("h3", "pf-title", r.title));
     li.append(el("p", "pf-body", r.body));
-    if (r.images.length) {
-      const grid = el("div", "pf-photos");
-      r.images.forEach((img, i) => {
-        const b = el("button", "pf-photo");
-        b.type = "button";
-        b.dataset.large = img.large;
-        if (img.w && img.h) b.dataset.ratio = `${img.w}x${img.h}`;
-        b.setAttribute("aria-label", `Open photo ${i + 1} from ${r.name}`);
-        const im = el("img");
-        im.src = img.thumb;
-        im.alt = "";
-        im.loading = "lazy";
-        im.decoding = "async";
-        im.width = 96;
-        im.height = 96;
-        b.append(im);
-        grid.append(b);
-      });
-      li.append(grid);
-    }
     if (r.reply) {
       const rep = el("div", "pf-reply");
       rep.append(el("p", "pf-reply-h", `Response from ${root.dataset.shopName || "the store"}`), el("p", "pf-body", r.reply.body));
@@ -109,7 +87,6 @@
     if (reset) state.page = 1;
     const q = new URLSearchParams({ page: String(state.page), sort: state.sort });
     if (state.rating) q.set("rating", String(state.rating));
-    if (state.photos) q.set("photos", "1");
     if (!state.summary) q.set("summary", "1");
     try {
       if (!API) throw new Error("no proxy path");
@@ -142,8 +119,6 @@
     Object.assign(state, patch);
     root.querySelectorAll(".pf-pill").forEach((p) => p.setAttribute("aria-pressed", String(Number(p.dataset.rating) === state.rating)));
     root.querySelectorAll(".pf-bar").forEach((b) => b.classList.toggle("is-active", Number(b.dataset.rating) === state.rating));
-    const photos = $("[data-photos]");
-    if (photos) photos.setAttribute("aria-pressed", String(state.photos));
     load(true);
   }
 
@@ -151,25 +126,13 @@
     const t = e.target.closest("button");
     if (!t || !root.contains(t)) return;
     if (t.matches(".pf-pill, .pf-bar")) setFilter({ rating: state.rating === Number(t.dataset.rating) && t.matches(".pf-bar") ? 0 : Number(t.dataset.rating) });
-    else if (t.matches("[data-photos]")) setFilter({ photos: !state.photos });
     else if (t.matches("[data-more]")) { state.page += 1; load(false); }
     else if (t.matches("[data-retry]")) load(true);
-    else if (t.matches(".pf-photo")) openLightbox(t.dataset.large, t.dataset.ratio);
     else if (t.matches("[data-write]")) openForm();
     else if (t.matches("[data-close]")) t.closest("dialog").close();
   });
   $("[data-sort]")?.addEventListener("change", (e) => setFilter({ sort: e.target.value }));
 
-  // Lightbox
-  const lightbox = $("[data-lightbox]");
-  function openLightbox(src, ratio) {
-    const img = lightbox.querySelector("[data-lightbox-img]");
-    const [w, h] = (ratio || "1600x1600").split("x");
-    img.width = Number(w);
-    img.height = Number(h);
-    img.src = src;
-    lightbox.showModal();
-  }
   root.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target === d) d.close(); }));
 
   // Write a review
@@ -187,8 +150,6 @@
     form.querySelectorAll("[data-err]").forEach((n) => (n.textContent = ""));
     const fd = new FormData(form);
     if (!fd.get("rating")) return void (form.querySelector('[data-err="rating"]').textContent = "Choose a star rating.");
-    const files = fd.getAll("images").filter((f) => f.size);
-    if (files.length > 5) return void (form.querySelector('[data-err="images"]').textContent = "Add up to 5 photos.");
     const btn = form.querySelector('[type="submit"]');
     btn.disabled = true;
     btn.textContent = "Submitting…";
