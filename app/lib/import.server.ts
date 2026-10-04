@@ -541,6 +541,7 @@ export async function getImport(shopId: string, jobId: string) {
     return {
       id: j.id, status: j.status, source: j.source, createdAt: j.createdAt, finishedAt: j.finishedAt, error: j.error,
       totalRows: j.totalRows, processedRows: j.cursor, analysis: j.analysis, counts: j.counts, filesDeletedAt: j.filesDeletedAt,
+      stalled: j.status === "running" && (!j.heartbeatAt || Date.now() - +j.heartbeatAt > STALE_MS), // worker stopped: resumable now
       matches: j.matches.map((m) => ({ ref: JSON.parse(m.sourceProductRef), status: m.status, method: m.method, productId: m.productId, reason: m.reason, candidates: m.candidates, rows: m.rows })),
     };
   });

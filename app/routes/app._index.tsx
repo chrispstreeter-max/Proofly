@@ -16,13 +16,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return withTenant(shop.id, async (t) => {
     const { db, shopId } = t;
     const planStatus = await getPlanStatus(t);
-    const lastImport = await db.importJob.findFirst({ where: { shopId }, orderBy: { createdAt: "desc" }, select: { status: true, counts: true, analysis: true } });
-    const [settings, byStatus, total, withPhotos, verified, flagged, products, unsynced] = await Promise.all([
+    const lastImport = await db.importJob.findFirst({ where: { shopId }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, counts: true, analysis: true } });
+    const [settings, byStatus, total, withPhotos, flagged, products, unsynced] = await Promise.all([
       db.shopSettings.findUnique({ where: { shopId } }),
       db.review.groupBy({ by: ["status"], where: { shopId }, _count: { _all: true } }),
       db.review.count({ where: { shopId } }),
       db.review.count({ where: { shopId, images: { some: {} } } }),
-      db.review.count({ where: { shopId, verifiedPurchase: true } }),
       db.review.count({ where: { shopId, NOT: { flags: { isEmpty: true } } } }),
       db.product.count({ where: { shopId, reviewCount: { gt: 0 } } }),
       db.$queryRaw<{ n: bigint; managed: bigint; errors: bigint }[]>`select
@@ -36,9 +35,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const key = process.env.SHOPIFY_API_KEY;
     const status = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
     return {
-      stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, verified, flagged, products },
+      stats: { total, published: status.published ?? 0, pending: status.pending ?? 0, rejected: status.rejected ?? 0, hidden: status.hidden ?? 0, withPhotos, flagged, products },
       unsynced: Number(unsynced[0]?.n ?? 0),
       lastImport: lastImport && {
+        id: lastImport.id,
         status: lastImport.status.replaceAll("_", " "),
         imported: (lastImport.counts as Record<string, number>).imported ?? 0, published: (lastImport.counts as Record<string, number>).published ?? 0,
         planLimited: (lastImport.counts as Record<string, number>).planLimited ?? 0,
@@ -163,7 +163,7 @@ export default function Dashboard() {
           {lastImport && (
             <s-paragraph>
               Latest import: {lastImport.status} — {lastImport.imported} imported, {lastImport.published} published, {lastImport.planLimited} plan-limited,
-              {" "}{lastImport.unmatched} unmatched, {lastImport.ambiguous} ambiguous. <s-link href="/app/imports">Imports</s-link>
+              {" "}{lastImport.unmatched} unmatched, {lastImport.ambiguous} ambiguous. <s-link href={`/app/imports/${lastImport.id}`}>{lastImport.unmatched + lastImport.ambiguous ? "Resolve products" : "View import"}</s-link>
             </s-paragraph>
           )}
           <s-paragraph>Public photo storage: {plan.mediaUsed} of {plan.media}{plan.storageLimited ? ` · ${plan.storageLimited} storage-limited photo${plan.storageLimited === 1 ? "" : "s"}` : ""}.{plan.unverified ? " Plan not yet confirmed with Shopify." : ""}</s-paragraph>
@@ -178,7 +178,6 @@ export default function Dashboard() {
           <Stat label="Rejected" value={stats.rejected} href="/app/reviews?status=rejected" />
           <Stat label="Hidden" value={stats.hidden} href="/app/reviews?status=hidden" />
           <Stat label="With photos" value={stats.withPhotos} href="/app/reviews?photos=yes" />
-          <Stat label="Verified purchases" value={stats.verified} href="/app/reviews?verified=yes" />
           <Stat label="Flagged for review" value={stats.flagged} href="/app/reviews?flagged=yes" />
           <Stat label="Products with reviews" value={stats.products} />
         </s-grid>
@@ -192,6 +191,7 @@ export default function Dashboard() {
             only for the {ratings.managed} product{ratings.managed === 1 ? "" : "s"} that have Proofly reviews; ratings
             from any other app are left untouched.
             {unsynced > 0 ? ` ${unsynced} product${unsynced === 1 ? " needs" : "s need"} syncing.` : " Everything is in sync."}
+            {ratings.errors > 0 ? ` ${ratings.errors} product${ratings.errors === 1 ? "" : "s"} could not be updated last time; syncing again retries ${ratings.errors === 1 ? "it" : "them"}.` : ""}
           </s-paragraph>
           <s-stack direction="inline" gap="base">
             <Form method="post"><input type="hidden" name="intent" value="sync" /><s-button type="submit" variant="primary" loading={busy || undefined}>Sync ratings to Shopify</s-button></Form>

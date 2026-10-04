@@ -1,3 +1,21 @@
+# Never ship local data, secrets or test material in an image.
+.env
+.env.*
+!.env.example
+.git
+.github
 .cache
+.react-router
+.shopify
+.pgdata
 build
 node_modules
+storage
+storage-test
+fixtures
+tests
+docs
+brand
+*.log
+* [0-9]
+* [0-9].*

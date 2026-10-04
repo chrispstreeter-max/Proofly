@@ -9,11 +9,11 @@ no orders and no customers, and the storefront form asks for no email address.
 |---|---|---|---|
 | Shop identity, encrypted offline access token | `shops`, `Session` | No (merchant's store) | `shop/redact` |
 | Products (id, handle, title, status) | `products` | No | `shop/redact` (deleted products: soft-deleted) |
-| Reviews: rating, title, body, display name, date, status | `reviews` | Reviewer's chosen display name | Merchant deletes the review, or `shop/redact` |
+| Reviews: rating, title, body, display name, date, status | `reviews` | Reviewer's chosen display name | `shop/redact` (the merchant can hide or reject a review at any time) |
 | Hashed submitter IP (salted SHA-256, abuse control) | `reviews.submitter_ip_hash` | Pseudonymous | `customers/redact` for a linked customer, or `shop/redact` |
 | Shopify customer id | `reviews.shopify_customer_id` | Yes — never set by V1; only legacy/V1.1 | `customers/redact` (unlinked) or `shop/redact` |
-| Review photos: private original + two public WebP derivatives (EXIF removed) | object storage `s/<shop>/…` | Possibly (image content) | Review/photo deleted, or `shop/redact` |
-| Replies | `review_replies` | No | Review deleted, or `shop/redact` |
+| Review photos: private original + two public WebP derivatives (EXIF removed) | object storage `s/<shop>/…` | Possibly (image content) | `shop/redact` (only published reviews' photos are public) |
+| Replies | `review_replies` | No | Reply removed by the merchant, or `shop/redact` |
 | Import source files (CSV, images ZIP) | private storage `s/<shop>/imports/<job>/` | Whatever the merchant's export contains | **30 days after the import finishes**, unless products are still unresolved (see below) |
 | Import analysis, match decisions, problem summaries | `import_jobs`, `import_product_matches`, `product_match_confirmations` | No review text | `shop/redact` |
 | Audit log (moderation, settings, exports, compliance events) | `audit_log` | No (staff ids, counts; never a customer id) | `shop/redact` |
@@ -51,7 +51,7 @@ for, and nothing outside it is read or changed.
 
 ## Export
 
-Reviews → **Export CSV** (`/app/reviews/export`, all plans) downloads every review the shop owns — any status,
+Reviews → **Export all reviews (CSV)** (`/app/reviews/export`, all plans) downloads every review the shop owns — any status,
 plan-limited or not, replies included whatever the plan — in import-template columns, with public photo URLs and the
 number of storage-limited photos. Cells a spreadsheet would run as a formula are prefixed with an apostrophe. Each
 export is audit-logged. Re-importing the file into the same store skips reviews that came from a CSV import; it is a

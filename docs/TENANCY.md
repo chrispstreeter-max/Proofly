@@ -69,7 +69,7 @@ configuration), `tests/storefront.test.ts`, `tests/import.test.ts` (import engin
 `tests/sync.test.ts` (product sync, webhooks, aggregation, rating
 ownership and reconciliation, proxy paths, public media), `tests/security.test.ts`, `tests/unit.test.ts`.
 
-## Production database setup (later checkpoint)
+## Production database setup (see [LAUNCH.md](LAUNCH.md) §1)
 
 Create the application role with `NOSUPERUSER NOBYPASSRLS`, point `DATABASE_URL` at it and `DIRECT_DATABASE_URL` at
 the schema owner; the RLS migration grants table privileges to `proofly_app` when the role exists.

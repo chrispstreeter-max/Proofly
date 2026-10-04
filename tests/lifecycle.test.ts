@@ -240,6 +240,6 @@ describe("Production install/auth configuration", () => {
     const env = { ...process.env, SHOPIFY_API_SECRET: "", TOKEN_ENCRYPTION_KEY: "" };
     const r = spawnSync(process.execPath, ["--import", "tsx", "-e", "await import('./app/shopify.server.ts')"], { env, encoding: "utf8" });
     assert.notEqual(r.status, 0);
-    assert.match(r.stderr, /Missing required environment variables: SHOPIFY_API_SECRET, TOKEN_ENCRYPTION_KEY/);
+    assert.match(r.stderr, /Invalid environment: missing SHOPIFY_API_SECRET; missing TOKEN_ENCRYPTION_KEY/);
   });
 });

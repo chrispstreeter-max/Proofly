@@ -19,7 +19,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const rating = Number(sp.get("rating"));
   const status = STATUSES.find((s) => s === sp.get("status"));
   const yesNo = (k: string) => (sp.get(k) === "yes" ? true : sp.get(k) === "no" ? false : undefined);
-  const verified = yesNo("verified");
   const photos = yesNo("photos");
   const flagged = yesNo("flagged");
   const held = yesNo("held");
@@ -34,7 +33,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ...(product ? { product: { OR: [{ handle: { contains: product, mode: "insensitive" } }, { title: { contains: product, mode: "insensitive" } }] } } : {}),
     ...(rating >= 1 && rating <= 5 ? { rating } : {}),
     ...(status ? { status } : {}),
-    ...(verified !== undefined ? { verifiedPurchase: verified } : {}),
     ...(photos === true ? { images: { some: {} } } : photos === false ? { images: { none: {} } } : {}),
     ...(held === true ? { holdReason: "plan_limit" } : held === false ? { OR: [{ holdReason: null }, { holdReason: "moderation" }] } : {}),
     ...(source ? { source } : {}),
@@ -106,7 +104,6 @@ export default function Reviews() {
                 <s-option value="">Any</s-option>
                 {STATUSES.map((s) => <s-option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</s-option>)}
               </s-select>
-              {yn("verified", "Verified purchase")}
               {yn("photos", "Has photos")}
               {yn("flagged", "Flagged")}
               {yn("held", "Held by plan limit")}

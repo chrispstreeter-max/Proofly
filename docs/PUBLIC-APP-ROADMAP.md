@@ -175,6 +175,9 @@ source, re-import of newly matched rows, problem report CSV, SSRF-safe https pho
 Checkpoint 9 (privacy, retention and export: real `shop/redact` deletion of DB rows and storage, append-only deletion
 record, customer topics without storing ids, 30-day import-file retention that keeps unresolved rows, orphan sweep,
 stalled-import recovery, review CSV export) complete locally — see [PRIVACY.md](PRIVACY.md). Covers roadmap row 10.
+Checkpoint 10 (production readiness: startup environment checks, `/healthz`, two-stage non-root container, CI with
+Theme Check / GraphQL schema / dependency audit, dashboard polish, App Store drafts, definition-of-done evidence) complete
+locally — see [LAUNCH.md](LAUNCH.md) and [APP-STORE.md](APP-STORE.md). Remaining: real-Shopify validation (LAUNCH §4).
 Checkpoint 6 decision (reply visibility): Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
 - **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review

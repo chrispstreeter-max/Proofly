@@ -19,6 +19,9 @@ export async function rateLimit(key: string, max: number, windowMs: number): Pro
 }
 
 /** Retention: counters older than a day are useless; the maintenance job deletes them. */
+/** Liveness + database reachability for the platform health check (no tenant data). */
+export const databaseReachable = () => prisma.$queryRaw`SELECT 1`.then(() => true, () => false);
+
 export const purgeRateLimits = () => prisma.$executeRaw`DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'`;
 
 /** Shopify's app proxy forwards the shopper's IP as the first X-Forwarded-For entry. */

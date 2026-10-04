@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, redirect, useActionData, useLoaderData, useNavigation } from "react-router";
+import { useEffect } from "react";
+import { Form, redirect, useActionData, useLoaderData, useNavigation, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import {
@@ -51,7 +52,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     if (intent === "start" || intent === "resume") {
       // ponytail: runs in this server process; the maintenance worker resumes stalled imports (the job is resumable).
       void runImport(shop.id, jobId, { graphql: admin.graphql }).catch(() => {});
-      return { message: "Import started. Refresh to see progress." };
+      return { message: "Import started.", started: true };
     }
     if (intent === "cancel") { await cancelImport(shop.id, jobId, actor); return { message: "Import cancelled. Reviews already imported are kept." }; }
     if (intent === "reimport") {
@@ -69,6 +70,14 @@ export default function ImportDetail() {
   const { job, problems, attention, pq, search, retentionDays } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
+  const { revalidate } = useRevalidator();
+  const live = job.status === "running" && !job.stalled;
+  const poll = live || (job.status === "queued" && !!result && "started" in result); // until the worker picks it up
+  useEffect(() => {
+    if (!poll) return;
+    const t = setInterval(revalidate, 3000); // progress updates while the import runs
+    return () => clearInterval(t);
+  }, [poll, revalidate]);
   const a = job.analysis as Record<string, number>;
   const c = job.counts as Record<string, number>;
   const unresolved = attention.filter((m) => m.status !== "matched" && m.reason !== "skipped_by_merchant").length;
@@ -85,12 +94,13 @@ export default function ImportDetail() {
       {job.error && <s-banner tone="critical"><s-paragraph>{job.error} Your data is safe; you can resume.</s-paragraph></s-banner>}
       <s-section heading="File">
         <s-paragraph>
+          {live && <>Importing… {job.processedRows} of {job.totalRows} rows processed. </>}
           {a.totalRows} rows · {a.validRows} ready to import · {a.invalidRows} with errors · {a.duplicateSourceRows} duplicates ·
           {" "}{a.unmatchedRows} unmatched product · {a.ambiguousRows} ambiguous product · {a.imagesReferenced} photos referenced. Started {job.createdAt} UTC.
         </s-paragraph>
         <s-stack direction="inline" gap="base">
           {job.status === "queued" && <Form method="post"><input type="hidden" name="intent" value="start" /><s-button type="submit" variant="primary" loading={busy || undefined}>{unresolved ? `Start import (${unresolved} product${unresolved === 1 ? "" : "s"} unresolved — those rows are skipped)` : "Start import"}</s-button></Form>}
-          {job.status === "failed" && <Form method="post"><input type="hidden" name="intent" value="resume" /><s-button type="submit" variant="primary">Resume import</s-button></Form>}
+          {(job.status === "failed" || job.stalled) && <Form method="post"><input type="hidden" name="intent" value="resume" /><s-button type="submit" variant="primary">Resume import</s-button></Form>}
           {["queued", "running", "failed"].includes(job.status) && <Form method="post"><input type="hidden" name="intent" value="cancel" /><s-button type="submit" tone="critical">Cancel</s-button></Form>}
           {!job.filesDeletedAt && ["completed", "completed_with_warnings", "cancelled"].includes(job.status) && attention.some((m) => m.method === "manual") && (
             <Form method="post"><input type="hidden" name="intent" value="reimport" /><s-button type="submit" variant="primary">Import newly matched rows</s-button></Form>
