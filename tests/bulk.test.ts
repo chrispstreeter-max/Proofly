@@ -121,6 +121,27 @@ describe("Large imports write in bulk", () => {
     await statsMatchShopify();
   });
 
+  // Real-Shopify finding (Proofly Test, 2026-10-04): resumed seconds after an interruption, the import's outcome missed
+  // the reviews the first run wrote (search hadn't indexed them), so its report under-counted plan-limited reviews.
+  test("an import resumed while search still lags counts and admits the reviews its earlier run wrote", async () => {
+    await clearReviews(A);
+    await setPlan(null);
+    const P = 9_700_000_000_010n;
+    await newProduct(P);
+    const csv = ["review_id,product_id,rating,body,reviewer_name,review_date,reply", ...rows(6, P, "lagres").map((x, i) => `${x.sourceReviewId},${P},${x.rating},${x.body},${x.reviewerName},${x.reviewDate.toISOString()},${i < 2 ? "Reply" : ""}`)].join("\n");
+    const { jobId } = await createImport(A.shopId, { csv: Buffer.from(csv), options: { source: "lagrescsv", publishMode: "publish" }, actor: "test" });
+    const store = storeOf(A.domain);
+    store.searchLag = true;
+    try {
+      await assert.rejects(runImport(A.api, jobId, { batchRows: 2, failAfterBatches: 1, sleep: noSleep }), /simulated process failure/);
+      // Resumed at once: the first run's 2 entries are not searchable yet; they become so while finalize waits.
+      const done = (await runImport(A.api, jobId, { batchRows: 2, sleep: async () => store.flushIndex() }))!;
+      const c = done.counts as { imported: number; published: number; planLimited: number; repliesImported: number; repliesSuppressed: number; repliesVisible: number };
+      assert.deepEqual([c.imported, c.published + c.planLimited, c.repliesImported, c.repliesVisible + c.repliesSuppressed], [6, 6, 2, 2]);
+    } finally { store.searchLag = false; store.flushIndex(); }
+    await statsMatchShopify();
+  });
+
   test("while Shopify works, the import keeps its heartbeat (it is never mistaken for a dead worker)", async () => {
     await clearReviews(A);
     const P = 9_700_000_000_005n;

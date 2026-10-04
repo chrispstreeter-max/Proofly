@@ -499,10 +499,18 @@ async function finalize(api: ShopApi, jobId: string, written: StoredReview[], sl
   const { shopId } = api;
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } }));
   // The job's reviews: what this run wrote (exact) plus what a search finds (earlier, interrupted runs of the job).
-  // Shopify's metaobject search lags writes by seconds, so the search alone would miss this run's latest reviews.
+  // Shopify's metaobject search lags writes by seconds, so the search alone would miss this run's latest reviews —
+  // and an earlier run's, when the import is resumed seconds after it stopped (found on a real store): wait until the
+  // search shows as many of the job's entries as the job recorded creating or adopting.
+  const recorded = job.counts as Partial<Counts>;
+  const expected = (recorded.imported ?? 0) + (recorded.adopted ?? 0);
   const mine = new Map<string, StoredReview>();
-  for await (const r of scanReviews(api, { importJobId: jobId })) mine.set(r.id, r);
-  for (const r of written) mine.set(r.id, r);
+  for (let attempt = 0; ; attempt++) {
+    for await (const r of scanReviews(api, { importJobId: jobId })) mine.set(r.id, r);
+    for (const r of written) mine.set(r.id, r);
+    if (mine.size >= expected || attempt >= 10) break;
+    await (sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(2_000);
+  }
   // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
   const admitted = await releaseEligibleReviews(api, { reviews: [...mine.values()].filter((r) => r.status === "published" && r.held), actor: job.actor ?? "import", known: [...mine.values()], sleep });
   // 2. Outcome + aggregates through the one aggregate path (the released reviews were re-read under the lock).
