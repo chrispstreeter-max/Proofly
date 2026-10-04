@@ -21,7 +21,7 @@ is carried into this repository.
 | Dev tooling | `app/routes/dev.*`, `app/routes/apps.proofly.$.tsx`, `app/routes/media.$.tsx`, `scripts/db.sh` | Dev-only (404 in production); generalised (§3) |
 | Theme app extension | `extensions/proofly/**` | Renamed and generalised (§3) |
 | Schema | `prisma/schema.prisma`, `prisma/migrations/**` | DDL only — migrations contain no data |
-| Config/tooling | `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `.eslintrc.cjs`, `.graphqlrc.ts`, `Dockerfile`, `shopify.app.toml`, `shopify.web.toml.liquid`, dotfiles, `.claude/launch.json`, `public/favicon.ico` | Names/comments generalised |
+| Config/tooling | `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `.eslintrc.cjs`, `.graphqlrc.ts`, `Dockerfile`, `shopify.app.toml`, `shopify.web.toml`, dotfiles, `.claude/launch.json`, `public/favicon.ico` | Names/comments generalised |
 | Brand + product docs | `brand/proofly-logo.png`, `docs/BRAND.md`, `docs/PRODUCT-SPEC-V1.md`, `docs/ARCHITECTURE.md`, `docs/PUBLIC-APP-ROADMAP.md` | Merchant references replaced with neutral wording; prototype-specific audit sections condensed |
 | CSV parser | `scripts/lib/csv.ts` | Generic RFC 4180 parser extracted from the prototype importer |
 

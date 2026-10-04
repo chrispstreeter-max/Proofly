@@ -1,7 +1,7 @@
-# Proofly — Shopify app configuration template. No real app is linked yet: `shopify app config link` fills in
-# client_id / application_url per environment (e.g. shopify.app.development.toml, shopify.app.production.toml).
-client_id = ""
-name = "Proofly"
+# Proofly — linked to the development app "Proofly Dev" (My Store 2) for real-Shopify validation. `shopify app dev`
+# replaces application_url / redirect_urls with its tunnel. Never link this file to the production app.
+client_id = "cd0b6e770e20e8c695d823d6dbf0ca6b"
+name = "Proofly Dev"
 application_url = "https://example.com"
 embedded = true
 
