@@ -5,6 +5,13 @@
 > §11 is authoritative for what the code does today.
 > **Commercial rules resolved 2026-10-03 (§9). Test-data policy: §10.**
 
+> **Current state and locked decisions (2026-10-04).** Reviews live in each merchant's Shopify store (merchant-owned
+> metaobjects); the storefront renders from an app-owned product metafield. **PostgreSQL is the only persistence and
+> storage dependency in V1** — no S3/R2, no object storage, no CDN of Proofly's own; import CSVs are stored in Postgres
+> (`import_files`) while an import needs them. **PostgreSQL RLS is mandatory** on every table holding shop data and is
+> never removed, weakened or bypassed. No review photos. Real-Shopify status: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md).
+> Passages below that say otherwise are historical.
+
 > **Decision 2026-10-04 — no review photos.** Proofly has no photos anywhere: no storefront uploads, no photo import
 > (ZIP or links), no photo display, no media storage allowance in plans. Every passage below that describes photos,
 > media, storage-limited media or public media ids is superseded (removed in code; see ARCHITECTURE §11.16).

@@ -3,6 +3,15 @@
 Nothing here has been deployed. This is what a deployment needs, what is proven offline, and what only a real Shopify
 store can prove.
 
+**Status (2026-10-04):** real-Shopify validation on the development store Proofly Test is logged in
+[REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md) (four defects found there and fixed). Production container:
+**blocked** (no Docker locally; the production build was started locally instead). Managed Postgres and the hourly
+scheduler: **blocked** (nothing provisioned). Performance: Lighthouse **blocked** (not installed; password-protected
+development storefront), indicative in-browser numbers only.
+
+**Locked:** PostgreSQL is the only persistence and storage dependency (no S3/R2); RLS is mandatory; import CSVs are
+stored in Postgres.
+
 ## 1. Deployment
 
 **Runtime:** the `Dockerfile` builds in one stage and runs in a second one. The runtime stage has production
@@ -56,7 +65,12 @@ to 50 MB per import in progress.
   `@shopify/shopify-app-session-storage-prisma`).
   - It is reachable only when the Prisma CLI loads Proofly's own configuration. No request data is ever deep-merged.
   - The only offered fix is a breaking Prisma downgrade, so the current version is kept. Re-check on every Prisma release.
-- **Development tooling advisories** (minimatch, braces, lodash in lint and codegen tooling) are not in the production image.
+- **Development tooling advisories** (29 high in the full tree on 2026-10-04: lodash, minimatch and others in lint,
+  build and codegen tooling) are not in the production image. `npm audit --omit=dev`: 4 high, all the `deepmerge-ts`
+  chain above.
+- **Prisma loads a `.env` file** from the working directory when one exists. The image excludes `.env*`; never mount
+  one in production (the startup check then validates exactly the platform's environment).
+- **Maintenance exits 1 when any shop failed** (others are still maintained); alert on it.
 - **iCloud Drive:** the working copy is in `~/Documents`, which iCloud syncs. iCloud has created duplicate files ending
   in " 2" (including under `.git/`).
   - `git fsck` is clean.
@@ -64,8 +78,6 @@ to 50 MB per import in progress.
   - Recommended: move the repository out of iCloud-synced folders before production work.
 - **Imports run in the web process.** If an instance restarts mid-import, the import page offers **Resume** at once (the
   worker heartbeat goes stale after 10 minutes). Maintenance marks it failed within the hour. Nothing is duplicated.
-- **Orphan sweep:** for each shop it lists every object under that shop's prefix. If a shop ever holds very many imports, make
-  it incremental. This is marked in the code.
 
 ## 3. V1 definition of done — offline evidence
 
@@ -97,7 +109,7 @@ addition to the items below, validate on a development store: review creation fr
 replies from the admin, an import of a few hundred rows, the daily recount, and a review edited in Shopify admin
 staying hidden until re-approved.
 
-None of the items below can be proven offline. Each one needs explicit authorisation and a development store, never a
+Results so far: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md). None of the items below can be proven offline. Each one needs explicit authorisation and a development store, never a
 live merchant store.
 
 1. **Install:** Shopify-managed install, token exchange, and `afterAuth` creating the tenant from the real Admin API

@@ -68,8 +68,8 @@ product ratings to the merchant's store. We do not sell data and do not use it f
   deletion happened.
 - We honour Shopify's customer data-request and customer-redaction requests.
 
-**Sub-processors [decide]:** application hosting, managed Postgres (settings and logs only), and private object
-storage for import files.
+**Sub-processors [decide]:** application hosting and managed Postgres (settings, logs, and import files while an
+import needs them). Proofly uses no separate file storage. Reviews are stored in the merchant's own Shopify store.
 
 **Contact [decide].**
 
@@ -96,9 +96,10 @@ storage for import files.
 
 ## 4. Pre-submission checklist
 
-- [ ] All REAL-SHOPIFY VALIDATION items in [LAUNCH.md](LAUNCH.md) §4 passed on a development store
+- [ ] All REAL-SHOPIFY VALIDATION items in [LAUNCH.md](LAUNCH.md) §4 passed on a development store (status: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md))
 - [ ] Listing copy, screenshots, demo store, support contact **[decide]**
 - [ ] Privacy policy published at a public URL **[decide]**
+- [ ] Hosting provider and region (managed Node + managed PostgreSQL only) **[decide]**
 - [ ] App Pricing plans configured with the handles in `app/lib/plans.ts`
 - [ ] Production environment passes the startup checks; `/healthz` monitored; maintenance scheduled hourly
 - [ ] Lighthouse report for a product page with the widget

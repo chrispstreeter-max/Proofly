@@ -5,6 +5,9 @@ no orders and no customers, and the storefront form asks for no email address.
 
 ## What Proofly stores
 
+Proofly's only storage is its PostgreSQL database (no S3/R2 or other file storage), with row-level security on every
+table that holds shop data. Reviews themselves are stored in the merchant's own Shopify store.
+
 | Data | Where | Personal data? | Kept until |
 |---|---|---|---|
 | Shop identity, encrypted offline access token | `shops`, `Session` | No (merchant's store) | `shop/redact` |

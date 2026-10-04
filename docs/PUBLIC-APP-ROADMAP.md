@@ -3,6 +3,13 @@
 From the validated single-store prototype to **Proofly**, a multi-tenant Shopify
 App Store app. Brand: [BRAND.md](BRAND.md) · V1 scope: [PRODUCT-SPEC-V1.md](PRODUCT-SPEC-V1.md).
 
+> **Current state and locked decisions (2026-10-04).** Reviews live in each merchant's Shopify store (merchant-owned
+> metaobjects); the storefront renders from an app-owned product metafield. **PostgreSQL is the only persistence and
+> storage dependency in V1** — no S3/R2, no object storage, no CDN of Proofly's own; import CSVs are stored in Postgres
+> (`import_files`) while an import needs them. **PostgreSQL RLS is mandatory** on every table holding shop data and is
+> never removed, weakened or bypassed. No review photos. Real-Shopify status: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md).
+> Passages below that say otherwise are historical.
+
 > **Decision 2026-10-04 — no review photos.** Proofly has no photos anywhere: no storefront uploads, no photo import
 > (ZIP or links), no photo display, no media storage allowance in plans. Every passage below that describes photos,
 > media, storage-limited media or public media ids is superseded (removed in code; see ARCHITECTURE §11.16).
@@ -31,7 +38,7 @@ App Store app. Brand: [BRAND.md](BRAND.md) · V1 scope: [PRODUCT-SPEC-V1.md](PRO
 | Positioning | **Review migration + review management + storefront reviews.** Onboarding makes migration first-class: “Bring your existing reviews with you” → upload → match products → validate → import → add review block → publish. Only data the merchant is authorised to export/use. |
 | Storefront design | Premium, clean, fast, theme-compatible, responsive, native-looking, configurable. No iframe aesthetic, no forced “Powered by”. |
 | Images | Originals in private object storage; storefront gets optimised WebP via CDN. The offline backup stays completely separate from production storage. |
-| Hosting | Managed Node hosting, managed PostgreSQL, Cloudflare R2, Cloudflare CDN. Primary region Canada or US. No multi-region in V1. |
+| Hosting | Managed Node hosting and managed PostgreSQL only (no R2/CDN since Phase 4). Primary region Canada or US. No multi-region in V1. |
 | Test data | Real merchant datasets are private test data only — never bundled, seeded, uploaded as shared data or referenced by production code; synthetic fixtures in CI; every new merchant starts at zero (ARCHITECTURE §10). |
 | Tenant isolation | Every merchant table tenant-scoped; shop resolved before any data access; **database row-level security required** as a second barrier; tenant-isolation tests **mandatory and merge-blocking in CI**. |
 | Billing | **Shopify App Pricing** for the App Store subscription; no Stripe. Launch prices decided (Free / $9 / $19 / $39 / $79, yearly ≈ 2 months free) — see ARCHITECTURE §6. Entitlements centralised. |
@@ -279,7 +286,7 @@ after App Store approval and explicit owner authorisation.
 |---|---|---|
 | D1 | Commercial app name and brand | **Decided: Proofly** (brand lock 2026-10-03). Still needed from the brand owner: SVG master, mark-only App Store icon (1200×1200), reversed version. Proxy subpath and extension handle fixed during CP5 |
 | D2 | First launch merchant | **Decided:** development store, then App Store approval, then ordinary-merchant install. No bypass. |
-| D3 | Hosting + data region | **Decided:** managed Node + managed PostgreSQL + Cloudflare R2/CDN; Canada or US; single region. Provider choice open. |
+| D3 | Hosting + data region | **Decided:** managed Node + managed PostgreSQL (no R2/CDN since Phase 4); Canada or US; single region. Provider choice open **[decide]**. |
 | D4 | Reviewer email | **Decided:** not collected by default; no IP/country/customer data |
 | D5 | Pricing | **Decided:** launch pricing in ARCHITECTURE §6.1; open details P1–P7 (§9 there) |
 | D6 | Verified purchase | **Decided:** V1.1, with automated review requests and order-based links |
