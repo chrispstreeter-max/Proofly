@@ -195,5 +195,8 @@ right after approval.
 - **Fix found while building:** a held review edited outside Proofly could be published by "Publish eligible reviews"
   (the one-by-one write re-signed the outside edit). Both paths now skip such reviews; only re-approval publishes them.
 - **Aggregates** for more than 20 products are recomputed from one pass over the shop's public reviews.
-- **Not verified live yet:** a real bulk operation through Proofly's code on Proofly Test (Phase 0 verified the
-  platform side: 200 entries in 17 s).
+- **Verified live (Proofly Test, 2026-10-04):** a 300-row fictional import through Proofly's code ran as one bulk
+  operation (300 entries in 25 s on Shopify's side, 68 s end to end including admission and the projection). On Free
+  with one review already public: 99 published (oldest first), 171 plan-limited, 30 pending; the product aggregate,
+  the storefront projection (99 reviews, complete) and the cached counts all matched a full recount from Shopify.
+  Large releases (> 100) in bulk are covered offline only so far.
