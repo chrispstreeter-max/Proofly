@@ -213,3 +213,5 @@ right after approval.
     **review-count cache** (plan usage) — small, and recounted daily from Shopify.
 - Server state is now: sessions (encrypted tokens), shops and settings, product cache, billing cache, import jobs
   with their CSV while needed, audit log, rate limits, deletion records.
+- **Verified live (Proofly Test, 2026-10-04):** an import created through Proofly's code stored its CSV in
+  `import_files` byte for byte and ran to completion from it (3 fictional pending reviews written to the store).
