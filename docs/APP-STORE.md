@@ -36,9 +36,8 @@ padding, no text; 3–6 desktop screenshots at 1600 × 900 with browser chrome a
   Shopify's checklist also says to avoid "reviews" in screenshots; whether that covers a review app's own widget
   showing synthetic reviews is **UNKNOWN** — keep the widget screenshot to one image.
 - **Demo store:** a development store with the synthetic catalogue in
-  [`app-store/demo-catalogue.json`](app-store/demo-catalogue.json) and the reviewer sample
-  [`app-store/reviewer-sample.csv`](app-store/reviewer-sample.csv) (8 rows: ID/handle/SKU matches, one pending, one
-  reply, one title-only row that needs a manual match, one unmatched product).
+  [`app-store/demo-catalogue.json`](app-store/demo-catalogue.json) and the reviewer sample CSV in §6 (8 rows:
+  handle/SKU matches, one pending, one reply, one title-only row that needs a manual match, one unmatched product).
 - **Support:** support email, support page URL, response time **[REQUIRED FROM CHRIS]**; emergency developer contact
   in the Partner Dashboard **[REQUIRED FROM CHRIS]**.
 
@@ -103,7 +102,7 @@ no test credentials (Proofly has no third-party account).
    and the rating summary and card stars update.
 5. **Reply:** on the review, write a reply and save. On Free the reply is stored but not shown publicly (Plan page
    explains); on Starter and above it appears under the review.
-6. **Import:** Proofly → **Import reviews** → upload `reviewer-sample.csv` (supplied with the submission). The
+6. **Import:** Proofly → **Import reviews** → upload `reviewer-sample.csv` (§6, supplied with the submission). The
    analysis shows 6 matched rows, 1 that needs confirmation (*Ceramic Pour-Over Set*, title only) and 1 unmatched
    product. **Confirm match** for the pour-over set, then **Start import**. Afterwards **Download problem report**
    (it lists the unmatched row).
@@ -139,3 +138,20 @@ Only information or actions that cannot be produced here:
 - Hosting provider account and region (sub-processor names in §2 follow from it).
 - Free trial: yes/no and length.
 - Optional: an SVG master and reversed logo from the brand owner (BRAND.md).
+
+## 6. Reviewer sample CSV
+
+Save as `reviewer-sample.csv` and attach it to the submission (kept here as text: the repository tracks no CSV files —
+merchant-data scan rule R1). Synthetic rows for the demo catalogue; verified to parse with Proofly's import engine.
+
+```csv
+review_id,product_handle,sku,product_title,rating,title,body,reviewer_name,review_date,status,reply
+sample-001,demo-stoneware-mug,,,5,Holds heat well,Keeps coffee warm for ages and feels solid in the hand.,Alex R.,2025-03-02,published,Thank you for the kind words!
+sample-002,demo-stoneware-mug,,,4,Lovely glaze,The glaze is even more beautiful in person. Slightly smaller than expected.,Jordan P.,2025-03-14,published,
+sample-003,,DEMO-TOTE-01,,5,Everyday bag,Sturdy straps and it fits a laptop easily.,Sam K.,2025-04-01,published,
+sample-004,demo-walnut-board,,,4,Great for cheese,Nice weight and the wood grain is beautiful. Needs oiling now and then.,Riley M.,2025-04-20,published,
+sample-005,demo-beeswax-candle,,,5,Clean burn,Burns evenly with a gentle honey scent.,Casey L.,2025-05-05,pending,
+sample-006,demo-wool-throw,,,3,Warm but itchy,Very warm but a little scratchy against bare skin.,Morgan T.,2025-05-18,published,
+sample-007,,,Ceramic Pour-Over Set,5,Morning ritual,Brews a smooth cup. This row has only a product title so it needs a manual match.,Taylor B.,2025-06-02,published,
+sample-008,demo-not-in-store,,,4,Unknown product,This row refers to a product that is not in the demo store and stays unmatched.,Jamie D.,2025-06-10,published,
+```
