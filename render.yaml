@@ -1,0 +1,56 @@
+# Proofly production on Render (Blueprint; docs/LAUNCH.md §6). No secrets here: every `sync: false` value is entered
+# in the Render dashboard when the Blueprint is created. The database is Neon PostgreSQL (not managed by Render).
+services:
+  - type: web
+    name: proofly
+    runtime: docker
+    dockerfilePath: ./Dockerfile # CMD: npm run docker-start (prisma migrate deploy, then serve as the non-root user)
+    region: virginia
+    plan: starter
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off" # deploys are explicit
+    envVars:
+      - key: SCOPES
+        value: read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects
+      - key: SHOPIFY_APP_URL
+        sync: false
+      - key: SHOPIFY_APP_HANDLE
+        sync: false
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: IP_HASH_SALT
+        sync: false
+      - key: DATABASE_URL # Neon, role proofly_app (NOSUPERUSER NOBYPASSRLS)
+        sync: false
+      - key: DIRECT_DATABASE_URL # Neon, schema owner: runs migrations at start
+        sync: false
+
+  - type: cron
+    name: proofly-maintenance
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: npm run maintenance # exits 1 when any shop failed → Render failure notification
+    schedule: "0 * * * *"
+    region: virginia
+    plan: starter
+    envVars:
+      - key: SCOPES
+        value: read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects
+      - key: SHOPIFY_APP_URL
+        sync: false
+      - key: SHOPIFY_APP_HANDLE
+        sync: false
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: IP_HASH_SALT
+        sync: false
+      - key: DATABASE_URL
+        sync: false

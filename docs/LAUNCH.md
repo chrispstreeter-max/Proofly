@@ -180,3 +180,44 @@ live merchant store.
    5. Create the production Shopify app and App Pricing plans; deploy its configuration and theme extension.
    6. Install on a demo development store with synthetic data; test charges; Lighthouse on its storefront.
    7. Screenshots, listing and privacy policy; submit for App Store review.
+
+## 6. Production deployment runbook (Render + Neon)
+
+**Choice:** Render runs the `Dockerfile` (web service + hourly cron job, health checks, failure notifications) from
+`render.yaml`; Neon provides managed PostgreSQL. Sources read 2026-10-04: Render cron jobs (Docker runtime with a
+custom command; minimum $1/month per cron job), Render notifications (email/Slack when a cron run fails, a service
+becomes unhealthy, or a build/deploy fails), Render Blueprint spec (`runtime: docker`, `healthCheckPath`,
+`dockerCommand`, `schedule`, `sync: false`, regions), Neon roles (roles created with SQL get only basic public-schema
+privileges — no `neon_superuser`, no `BYPASSRLS`; console-created roles have `CREATEROLE` and `BYPASSRLS`). Region:
+Render `virginia` + Neon AWS `us-east-1` (US, single region, ROADMAP D3). Both need accounts with a payment method.
+
+1. **Repository:** create a private Git repository and authorise the push (Render deploys from Git; `render.yaml`
+   is at the root).
+2. **Neon:** create a project (PostgreSQL 17, AWS us-east-1). The project's console role is the **schema owner**:
+   its direct (non-pooled) connection string is `DIRECT_DATABASE_URL`. In Neon's SQL editor, as that role:
+   ```sql
+   CREATE ROLE proofly_app WITH LOGIN PASSWORD '<generate in a password manager; never share>' NOSUPERUSER NOBYPASSRLS;
+   GRANT USAGE ON SCHEMA public TO proofly_app;
+   ALTER DEFAULT PRIVILEGES FOR ROLE <owner role> IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO proofly_app;
+   ALTER DEFAULT PRIVILEGES FOR ROLE <owner role> IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO proofly_app;
+   ```
+   `DATABASE_URL` is the direct (non-pooled) connection string for `proofly_app` (Proofly's tenant transactions set a
+   transaction-local setting; the direct endpoint avoids pooler caveats). Create the role **before** the first deploy:
+   the migrations grant table privileges only to a role that exists. Use a plan with point-in-time restore for backups.
+3. **Production Shopify app:** create it in the Partner organisation that will own the listing; link a separate
+   config (`shopify app config link --config production` → `shopify.app.production.toml`); set `application_url`
+   and `redirect_urls` to the Render URL; configure the five App Pricing plans (`free`, `starter`, `growth`, `pro`,
+   `scale`, prices in `app/lib/plans.ts`).
+4. **Secrets** (generated on your machine and pasted straight into Render, never into chat or Git):
+   `TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32`), `IP_HASH_SALT` (`openssl rand -hex 32`), `SHOPIFY_API_KEY` and
+   `SHOPIFY_API_SECRET` (production app), `SHOPIFY_APP_URL` (Render https URL), `SHOPIFY_APP_HANDLE`, the two database
+   URLs.
+5. **Render:** New → Blueprint → the repository → enter the `sync: false` values for the web service and the cron job.
+   Turn on failure notifications (email or Slack).
+6. **Shopify deploy:** `shopify app deploy --config production` (app proxy, webhooks including compliance topics,
+   theme app extension).
+7. **Verify:** deploy log shows `prisma migrate deploy` applying all 16 migrations; `GET /healthz` → `200 ok`; the first
+   hourly cron run exits 0 and logs its JSON report; RLS check (as the owner: every table with `shop_id` has forced RLS;
+   `proofly_app` has no `BYPASSRLS`); no tenant rows before the first install; secrets visible only in Render.
+8. **Rollback:** redeploy the previous successful deploy in Render. Migrations are forward-only and additive; restore
+   data with Neon point-in-time restore if ever needed.

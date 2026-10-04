@@ -9,6 +9,17 @@ or deployed. Sources: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md), 
 **Prod** = needs production. **Blocks** = blocks App Store submission according to the APP-STORE.md pre-submission
 checklist (which includes "all LAUNCH.md §4 items passed").
 
+## Status (master tracker — updated 2026-10-04, launch execution)
+
+| Area | Status | Evidence / waiting on |
+|---|---|---|
+| Code | PASS | Offline gate green; no open defects |
+| Real-Shopify validation | 67 PASS / 0 FAIL; rest open | Waiting on: the storefront password typed into the `shopify app dev` terminal (dev server + tunnel restart), then uninstall/reinstall, customer webhooks, admin pass, theme embed, proxy path, language, billing on Proofly Test |
+| Infrastructure | BLOCKED | Provider chosen and prepared: Render (web + hourly cron, `render.yaml`) + Neon PostgreSQL ([LAUNCH.md §6](LAUNCH.md)). Waiting on: accounts with a payment method; a private Git repository and permission to push |
+| Production Shopify app | BLOCKED | Waiting on: the Partner organisation that owns the listing; production URL from Render |
+| App Store package | Partly done | Listing text within limits, icon, executable reviewer walk-through, sample CSV, demo catalogue ([APP-STORE.md](APP-STORE.md)). Waiting on: REQUIRED FROM CHRIS list; screenshots and screencast need the demo store |
+| Documentation | PASS | Stale statements fixed (roadmap status and §8, D5, architecture status, brand assets) |
+
 ## A. Code complete
 
 All V1 scope is implemented and gated: 247/247 offline tests, typecheck, lint, build, Theme Check, 16 fixture checks,
@@ -97,7 +108,7 @@ GraphQL 23/23 + 2 inputs, merchant-data and secret scans, network guard. No open
 | **App Store submission ready** | Both gates above; production app created, configured (URL, App Pricing, webhooks, proxy, extension) and installed on the demo store; test charges pass there; Lighthouse report; all D rows done; APP-STORE.md §3 walk-through passes on the demo store. |
 | **Public launch ready** | Shopify approval; the production app listed; monitoring and alerts live; the first merchant installs from the App Store like any other (ROADMAP §10, no bypass). |
 
-## Documentation inconsistencies found (not changed here)
+## Documentation inconsistencies found (resolved 2026-10-04 except where noted)
 
 - **Stale status headers:** PUBLIC-APP-ROADMAP says "Nothing in this document has been implemented… No Shopify
   connection"; ARCHITECTURE says "checkpoints 1–4, local only". Both predate Phases 1–4 and the development-store
@@ -109,10 +120,10 @@ GraphQL 23/23 + 2 inputs, merchant-data and secret scans, network guard. No open
   storage) no longer applies (no photos).
 - **Duplicated lists:** LAUNCH §4 (required real-Shopify items), LAUNCH §5 (handoff) and REAL-SHOPIFY-VALIDATION
   overlap; §4 still reads as if nothing were done. REAL-SHOPIFY-VALIDATION is the authoritative status.
-- **Possibly unnecessarily blocking:** the APP-STORE checklist requires *every* LAUNCH §4 item, including a changed
+- **Possibly unnecessarily blocking (open):** the APP-STORE checklist requires *every* LAUNCH §4 item, including a changed
   proxy path, locale paths and "Dawn plus three other themes". Those paths are offline-tested and whether Shopify's
   review requires them is **UNKNOWN**; consider moving them to post-launch (your decision).
-- **iCloud:** LAUNCH §2 recommends moving the repository before production work; it is still in `~/Documents`.
+- **iCloud (open):** LAUNCH §2 recommends moving the repository before production work; it is still in `~/Documents`.
 
 ## Completion
 

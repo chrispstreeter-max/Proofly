@@ -62,3 +62,17 @@ test("an import whose worker stopped can be resumed straight away (before mainte
 test("the admin never shows an unreleased feature (verified purchases ship in V1.1)", () => {
   for (const f of ["app/routes/app._index.tsx", "app/routes/app.reviews._index.tsx"]) assert.doesNotMatch(readFileSync(f, "utf8"), /Verified purchase/, f);
 });
+
+test("Render Blueprint: no secret values, scopes identical to the app configuration, hourly maintenance, health check", () => {
+  const yaml = readFileSync("render.yaml", "utf8");
+  const toml = readFileSync("shopify.app.toml", "utf8");
+  const scopes = /^scopes = "([^"]+)"/m.exec(toml)![1];
+  const blueprint = [...yaml.matchAll(/key: SCOPES\n\s+value: (\S+)/g)].map((m) => m[1]);
+  assert.deepEqual(blueprint, [scopes, scopes]); // web + cron
+  for (const secret of ["SHOPIFY_API_SECRET", "TOKEN_ENCRYPTION_KEY", "IP_HASH_SALT", "DATABASE_URL", "DIRECT_DATABASE_URL", "SHOPIFY_API_KEY"]) {
+    for (const m of yaml.matchAll(new RegExp(`key: ${secret}\\b[^\\n]*\\n\\s+(\\w+):`, "g"))) assert.equal(m[1], "sync", `${secret} must be entered in the dashboard`);
+  }
+  assert.match(yaml, /healthCheckPath: \/healthz/);
+  assert.match(yaml, /schedule: "0 \* \* \* \*"/);
+  assert.match(yaml, /dockerCommand: npm run maintenance/);
+});
