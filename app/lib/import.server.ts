@@ -4,6 +4,7 @@ import { parseCsv } from "./csv";
 import { can, releaseEligibleMedia, releaseEligibleReviews } from "./entitlements.server";
 import { importFileKey, readPrivate, sniffType, storePrivateFile, storeReviewImage } from "./media.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
+import { fetchRemoteImage, RemoteImageError } from "./remote-image.server";
 import { isShopActive, withTenant, type Tenant } from "./tenant.server";
 import { normaliseZipName, readZipDirectory, readZipEntry, ZipError, type ZipEntry } from "./zip.server";
 
@@ -172,10 +173,13 @@ export function analyseRecords(csvText: string, opts: ImportOptions, now = Date.
   return { rows: out, columns: col };
 }
 
-/** Image references are archive member names. Remote URLs and anything path-like outside the archive are refused. */
+/** Image references: archive member names, or https URLs (fetched SSRF-safely at import time). */
+const isRemote = (ref: string) => /^https:\/\//i.test(ref);
 function imageRefProblem(ref: string): string | undefined {
   if (/^[a-z]:[\\/]/i.test(ref)) return "invalid_path"; // Windows drive path
-  if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return "remote_images_not_supported";
+  if (isRemote(ref)) return undefined;
+  if (/^http:\/\//i.test(ref)) return "insecure_url";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return "unsupported_url";
   const n = normaliseZipName(ref);
   if (ref.includes("\0") || n.startsWith("/") || /^[a-z]:/i.test(n) || n.split("/").some((seg) => seg === ".." )) return "invalid_path";
   return undefined;
@@ -187,7 +191,7 @@ function imageRefProblem(ref: string): string | undefined {
 export type SkuLookup = (skus: string[]) => Promise<Map<string, bigint[]>>; // sku → Shopify product ids (exact sku)
 
 interface Catalogue { id: string; shopifyProductId: bigint; handle: string; title: string; deletedAt: Date | null }
-export interface MatchResult { status: "matched" | "unmatched" | "ambiguous"; method: "id" | "handle" | "sku" | null; productId: string | null; reason: string | null; candidates: { productId: string; title: string; handle: string; via: string }[] }
+export interface MatchResult { status: "matched" | "unmatched" | "ambiguous"; method: "id" | "handle" | "sku" | "manual" | null; productId: string | null; reason: string | null; candidates: { productId: string; title: string; handle: string; via: string }[] }
 
 export function matchProduct(refJson: string, catalogue: Catalogue[], skuMap: Map<string, bigint[]> | null): MatchResult {
   const ref = JSON.parse(refJson) as { id: string; handle: string; sku: string; title: string };
@@ -293,8 +297,15 @@ export async function createImport(shopId: string, input: { csv: Buffer; images?
   let skuMap: Map<string, bigint[]> | null = null;
   if (skus.length && input.skuLookup) { try { skuMap = await input.skuLookup(skus); } catch { skuMap = null; } }
   const matches = new Map(refs.map((ref) => [ref, matchProduct(ref, catalogue, skuMap)]));
+  // Merchant-confirmed manual matches from earlier imports of this source fill in what automatic matching could not
+  // resolve (never override an automatic match; the product must still be live).
+  const confirmations = await withTenant(shopId, ({ db }) => db.productMatchConfirmation.findMany({ where: { shopId, source: options.source!, sourceProductRef: { in: refs } } }));
+  for (const c of confirmations) {
+    const m = matches.get(c.sourceProductRef);
+    if (m && m.status !== "matched" && catalogue.some((p) => p.id === c.productId && !p.deletedAt)) matches.set(c.sourceProductRef, { status: "matched", method: "manual", productId: c.productId, reason: null, candidates: [] });
+  }
   for (const r of rows) if (r.ok && matches.get(r.ref)!.status !== "matched") { r.ok = false; r.code = `product_${matches.get(r.ref)!.status}`; }
-  for (const r of rows) for (const img of r.images) if (!img.problem && !(zip?.has(normaliseZipName(img.ref)))) img.problem = zip ? "missing_in_archive" : "no_archive";
+  for (const r of rows) for (const img of r.images) if (!img.problem && !isRemote(img.ref) && !(zip?.has(normaliseZipName(img.ref)))) img.problem = zip ? "missing_in_archive" : "no_archive";
 
   const analysis = summarise(rows, matches);
   const jobId = randomUUID();
@@ -346,7 +357,10 @@ const ZERO: Counts = { imported: 0, alreadyImported: 0, adopted: 0, repliesImpor
  * Runs (or resumes) an import for the authenticated shop. Safe to call again after any failure: it continues at the
  * job's cursor; rows already written are never duplicated ((shop, source, source_review_id) is unique).
  */
-export async function runImport(shopId: string, jobId: string, opts: { graphql?: Parameters<typeof syncAfterRatingChange>[1]; batchRows?: number; failAfterBatches?: number } = {}) {
+export type FetchImage = (url: string) => Promise<Buffer>;
+const defaultFetchImage: FetchImage = (url) => fetchRemoteImage(url, { maxBytes: IMPORT_LIMITS.imageBytes });
+
+export async function runImport(shopId: string, jobId: string, opts: { graphql?: Parameters<typeof syncAfterRatingChange>[1]; batchRows?: number; failAfterBatches?: number; fetchImage?: FetchImage } = {}) {
   const job = await withTenant(shopId, async (t) => {
     const { db } = t;
     await lockImports(t);
@@ -380,7 +394,7 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
         return getImport(shopId, jobId);
       }
       if (opts.failAfterBatches !== undefined && batches++ >= opts.failAfterBatches) throw new Error("simulated process failure");
-      await writeBatch(shopId, jobId, rows.slice(cursor, cursor + size), matches, zip, zipBuf, Math.min(cursor + size, rows.length));
+      await writeBatch(shopId, jobId, rows.slice(cursor, cursor + size), matches, zip, zipBuf, Math.min(cursor + size, rows.length), opts.fetchImage ?? defaultFetchImage);
     }
     await finalize(shopId, jobId, rows);
   } catch (e) {
@@ -393,9 +407,10 @@ export async function runImport(shopId: string, jobId: string, opts: { graphql?:
   return getImport(shopId, jobId);
 }
 
-async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matches: Map<string, { productId: string | null }>, zip: Map<string, ZipEntry> | null, zipBuf: Buffer | null, nextCursor: number) {
+async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matches: Map<string, { productId: string | null }>, zip: Map<string, ZipEntry> | null, zipBuf: Buffer | null, nextCursor: number, fetchImage: FetchImage) {
   const valid = batch.filter((r) => r.ok);
-  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { source: true, counts: true } }));
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { source: true, counts: true, report: true } }));
+  const mediaErrors: { record: number; code: string }[] = [];
   const existing = new Map((await withTenant(shopId, ({ db }) => db.review.findMany({
     where: { shopId, source: job.source, sourceReviewId: { in: valid.map((r) => r.sourceReviewId) } },
     select: { id: true, sourceReviewId: true, importJobId: true },
@@ -409,14 +424,17 @@ async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matc
     for (const img of f.r.images) {
       if (img.problem) { f.rejected++; continue; }
       try {
-        const entry = zip!.get(normaliseZipName(img.ref))!;
-        const buf = readZipEntry(zipBuf!, entry, IMPORT_LIMITS.imageBytes);
-        if (!sniffType(buf)) { f.rejected++; continue; }
+        const buf = isRemote(img.ref) ? await fetchImage(img.ref) : readZipEntry(zipBuf!, zip!.get(normaliseZipName(img.ref))!, IMPORT_LIMITS.imageBytes);
+        if (buf.length > IMPORT_LIMITS.imageBytes) { f.rejected++; mediaErrors.push({ record: f.r.record, code: "too_large" }); continue; }
+        if (!sniffType(buf)) { f.rejected++; mediaErrors.push({ record: f.r.record, code: "unsupported_type" }); continue; }
         const stored = await storeReviewImage(shopId, f.id, buf);
         if (seen.has(stored.sha256)) { f.rejected++; continue; }
         seen.add(stored.sha256);
         f.images.push(stored);
-      } catch { f.rejected++; }
+      } catch (e) {
+        f.rejected++;
+        mediaErrors.push({ record: f.r.record, code: e instanceof RemoteImageError ? `remote_${e.code}` : e instanceof ZipError ? "archive_entry_unreadable" : "image_unreadable" });
+      }
     }
   }
 
@@ -458,7 +476,9 @@ async function writeBatch(shopId: string, jobId: string, batch: Analysed[], matc
       }
       if (e.importJobId !== jobId) c.alreadyImported++;
     }
-    await db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } });
+    const report = (job.report ?? {}) as { mediaErrors?: { record: number; code: string }[] };
+    const merged = [...(report.mediaErrors ?? []), ...mediaErrors].slice(0, IMPORT_LIMITS.reportProblems);
+    await db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, report: { ...report, mediaErrors: merged }, heartbeatAt: new Date() } });
   });
 }
 
@@ -528,6 +548,131 @@ export async function getImport(shopId: string, jobId: string) {
 
 export const listImports = (shopId: string) =>
   withTenant(shopId, ({ db }) => db.importJob.findMany({ where: { shopId }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true, status: true, source: true, createdAt: true, finishedAt: true, totalRows: true, cursor: true, counts: true, analysis: true, error: true } }));
+
+// ---------------------------------------------------------------------------------------------------------------
+// Guided import (checkpoint 8): manual matching, re-import of newly matched rows, problem report.
+
+/** Merchant-facing explanations for every code the importer reports. */
+export const EXPLAIN: Record<string, string> = {
+  missing_product_reference: "No product id, handle or SKU — add one so the review can be matched to a product.",
+  invalid_product_id: "The product id is not a Shopify product id (digits only).",
+  invalid_rating: "The rating must be a whole number from 1 to 5.",
+  invalid_date: "The date is missing, in the future, or in an unclear format. Use YYYY-MM-DD (optionally with a time).",
+  missing_body: "The review text is empty.",
+  body_too_long: "The review text is longer than 20,000 characters.",
+  title_too_long: "The review title is longer than 255 characters.",
+  name_too_long: "The reviewer name is longer than 255 characters.",
+  invalid_review_id: "The review id is longer than 255 characters.",
+  duplicate_source_row: "This exact review appears more than once in the file; it was imported once.",
+  conflicting_duplicate_id: "The same review id appears more than once with different content; none of those rows were imported.",
+  product_unmatched: "No product in your store matches this row. Match it manually below, or fix the product reference.",
+  product_ambiguous: "The product reference could point to more than one product. Choose the right one manually.",
+  product_not_matched: "The product for this row was not matched.",
+  missing_reviewer_name: "No reviewer name — shown as “Anonymous”.",
+  unknown_status: "The status was not recognised, so the review was held for moderation.",
+  invalid_path: "The photo reference is not a file inside your images ZIP.",
+  insecure_url: "Photo links must start with https://.",
+  unsupported_url: "Photo links must be https:// web addresses or files in your images ZIP.",
+  too_many_images: "Reviews can have up to 5 photos; extra photos were skipped.",
+  missing_in_archive: "The photo file was not found in your images ZIP.",
+  no_archive: "The row references a photo file but no images ZIP was uploaded.",
+  too_large: "The photo is larger than 20 MB.",
+  unsupported_type: "The photo is not a JPEG, PNG or WebP image.",
+  archive_entry_unreadable: "The photo inside the ZIP could not be read.",
+  image_unreadable: "The photo file is damaged and could not be processed.",
+  title_only_needs_confirmation: "Only the product title matched. Titles are never matched automatically — please confirm the product.",
+  identifier_matches_several_products: "This identifier belongs to several products. Choose the right one.",
+  identifiers_disagree: "The product id, handle and SKU point to different products. Choose the right one.",
+  product_id_not_in_catalogue: "That Shopify product id is not in your store's product list.",
+  product_id_deleted_in_shopify: "That product has been deleted in Shopify.",
+  sku_lookup_unavailable: "SKUs could not be checked with Shopify. Try again later or use product ids or handles.",
+  no_matching_product: "No product in your store matches this reference.",
+  skipped_by_merchant: "You chose to skip these reviews.",
+};
+export const explain = (code: string) => EXPLAIN[code] ?? (code.startsWith("remote_") ? `The photo link could not be downloaded safely (${code.slice(7).replaceAll("_", " ")}).` : code);
+
+/**
+ * The merchant explicitly matches (or skips) an unresolved source product. The product must be a live product of the
+ * AUTHENTICATED shop — a client-supplied id of another shop, a deleted product or garbage is refused. Saved on the job
+ * and as a shop-level confirmation re-used by later imports of the same source. Automatic matches cannot be overridden.
+ */
+export async function resolveProductMatch(shopId: string, jobId: string, sourceProductRef: string, productId: string | null, actor: string) {
+  return withTenant(shopId, async ({ db }) => {
+    const job = await db.importJob.findFirst({ where: { shopId, id: jobId } });
+    if (!job) throw new ImportError("not_found", "Import not found.");
+    const match = await db.importProductMatch.findFirst({ where: { shopId, importJobId: jobId, sourceProductRef } });
+    if (!match) throw new ImportError("not_found", "That product reference is not part of this import.");
+    if (match.status === "matched" && match.method !== "manual") throw new ImportError("already_matched", "This product was matched automatically.");
+    if (productId === null) {
+      await db.importProductMatch.update({ where: { id: match.id }, data: { status: "unmatched", method: null, productId: null, reason: "skipped_by_merchant" } });
+      await db.auditLog.create({ data: { shopId, actor, action: "import.match_skipped", entity: "import", entityId: jobId } });
+      return null;
+    }
+    const product = typeof productId === "string" && /^[0-9a-f-]{36}$/.test(productId) ? await db.product.findFirst({ where: { shopId, id: productId, deletedAt: null } }) : null;
+    if (!product) throw new ImportError("invalid_product", "Choose one of your store's products.");
+    await db.importProductMatch.update({ where: { id: match.id }, data: { status: "matched", method: "manual", productId: product.id, reason: null } });
+    await db.productMatchConfirmation.upsert({
+      where: { shopId_source_sourceProductRef: { shopId, source: job.source, sourceProductRef } },
+      create: { shopId, source: job.source, sourceProductRef, productId: product.id, actor },
+      update: { productId: product.id, actor },
+    });
+    await db.auditLog.create({ data: { shopId, actor, action: "import.match_confirmed", entity: "import", entityId: jobId, details: { productId: product.id } } });
+    return product;
+  });
+}
+
+/** Re-computes a queued job's analysis after manual matching (so counts and the Start button reflect it). */
+export async function refreshAnalysis(shopId: string, jobId: string) {
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
+  if (!job?.fileKey) return null;
+  const csv = await readPrivate(job.fileKey);
+  if (!csv) return null;
+  const { rows } = analyseRecords(csv.toString("utf8"), job.options as unknown as ImportOptions, +job.createdAt);
+  const stored = await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }));
+  const matches = new Map(stored.map((m) => [m.sourceProductRef, { status: m.status as MatchResult["status"], method: m.method as MatchResult["method"], productId: m.productId, reason: m.reason, candidates: m.candidates as MatchResult["candidates"] }]));
+  for (const r of rows) if (r.ok && matches.get(r.ref)?.status !== "matched") { r.ok = false; r.code = `product_${matches.get(r.ref)?.status === "ambiguous" ? "ambiguous" : "unmatched"}`; }
+  for (const r of rows) for (const img of r.images) if (!img.problem && !isRemote(img.ref) && !job.imagesKey) img.problem = "no_archive";
+  const analysis = summarise(rows, matches);
+  await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { analysis: analysis as object } }));
+  return analysis;
+}
+
+/**
+ * After an import finished, newly confirmed matches are imported by a NEW import of the same stored file: rows already
+ * imported are skipped (idempotent), the newly matched ones are written and admitted by date order.
+ */
+export async function reimportFromJob(shopId: string, jobId: string, actor: string, skuLookup: SkuLookup | null = null) {
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
+  if (!job?.fileKey) throw new ImportError("not_found", "Import not found.");
+  const csv = await readPrivate(job.fileKey);
+  if (!csv) throw new ImportError("file_missing", "The original file is no longer available. Upload it again.");
+  const images = job.imagesKey ? await readPrivate(job.imagesKey) : null;
+  return createImport(shopId, { csv, images, options: job.options as unknown as ImportOptions, actor, skuLookup });
+}
+
+/** Every row that was not (fully) imported, with a plain-English reason — as CSV. Never includes review text. */
+export async function importProblemReport(shopId: string, jobId: string) {
+  const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
+  if (!job?.fileKey) return null;
+  const csv = await readPrivate(job.fileKey);
+  if (!csv) return null;
+  const { rows } = analyseRecords(csv.toString("utf8"), job.options as unknown as ImportOptions, +job.createdAt);
+  const matches = new Map((await withTenant(shopId, ({ db }) => db.importProductMatch.findMany({ where: { shopId, importJobId: jobId } }))).map((m) => [m.sourceProductRef, m]));
+  const mediaErrors = new Map<number, string[]>();
+  for (const e of ((job.report as { mediaErrors?: { record: number; code: string }[] }).mediaErrors ?? [])) mediaErrors.set(e.record, [...(mediaErrors.get(e.record) ?? []), e.code]);
+  const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+  const lines = [["record", "review_id", "product_id", "product_handle", "sku", "product_title", "problem", "explanation"].join(",")];
+  for (const r of rows) {
+    const ref = JSON.parse(r.ref) as { id: string; handle: string; sku: string; title: string };
+    const m = matches.get(r.ref);
+    const problems: string[] = [];
+    if (!r.ok && r.code) problems.push(r.code);
+    else if (m && m.status !== "matched") problems.push(m.reason ?? `product_${m.status}`);
+    problems.push(...r.warnings, ...r.images.flatMap((i) => (i.problem ? [i.problem] : [])), ...(mediaErrors.get(r.record) ?? []));
+    for (const p of [...new Set(problems)]) lines.push([String(r.record), r.sourceReviewId.startsWith("h_") ? "" : r.sourceReviewId, ref.id, ref.handle, ref.sku, ref.title, p, explain(p)].map(q).join(","));
+  }
+  return lines.join("\n") + "\n";
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 /** Typed-row convenience (tests, internal callers): rows → template CSV → the same engine (one import mechanism). */

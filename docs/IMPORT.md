@@ -1,8 +1,26 @@
-# Proofly — Review import engine (Checkpoint 6)
+# Proofly — Review import (Checkpoints 6 and 8)
 
 Implementation: `app/lib/import.server.ts` (engine), `app/lib/csv.ts` (RFC 4180 parser), `app/lib/zip.server.ts`
-(read-only image archive reader), `app/routes/app.imports.tsx` (minimal admin boundary). The guided wizard with manual
-product matching is checkpoint 8 and is **not built yet**.
+(read-only image archive reader), `app/lib/remote-image.server.ts` (SSRF-safe photo downloads), admin routes
+`app.imports._index.tsx` (upload, column mapping, history), `app.imports.$id.tsx` (analysis, manual matching, start,
+resume, cancel, re-import), `app.imports.$id_.report.tsx` (problem report CSV).
+
+## 0. Guided flow (checkpoint 8)
+
+1. **Upload** CSV (+ optional photos ZIP) and choose "publish" or "hold for moderation". If the required columns
+   aren't recognised, the merchant maps each field to a column and uploads again.
+2. **Check file:** Proofly validates and matches every row and **writes nothing**. The import page shows counts,
+   problems in plain English, and the products that need a decision.
+3. **Resolve products** (optional):
+   - **Confirm a match:** choose one of the store's live products, from the suggestions or a search of the shop's own
+     catalogue. The choice is checked server-side to be a live product of the authenticated shop.
+   - **Skip:** leaves the reviews out.
+   - **Reuse:** confirmations are saved per shop and source and reused by later imports. They only fill gaps;
+     automatic matches can't be overridden.
+4. **Start import.** Unresolved rows are skipped and reported.
+5. **Afterwards:** "Import newly matched rows" re-imports the stored file after later confirmations. Rows already
+   imported are skipped, new ones are admitted by date order. "Download problem report" gives every unimported row with
+   its reason (no review text).
 
 ## 1. Lifecycle
 
@@ -20,7 +38,7 @@ product matching is checkpoint 8 and is **not built yet**.
 - **Finalize** admits the job's reviews and photos (date order), recomputes aggregates, flags duplicates and records
   the outcome. Job → `completed` or `completed_with_warnings`.
 
-Other states: `failed` (resumable: run again and it continues at the cursor) and `cancelled` (stops at the next batch;
+Upload no longer starts the run: the merchant reviews the analysis and starts it (§0). Other states: `failed` (resumable: run again and it continues at the cursor) and `cancelled` (stops at the next batch;
 rows already imported are kept, held, and adopted by a later re-import). There is no giant transaction. One active
 import per shop (a queued job, or a running one with a heartbeat in the last 10 minutes) is enforced under a per-shop
 advisory lock. The shop always comes from the authenticated session, never from the file or the request, and
@@ -104,8 +122,14 @@ Imported reviews are always unverified.
 
 ## 6. Photos
 
-- **Source:** members of the optional ZIP archive, referenced by name. Remote URLs (`https://…`) aren't fetched in V1;
-  they're reported as `remote_images_not_supported` (safe URL fetching is checkpoint 8).
+- **Sources:** members of the optional ZIP archive (by name) and `https://` links. Links are downloaded SSRF-safely:
+  - https on port 443 only, no credentials in the URL;
+  - every DNS answer must be a public unicast address, and the connection is pinned to the vetted address (no DNS
+    rebinding);
+  - redirects are re-validated, at most 3;
+  - 10 s timeout and a 20 MB cap while streaming.
+
+  `http://` and other schemes are refused. A failed download is reported per row by code, never with its URL.
 - **Refused** (the review still imports): path-like references (`..`, absolute, drive letters), more than 5 per review
   (the first five listed are kept), members over 20 MB (refused before and during inflation, zip-bomb safe), types
   other than JPEG/PNG/WebP (sniffed), corrupt files, and the same image twice.
@@ -146,8 +170,8 @@ The dashboard shows the latest import, and `/app/imports` shows history with res
 
 ## 10. Not yet built / not verifiable offline
 
-- **Not built:** the guided wizard and manual matching (checkpoint 8); safe remote-image fetching (checkpoint 8); a
-  background job runner (runs currently happen in the request's server process and resume on demand); retention
-  deletion of import files.
+- **Not built:** legacy-provider column presets (generic mapping instead; exact export formats aren't verified); a
+  background job runner (runs happen in the request's server process and resume on demand; see checkpoint 10);
+  retention deletion of import files (checkpoint 9).
 - **Needs a development store:** the SKU lookup and catalogue behaviour against a real Shopify catalogue, and large
   uploads through Shopify's admin and proxy request limits.

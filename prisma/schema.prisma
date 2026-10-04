@@ -230,8 +230,9 @@ model Product {
   createdAt        DateTime        @default(now()) @map("created_at")
   updatedAt        DateTime        @updatedAt @map("updated_at")
 
-  shop    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  reviews Review[]
+  shop          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  reviews       Review[]
+  confirmations ProductMatchConfirmation[]
 
   @@unique([shopId, shopifyProductId])
   @@unique([shopId, id])
@@ -458,4 +459,23 @@ model RateLimit {
   count       Int
 
   @@map("rate_limits")
+}
+
+/// A merchant-confirmed manual product match for a source product reference (checkpoint 8). Re-used by later imports
+/// of the same source for references that automatic matching leaves unmatched or ambiguous. Created only by an explicit
+/// merchant action; the product is always one of this shop's live products (composite FK).
+model ProductMatchConfirmation {
+  id               String   @id @default(uuid()) @db.Uuid
+  shopId           String   @map("shop_id") @db.Uuid
+  source           String
+  sourceProductRef String   @map("source_product_ref")
+  productId        String   @map("product_id") @db.Uuid
+  actor            String
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [shopId, productId], references: [shopId, id], onDelete: Cascade)
+
+  @@unique([shopId, source, sourceProductRef])
+  @@map("product_match_confirmations")
 }

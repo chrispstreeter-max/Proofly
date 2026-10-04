@@ -146,9 +146,10 @@ storefront-branding rules allow).
 
 ## 11. Migration workflow
 
-> **Checkpoint 6 status:** the import engine (upload → validation + matching → resumable batched import → date-ordered
-> admission) is implemented with a minimal admin page. Steps 3–4's merchant UI (manual matching), safe `https` image
-> fetching, error-CSV download and the guided wizard are checkpoint 8. Engine details: [IMPORT.md](IMPORT.md).
+> **Status (checkpoints 6 + 8):** implemented: upload, analysis without writes, column mapping, manual product
+> matching (merchant-confirmed, reused per source), start / resume / cancel, re-import of newly matched rows, problem
+> report CSV, ZIP and SSRF-safe `https` photos. Not built: legacy-provider column presets (generic mapping instead).
+> Details: [IMPORT.md](IMPORT.md).
 
 1. **Source** — generic CSV template or a provider preset (adapters): legacy-provider recovery exports, Judge.me, Loox,
    Okendo and others where their official exports allow. Adapters only map columns; no scraping, no calls to other
@@ -162,14 +163,14 @@ storefront-branding rules allow).
    3. SKU (exact, any variant) where available
    4. Other exact identifiers the source provides
    5. **Controlled manual matching:** merchant picks the Shopify product for each unmatched source product; choices
-      are saved per import and re-used on re-runs (checkpoint 8 — not built yet)
+      are saved per shop and source and re-used on re-runs (checkpoint 8)
    Ambiguous or unmatched → **flagged**, never guessed; unresolved rows are skipped and reported.
    **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
    merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation
-   (manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
+   (manual matching: checkpoint 8, implemented). Near, fuzzy or similar titles are never used — not even as suggestions.
 5. **Validate** — rating 1–5, body present, date parseable, lengths, image references resolvable, duplicates.
 6. **Confirm** — publish now or hold for moderation; imported reviews are always unverified.
-7. **Import** — background job with live progress; batched writes; images from the ZIP (implemented) or `https` URLs fetched safely (checkpoint 8)
+7. **Import** — background job with progress; batched writes; images from the ZIP or `https` URLs fetched safely
    (public addresses only, size/type limits, timeouts) → private original + optimised WebP copies.
 8. **Summary** — imported, published, pending, skipped, errors, products matched, images imported; downloadable error
    report.

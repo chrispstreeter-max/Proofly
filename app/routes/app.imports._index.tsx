@@ -1,11 +1,15 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, redirect, useActionData, useLoaderData, useNavigation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
-import { cancelImport, createImport, IMPORT_LIMITS, ImportError, listImports, runImport, skuLookupFromAdmin } from "../lib/import.server";
+import { cancelImport, createImport, IMPORT_LIMITS, ImportError, listImports, runImport, skuLookupFromAdmin, type ImportOptions } from "../lib/import.server";
 
-// Imports (minimal boundary for the import engine; the guided wizard with manual product matching is checkpoint 8).
-// The shop is always the authenticated one; nothing in the form or the file can choose a tenant.
+const FIELDS = [["sourceReviewId", "Review id"], ["productId", "Shopify product id"], ["handle", "Product handle"], ["sku", "Product SKU"], ["productTitle", "Product title (suggestions only)"],
+  ["rating", "Rating"], ["title", "Review title"], ["body", "Review text"], ["reviewerName", "Reviewer name"], ["reviewDate", "Review date"], ["status", "Status"], ["reply", "Reply"], ["images", "Photos"]] as const;
+
+// Imports: upload → analysis (validation + product matching, nothing written) → the import page, where the merchant
+// resolves products and starts the import. The shop is always the authenticated one; nothing in the form or the file
+// can choose a tenant.
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop } = await requireAdminTenant(request);
@@ -25,21 +29,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!(csv instanceof File) || !csv.size) return { message: "Choose a CSV file." };
       if (csv.size > IMPORT_LIMITS.csvBytes) return { message: "The CSV file is larger than 50 MB." };
       if (images instanceof File && images.size > IMPORT_LIMITS.archiveBytes) return { message: "The images archive is larger than 2 GB." };
-      const { jobId, analysis } = await createImport(shop.id, {
-        csv: Buffer.from(await csv.arrayBuffer()),
-        images: images instanceof File && images.size ? Buffer.from(await images.arrayBuffer()) : null,
-        options: { source: "csv", publishMode: form.get("publishMode") === "moderate" ? "moderate" : "publish" },
-        actor, skuLookup: skuLookupFromAdmin(graphql),
-      });
-      // ponytail: runs in this server process; a job runner will take over (the job is resumable either way).
-      void runImport(shop.id, jobId, { graphql }).catch(() => {});
-      return { message: `Import started: ${analysis.validRows} of ${analysis.totalRows} rows ready, ${analysis.unmatchedRows} unmatched, ${analysis.ambiguousRows} ambiguous.` };
+      const mapping: ImportOptions["mapping"] = {};
+      for (const [f] of FIELDS) { const v = form.get(`map_${f}`); if (typeof v === "string" && v) mapping[f] = v; }
+      const csvBuf = Buffer.from(await csv.arrayBuffer());
+      try {
+        const { jobId } = await createImport(shop.id, {
+          csv: csvBuf,
+          images: images instanceof File && images.size ? Buffer.from(await images.arrayBuffer()) : null,
+          options: { source: "csv", publishMode: form.get("publishMode") === "moderate" ? "moderate" : "publish", mapping },
+          actor, skuLookup: skuLookupFromAdmin(graphql),
+        });
+        throw redirect(`/app/imports/${jobId}`);
+      } catch (e) {
+        if (e instanceof ImportError && e.code === "missing_columns") {
+          const header = csvBuf.toString("utf8").replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0] ?? "";
+          return { message: `${e.message} Choose which column holds each field, then upload the file again.`, headers: header.split(",").map((h) => h.trim().replace(/^"|"$/g, "")).filter(Boolean).slice(0, 60) };
+        }
+        throw e;
+      }
     }
     const jobId = String(form.get("jobId") ?? "");
     if (intent === "resume") { void runImport(shop.id, jobId, { graphql }).catch(() => {}); return { message: "Import resumed." }; }
     if (intent === "cancel") { await cancelImport(shop.id, jobId, actor); return { message: "Import cancelled. Reviews already imported are kept." }; }
   } catch (e) {
     if (e instanceof ImportError) return { message: e.message };
+    if (e instanceof Response) throw e;
     throw e;
   }
   return { message: "Unknown action." };
@@ -47,7 +61,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function Imports() {
   const { jobs } = useLoaderData<typeof loader>();
-  const result = useActionData<typeof action>();
+  const result = useActionData<typeof action>() as { message: string; headers?: string[] } | undefined;
   const busy = useNavigation().state !== "idle";
   return (
     <s-page heading="Import reviews">
@@ -58,9 +72,22 @@ export default function Imports() {
             <input type="hidden" name="intent" value="upload" />
             <label>Reviews CSV (UTF-8, up to 50 MB) <input type="file" name="csv" accept=".csv,text/csv" required /></label>
             <label>Photos ZIP (optional, up to 2 GB; JPEG, PNG or WebP, up to 20 MB each) <input type="file" name="images" accept=".zip,application/zip" /></label>
+            {result?.headers && (
+              <s-grid gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))" gap="base">
+                {FIELDS.map(([f, label]) => (
+                  <label key={f}>{label}{" "}
+                    <select name={`map_${f}`} defaultValue="">
+                      <option value="">— not in file —</option>
+                      {result.headers!.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </s-grid>
+            )}
             <label><input type="radio" name="publishMode" value="publish" defaultChecked /> Publish imported reviews (within your plan&apos;s allowance)</label>
             <label><input type="radio" name="publishMode" value="moderate" /> Hold all imported reviews for moderation</label>
-            <s-button type="submit" variant="primary" loading={busy || undefined}>Start import</s-button>
+            <s-button type="submit" variant="primary" loading={busy || undefined}>Check file</s-button>
+            <s-paragraph>Nothing is imported until you review the results and start the import.</s-paragraph>
           </s-stack>
         </Form>
       </s-section>
@@ -76,7 +103,7 @@ export default function Imports() {
                 const a = j.analysis as Record<string, number>;
                 return (
                   <s-table-row key={j.id}>
-                    <s-table-cell>{j.createdAt} UTC</s-table-cell>
+                    <s-table-cell><s-link href={`/app/imports/${j.id}`}>{j.createdAt} UTC</s-link></s-table-cell>
                     <s-table-cell>{j.status.replaceAll("_", " ")}{j.error ? ` — ${j.error}` : ""}</s-table-cell>
                     <s-table-cell>{j.cursor} / {j.totalRows}</s-table-cell>
                     <s-table-cell>

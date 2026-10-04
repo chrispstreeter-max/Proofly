@@ -16,7 +16,7 @@ import {
 } from "../app/lib/import.server";
 import { readPrivate } from "../app/lib/media.server";
 import { markUninstalled, withTenant } from "../app/lib/tenant.server";
-import { action as importsAction, loader as importsLoader } from "../app/routes/app.imports";
+import { action as importsAction, loader as importsLoader } from "../app/routes/app.imports._index";
 import { loader as mediaLoader } from "../app/routes/media.$";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { adminRequest, args, FakeShopify, installMerchant, owner, proxyRequest, resetDb, run, type Merchant } from "./helpers";
@@ -59,9 +59,9 @@ function zipOf(files: Record<string, Buffer>, deflate = true) {
   return Buffer.concat([...locals, cd, end]);
 }
 const png = (hue: number, w = 60) => sharp({ create: { width: w, height: 40, channels: 3, background: { r: hue, g: 120, b: 200 } } }).png().toBuffer();
-async function importNow(m: Merchant, rows: Record<string, string>[], o: { images?: Buffer; publishMode?: "publish" | "moderate"; shopify?: FakeShopify; source?: string; batchRows?: number } = {}) {
+async function importNow(m: Merchant, rows: Record<string, string>[], o: { images?: Buffer; publishMode?: "publish" | "moderate"; shopify?: FakeShopify; source?: string; batchRows?: number; fetchImage?: (url: string) => Promise<Buffer> } = {}) {
   const { jobId } = await createImport(m.shopId, { csv: csvOf(rows), images: o.images ?? null, options: { publishMode: o.publishMode ?? "publish", source: o.source }, actor: "test", skuLookup: o.shopify ? skuLookupFromAdmin(o.shopify.graphql) : null });
-  await runImport(m.shopId, jobId, { batchRows: o.batchRows });
+  await runImport(m.shopId, jobId, { batchRows: o.batchRows, fetchImage: o.fetchImage });
   return (await getImport(m.shopId, jobId))!;
 }
 const C = (j: { counts: unknown }) => j.counts as Record<string, number>;
@@ -324,10 +324,11 @@ describe("Tenant isolation", () => {
     ])], "r.csv", { type: "text/csv" }));
     const before = await owner.review.findMany({ where: { shopId: b.shopId }, orderBy: { id: "asc" } });
     const res = await run(() => importsAction(args<ActionFunctionArgs>(adminRequest(a.domain, "/app/imports", { method: "POST", body: fd }))));
-    assert.match((res.data as { message: string }).message, /Import started/);
-    await new Promise((r) => setTimeout(r, 400)); // background run (same process)
     const job = await owner.importJob.findFirstOrThrow({ where: { shopId: a.shopId }, orderBy: { createdAt: "desc" } });
+    assert.equal(res.response?.status, 302);
+    assert.equal(res.response?.headers.get("Location"), `/app/imports/${job.id}`); // analysed, waiting for the merchant
     assert.equal(job.shopId, a.shopId);
+    await runImport(a.shopId, job.id);
     assert.deepEqual(await owner.review.findMany({ where: { shopId: b.shopId }, orderBy: { id: "asc" } }), before);
     assert.ok(await owner.review.findFirst({ where: { shopId: a.shopId, sourceReviewId: "x-1" } }));
   });
@@ -407,12 +408,13 @@ describe("Photos", () => {
     const j = await importNow(m, [
       row({ review_id: "img-many", image_files: "ok-1.png;ok-2.png;ok-3.png;ok-4.png;ok-5.png;ok-6.png" }),
       row({ review_id: "img-bad", image_files: "../escape.png|/etc/passwd|C:/x.png|a/../../b.png|https://example.com/x.jpg|big.png|bomb.png|anim.gif|notes.txt|ok-1.png" }),
-    ], { images: zip });
+    ], { images: zip, fetchImage: async () => { throw new Error("remote fetch not expected for refused refs"); } });
     const many = await owner.reviewImage.findMany({ where: { review: { sourceReviewId: "img-many", shopId: m.shopId } }, orderBy: { position: "asc" } });
     assert.deepEqual(many.map((i) => i.position), [0, 1, 2, 3, 4]); // first five listed, sixth refused
     const bad = A(j).problems.find((p) => p.record === 2)!;
-    // Listed order decides: the first five references are checked, everything after the fifth is refused.
-    assert.deepEqual(bad.images, ["invalid_path", "invalid_path", "invalid_path", "invalid_path", "remote_images_not_supported", ...Array(5).fill("too_many_images")]);
+    // Listed order decides: the first five references are checked, everything after the fifth is refused. (The https
+    // link in fifth place is a valid reference — downloaded SSRF-safely at run time since checkpoint 8.)
+    assert.deepEqual(bad.images, ["invalid_path", "invalid_path", "invalid_path", "invalid_path", ...Array(5).fill("too_many_images")]);
     assert.equal(await owner.reviewImage.count({ where: { review: { sourceReviewId: "img-bad", shopId: m.shopId } } }), 0);
     assert.equal(C(j).mediaAccepted, 5);
   });

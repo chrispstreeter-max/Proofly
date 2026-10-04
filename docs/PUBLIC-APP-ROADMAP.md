@@ -165,10 +165,13 @@ re-imports, date-ordered admission, ZIP photos) complete locally — see [IMPORT
 matching and remote image fetching remain checkpoint 8.
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
 merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation
-(manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
+(manual matching: checkpoint 8, implemented). Near, fuzzy or similar titles are never used — not even as suggestions.
 Checkpoint 7 (merchant review management: bulk moderation through the plan allowance, held-by-plan and source filters,
 Products page, Settings enforced on the storefront and mirrored to the theme, shared Postgres rate limits) complete
 locally — see [ARCHITECTURE.md §11.13](ARCHITECTURE.md). This covers roadmap rows 3 (embedded admin) and 7 (submission).
+Checkpoint 8 (guided import: analysis before writes, column mapping, merchant-confirmed manual matching reused per
+source, re-import of newly matched rows, problem report CSV, SSRF-safe https photos) complete locally — see
+[IMPORT.md](IMPORT.md). Legacy-provider presets are not built (generic column mapping instead).
 Checkpoint 6 decision (reply visibility): Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
 - **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review

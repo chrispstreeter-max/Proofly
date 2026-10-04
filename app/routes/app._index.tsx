@@ -121,6 +121,7 @@ export default function Dashboard() {
         <s-section heading="Set up Proofly">
           <s-stack gap="base">
             <s-paragraph>Your Proofly account is ready and empty. Three steps to start collecting reviews:</s-paragraph>
+            <s-paragraph>Coming from another review app? <s-link href="/app/imports">Bring your existing reviews with you</s-link> — nothing is published until you start the import.</s-paragraph>
             <s-ordered-list>
               <s-list-item>
                 Add the <strong>Review widget</strong> block to your product page (and, optionally, the{" "}

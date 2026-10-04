@@ -439,7 +439,7 @@ so results never depend on row order. Details: [IMPORT.md](IMPORT.md).
 ### 11.12 Product matching for imports (locked, checkpoint 6)
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
 merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation
-(manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
+(manual matching: checkpoint 8, implemented). Near, fuzzy or similar titles are never used — not even as suggestions.
 When identity is uncertain, Proofly does not guess. Suggestions are always products of the importing shop only.
 
 ### 11.13 Merchant review management (checkpoint 7)
@@ -453,4 +453,13 @@ When identity is uncertain, Proofly does not guess. Suggestions are always produ
   only so the theme can hide the button or photo field. A missing mirror falls back to "on"; the server still refuses.
 - **Rate limits** are shared through Postgres (`rate_limits`, one atomic upsert per request, SHA-256 keys containing
   the shop and an IP hash, purged after a day), so they hold across any number of app instances.
+
+### 11.14 Guided import (checkpoint 8)
+Upload analyses without writing. The merchant then resolves unmatched or ambiguous products by explicit confirmation:
+the product must be a live product of the authenticated shop, and confirmations are stored per shop and source in
+`product_match_confirmations` (RLS, composite FK) and reused only for references automatic matching can't resolve. The
+merchant then starts the import and can later re-import newly matched rows (idempotent). The problem report is a CSV
+with plain-English reasons and no review text. Photos can come from the ZIP or `https` links fetched SSRF-safely
+(public-address check on every DNS answer, pinned connection, re-validated redirects, size and time limits). Details:
+[IMPORT.md](IMPORT.md).
 

@@ -9,7 +9,7 @@ import prisma from "../app/db.server";
 import * as importModule from "../app/lib/import.server";
 import { createImport, getImport, matchProduct, runImport } from "../app/lib/import.server";
 import { withTenant } from "../app/lib/tenant.server";
-import { action as importsAction } from "../app/routes/app.imports";
+import { action as importsAction } from "../app/routes/app.imports._index";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { adminRequest, args, installMerchant, owner, proxyRequest, resetDb, run, type Merchant } from "./helpers";
 
@@ -110,8 +110,11 @@ describe("Title is never an automatic product-matching key", () => {
     assert.equal(await owner.review.count({ where: { shopId: A.shopId, body: "Title-only storefront probe" } }), 0);
   });
 
-  test("8. no manual-match function exists yet (checkpoint 8); the data it needs is preserved", async () => {
-    assert.equal(Object.keys(importModule).some((k) => /manual|confirm.*match|resolve.*match/i.test(k)), false);
+  // Updated in checkpoint 8: the manual-match function now exists (resolveProductMatch), as this decision anticipated —
+  // so the test proves explicit confirmation is the ONLY way a title-only row gets associated, and only with a product
+  // of the same shop.
+  test("8. merchant-confirmed manual match: the only way to associate, and only with this shop's product", async () => {
+    assert.equal(typeof importModule.resolveProductMatch, "function");
     const j = await importRows(A, [row({ product_title: MUG.title })]);
     const stored = await owner.importProductMatch.findFirstOrThrow({ where: { shopId: A.shopId, importJobId: j.id } });
     assert.equal(stored.status, "unmatched");
@@ -119,6 +122,12 @@ describe("Title is never an automatic product-matching key", () => {
     const job = await owner.importJob.findUniqueOrThrow({ where: { id: j.id } });
     assert.ok(job.fileKey && job.fileKey.includes(`/imports/${j.id}/`)); // the source rows stay retrievable privately
     assert.ok(((job.analysis as { problems: { code: string }[] }).problems).some((p) => p.code === "product_unmatched"));
+    const bMug = await owner.product.findFirstOrThrow({ where: { shopId: B.shopId, shopifyProductId: MUG.id } });
+    await assert.rejects(importModule.resolveProductMatch(A.shopId, j.id, stored.sourceProductRef, bMug.id, "x"), /Choose one of your store's products/);
+    const aMug = await owner.product.findFirstOrThrow({ where: { shopId: A.shopId, shopifyProductId: MUG.id } });
+    await importModule.resolveProductMatch(A.shopId, j.id, stored.sourceProductRef, aMug.id, "staff:9");
+    const after = await owner.importProductMatch.findFirstOrThrow({ where: { id: stored.id } });
+    assert.deepEqual([after.status, after.method, after.productId], ["matched", "manual", aMug.id]);
   });
 
   test("security: a client cannot submit a product id (any shop's) as the selected match", async () => {
@@ -129,8 +138,11 @@ describe("Title is never an automatic product-matching key", () => {
     for (const [k, v] of Object.entries({ productId: bTote.id, product_id: bTote.id, match: bTote.id, selectedProductId: aTote.id, shopId: B.shopId })) fd.set(k, v);
     fd.set("csv", new File([csv([row({ review_id: "sec-1", product_title: TOTE.title }), row({ review_id: "sec-2", product_title: TOTE.title, selected_product_id: aTote.id, matched_product: bTote.id })])], "r.csv"));
     const res = await run(() => importsAction(args<ActionFunctionArgs>(adminRequest(A.domain, "/app/imports", { method: "POST", body: fd }))));
-    assert.match((res.data as { message: string }).message, /0 of 2 rows ready, 2 unmatched/);
-    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(res.response?.status, 302);
+    const job = await owner.importJob.findFirstOrThrow({ where: { shopId: A.shopId }, orderBy: { createdAt: "desc" } });
+    const a = job.analysis as { validRows: number; unmatchedRows: number };
+    assert.deepEqual([a.validRows, a.unmatchedRows], [0, 2]);
+    await runImport(A.shopId, job.id);
     assert.equal(await owner.review.count({ where: { sourceReviewId: { in: ["sec-1", "sec-2"] } } }), 0);
   });
 });
