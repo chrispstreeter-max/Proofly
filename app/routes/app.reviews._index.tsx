@@ -1,9 +1,11 @@
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useLoaderData, useSearchParams } from "react-router";
+import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { Form, useActionData, useLoaderData, useSearchParams } from "react-router";
 import type { Prisma, ReviewStatus } from "@prisma/client";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
-import { withTenant } from "../lib/tenant.server";
+import { ACTIONS, moderate, type ModerationActionName } from "../lib/moderation.server";
+import { syncAfterRatingChange } from "../lib/rating-cache.server";
+import { isUuid, withTenant } from "../lib/tenant.server";
 
 const PER_PAGE = 50;
 const STATUSES: ReviewStatus[] = ["pending", "published", "rejected", "hidden"];
@@ -20,6 +22,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const verified = yesNo("verified");
   const photos = yesNo("photos");
   const flagged = yesNo("flagged");
+  const held = yesNo("held");
+  const source = sp.get("source")?.trim().slice(0, 40) ?? "";
   const from = sp.get("from") ? new Date(`${sp.get("from")}T00:00:00Z`) : undefined;
   const to = sp.get("to") ? new Date(`${sp.get("to")}T23:59:59Z`) : undefined;
   const page = Math.max(1, Number(sp.get("page")) || 1);
@@ -32,6 +36,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ...(status ? { status } : {}),
     ...(verified !== undefined ? { verifiedPurchase: verified } : {}),
     ...(photos === true ? { images: { some: {} } } : photos === false ? { images: { none: {} } } : {}),
+    ...(held === true ? { holdReason: "plan_limit" } : held === false ? { OR: [{ holdReason: null }, { holdReason: "moderation" }] } : {}),
+    ...(source ? { source } : {}),
     ...(flagged === true ? { NOT: { flags: { isEmpty: true } } } : flagged === false ? { flags: { isEmpty: true } } : {}),
     ...(from || to ? { reviewDate: { ...(from && !isNaN(+from) ? { gte: from } : {}), ...(to && !isNaN(+to) ? { lte: to } : {}) } } : {}),
   };
@@ -47,13 +53,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     rows: rows.map((r) => ({
       id: r.id, date: r.reviewDate.toISOString().slice(0, 10), product: r.product.title, rating: r.rating,
       title: r.title, excerpt: r.body.slice(0, 110), name: r.reviewerName, status: r.status,
-      verified: r.verifiedPurchase, images: r._count.images, flags: r.flags, replied: !!r.reply, source: r.source,
+      verified: r.verifiedPurchase, images: r._count.images, flags: r.flags, replied: !!r.reply, source: r.source, held: r.holdReason === "plan_limit",
     })),
   };
 };
 
+/**
+ * Bulk moderation of THIS shop's reviews (ids of other shops are ignored by the tenant-scoped moderate()).
+ * Approving goes through the plan allowance: what doesn't fit stays approved but held — never rejected.
+ */
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { shop, admin, actor } = await requireAdminTenant(request);
+  const form = await request.formData();
+  const intent = String(form.get("intent"));
+  if (!(intent in ACTIONS)) return { message: "Choose an action." };
+  const ids = [...new Set(form.getAll("ids").map(String).filter(isUuid))].slice(0, 250);
+  if (!ids.length) return { message: "Select at least one review." };
+  const { n, held } = await withTenant(shop.id, async (t) => {
+    const n = await moderate(t, ids, intent as ModerationActionName, actor);
+    const held = intent === "approve" ? await t.db.review.count({ where: { shopId: t.shopId, id: { in: ids }, status: "published", holdReason: "plan_limit" } }) : 0;
+    return { n, held };
+  });
+  if (n) await syncAfterRatingChange(shop.id, admin.graphql); // best effort; the moderation above stands either way
+  const verb = { approve: "approved", reject: "rejected", hide: "hidden", restore: "returned to pending" }[intent as ModerationActionName];
+  return { message: `${n} review${n === 1 ? "" : "s"} ${verb}.${held ? ` ${held} approved but currently held by your plan limit — see Plan.` : ""}` };
+};
+
 export default function Reviews() {
   const { rows, count, page, pages } = useLoaderData<typeof loader>();
+  const result = useActionData<typeof action>();
   const [sp] = useSearchParams();
   const v = (k: string) => sp.get(k) ?? "";
   const pageHref = (n: number) => { const p = new URLSearchParams(sp); p.set("page", String(n)); return `/app/reviews?${p}`; };
@@ -81,6 +109,8 @@ export default function Reviews() {
               {yn("verified", "Verified purchase")}
               {yn("photos", "Has photos")}
               {yn("flagged", "Flagged")}
+              {yn("held", "Held by plan limit")}
+              <s-text-field name="source" label="Source (e.g. csv, storefront)" value={v("source")} />
               <s-date-field name="from" label="From" value={v("from")} />
               <s-date-field name="to" label="To" value={v("to")} />
             </s-grid>
@@ -92,15 +122,25 @@ export default function Reviews() {
         </Form>
       </s-section>
 
+      {result && <s-banner tone="info"><s-paragraph>{result.message}</s-paragraph></s-banner>}
       <s-section heading={`${count.toLocaleString()} review${count === 1 ? "" : "s"}`}>
+        <Form method="post" id="bulk">
+          <s-stack direction="inline" gap="base">
+            <s-select name="intent" label="With selected">
+              <s-option value="approve">Approve</s-option><s-option value="hide">Hide</s-option><s-option value="reject">Reject</s-option><s-option value="restore">Return to pending</s-option>
+            </s-select>
+            <s-button type="submit">Apply to selected</s-button>
+          </s-stack>
+        </Form>
         <s-table>
           <s-table-header-row>
-            <s-table-header>Date</s-table-header><s-table-header>Product</s-table-header><s-table-header>Rating</s-table-header>
+            <s-table-header>Select</s-table-header><s-table-header>Date</s-table-header><s-table-header>Product</s-table-header><s-table-header>Rating</s-table-header>
             <s-table-header>Review</s-table-header><s-table-header>Reviewer</s-table-header><s-table-header>Status</s-table-header>
           </s-table-header-row>
           <s-table-body>
             {rows.map((r) => (
               <s-table-row key={r.id}>
+                <s-table-cell><input type="checkbox" name="ids" value={r.id} form="bulk" aria-label={`Select review by ${r.name}`} /></s-table-cell>
                 <s-table-cell>{r.date}</s-table-cell>
                 <s-table-cell>{r.product}</s-table-cell>
                 <s-table-cell>{"★".repeat(r.rating)}</s-table-cell>
@@ -111,7 +151,7 @@ export default function Reviews() {
                   {r.flags.length > 0 && <s-badge tone="caution">{r.flags.map((f) => f.replace(/_x\d+$/, "")).join(", ")}</s-badge>}
                 </s-table-cell>
                 <s-table-cell>{r.name}{r.verified && <> <s-badge tone="success">Verified</s-badge></>}</s-table-cell>
-                <s-table-cell><s-badge tone={STATUS_TONE[r.status]}>{r.status}</s-badge></s-table-cell>
+                <s-table-cell><s-badge tone={STATUS_TONE[r.status]}>{r.status}</s-badge>{r.held && <> <s-badge tone="warning">Held by plan</s-badge></>}</s-table-cell>
               </s-table-row>
             ))}
           </s-table-body>

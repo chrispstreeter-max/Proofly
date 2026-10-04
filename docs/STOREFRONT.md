@@ -42,6 +42,13 @@ re-runs only when the theme adds product links. Neither script makes third-party
       and never resolves a deleted product's handle.
    4. **Never theme code.** Proofly does not edit `theme.liquid`, templates, sections or snippets.
 
+## Store settings
+
+The merchant's switches (accept new reviews, allow photos, approve before publishing) are enforced by the submission
+route on every request: 403 when submissions are off, 400 for photos when photos are off, immediate publication within
+the plan allowance when approval is off. The theme reads the mirror `app.metafields.proofly.storefront.value` only to
+hide the button or photo field.
+
 ## Proxy path
 
 The store's app proxy path belongs to the merchant (default `/apps/proofly`; merchants can change it in Shopify).

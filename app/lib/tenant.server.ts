@@ -1,6 +1,6 @@
 import type { Prisma, Shop } from "@prisma/client";
 import prisma from "../db.server";
-import { DEFAULT_PROXY_PATH, publishProxyPath } from "./proxy-path.server";
+import { DEFAULT_PROXY_PATH, publishAppMetafields, publishProxyPath, STOREFRONT_SETTINGS_METAFIELD } from "./proxy-path.server";
 
 /**
  * Tenant boundary.
@@ -84,6 +84,12 @@ export async function publishShopProxyPath(shopId: string, graphql: GraphqlFn, o
   await publishProxyPath(graphql, s.proxyPath);
   await withTenant(shopId, ({ db }) => db.shopSettings.update({ where: { shopId }, data: { proxyPathPublished: s.proxyPath } }));
   return true;
+}
+
+/** Publishes the storefront switches (submissions, photos) to the app-data metafield the extension reads. */
+export async function publishStorefrontSettings(shopId: string, graphql: GraphqlFn) {
+  const s = await withTenant(shopId, ({ db }) => db.shopSettings.findUniqueOrThrow({ where: { shopId } }));
+  await publishAppMetafields(graphql, [{ ...STOREFRONT_SETTINGS_METAFIELD, value: JSON.stringify({ submissions: s.reviewSubmissionEnabled, photos: s.photoReviewsEnabled }) }]);
 }
 
 /**

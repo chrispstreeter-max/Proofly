@@ -9,7 +9,7 @@ import { withTenant } from "../lib/tenant.server";
 // Unknown products and other shops' products produce the same empty response.
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { shop } = await requireProxyTenant(request);
-  if (!rateLimit(`list:${shop.id}:${clientIp(request)}`, 120, 60_000)) return json({ error: "rate_limited" }, { status: 429 });
+  if (!(await rateLimit(`list:${shop.id}:${clientIp(request)}`, 120, 60_000))) return json({ error: "rate_limited" }, { status: 429 });
   const [id] = parseIds(params.id ?? null, 1);
   if (!id) return json({ error: "bad_product" }, { status: 400 });
   const url = new URL(request.url);

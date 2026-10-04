@@ -7,9 +7,8 @@ import { reconcileIfStale } from "../lib/billing.server";
 import { getPlanStatus } from "../lib/entitlements.server";
 import { formatBytes } from "../lib/plans";
 import { syncCatalog } from "../lib/products.server";
-import { setProxyPath } from "../lib/proxy-path.server";
 import { ensureRatingDefinitions, reconcileRatingCache, syncRatingCache } from "../lib/rating-cache.server";
-import { publishShopProxyPath, withTenant } from "../lib/tenant.server";
+import { withTenant } from "../lib/tenant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop, admin } = await requireAdminTenant(request);
@@ -56,7 +55,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         status: settings?.catalogSyncStatus ?? "never", count: settings?.catalogSyncCount ?? 0,
         finishedAt: settings?.catalogSyncFinishedAt?.toISOString().slice(0, 16).replace("T", " ") ?? null, error: settings?.catalogSyncError ?? null,
       },
-      proxy: { path: settings?.proxyPath ?? "", published: settings?.proxyPathPublished === settings?.proxyPath },
       onboarding: {
         done: !!settings?.onboardingCompletedAt,
         reviewsBlockUrl: `${editor}?template=product&addAppBlockId=${key}/reviews&target=mainSection`,
@@ -88,12 +86,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     void syncCatalog(shop.id, admin.graphql).catch((e) => console.error("catalogue sync", shop.id, e));
     return { message: "Product sync started." };
   }
-  if (intent === "proxy_path") {
-    const path = await withTenant(shop.id, (t) => setProxyPath(t, form.get("proxy_path"), actor));
-    if (!path) return { message: "Enter the proxy path exactly as set in Shopify, e.g. /apps/reviews." };
-    const ok = await publishShopProxyPath(shop.id, admin.graphql).then(() => true, () => false);
-    return { message: ok ? `Storefront proxy path set to ${path}.` : `Saved ${path}; publishing it to your theme will be retried.` };
-  }
   if (intent === "complete_onboarding") {
     await withTenant(shop.id, async ({ db, shopId }) => {
       await db.shopSettings.update({ where: { shopId }, data: { onboardingCompletedAt: new Date() } });
@@ -115,7 +107,7 @@ const Stat = ({ label, value, href }: { label: string; value: number; href?: str
 );
 
 export default function Dashboard() {
-  const { stats, unsynced, onboarding, ratings, catalog, proxy, plan, lastImport } = useLoaderData<typeof loader>();
+  const { stats, unsynced, onboarding, ratings, catalog, plan, lastImport } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   return (
@@ -215,17 +207,6 @@ export default function Dashboard() {
           </s-paragraph>
           <Form method="post"><input type="hidden" name="intent" value="sync_products" /><s-button type="submit" loading={busy || undefined}>Sync products</s-button></Form>
         </s-stack>
-      </s-section>
-
-      <s-section heading="Storefront connection">
-        <Form method="post">
-          <s-stack gap="base">
-            <input type="hidden" name="intent" value="proxy_path" />
-            <s-text-field name="proxy_path" label="App proxy path" value={proxy.path} details="Only change this if you changed Proofly's app proxy URL in Shopify (Settings → Apps). It must match exactly." />
-            {!proxy.published && <s-paragraph>Not yet published to your theme.</s-paragraph>}
-            <s-button type="submit" loading={busy || undefined}>Save proxy path</s-button>
-          </s-stack>
-        </Form>
       </s-section>
 
     </s-page>

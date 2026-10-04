@@ -9,7 +9,7 @@ import { withTenant } from "../lib/tenant.server";
 // in one batched request, only for product cards Liquid could not see.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop } = await requireProxyTenant(request);
-  if (!rateLimit(`ratings:${shop.id}:${clientIp(request)}`, 240, 60_000)) return json({ error: "rate_limited" }, { status: 429 });
+  if (!(await rateLimit(`ratings:${shop.id}:${clientIp(request)}`, 240, 60_000))) return json({ error: "rate_limited" }, { status: 429 });
   const handles = parseHandles(new URL(request.url).searchParams.get("handles"));
   const ratings = handles.length ? await withTenant(shop.id, (t) => ratingsByHandle(t, handles)) : {};
   return json({ ratings }, { cache: 300 });

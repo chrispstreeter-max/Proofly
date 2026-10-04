@@ -27,6 +27,16 @@
   if proxy != blank
     assign api = routes.root_url | append: proxy | replace: '//', '/'
   endif
+  # Store switches published by Proofly (display only; the server enforces them). Missing → defaults (on).
+  assign sf = app.metafields.proofly.storefront.value
+  assign allow_submissions = block.settings.allow_submissions
+  if sf.submissions == false
+    assign allow_submissions = false
+  endif
+  assign allow_photos = true
+  if sf.photos == false
+    assign allow_photos = false
+  endif
   assign customer_name = ''
   if customer
     assign last_initial = customer.last_name | slice: 0
@@ -68,7 +78,7 @@
     {%- endif -%}
 
     <div class="pf-actions">
-      {%- if block.settings.allow_submissions -%}
+      {%- if allow_submissions -%}
         <button type="button" class="pf-btn" data-write>Write a review</button>
       {%- endif -%}
       {%- if count > 0 -%}
@@ -97,7 +107,7 @@
     <button type="button" class="pf-more" data-more hidden>Show more reviews</button>
   {%- endif -%}
 
-  {%- if block.settings.allow_submissions -%}
+  {%- if allow_submissions -%}
   <dialog class="pf-dialog" data-form-dialog aria-labelledby="pf-form-title">
     <form class="pf-form" data-form novalidate>
       <div class="pf-dialog-head">
@@ -129,10 +139,12 @@
         <input name="name" maxlength="60" required autocomplete="name" value="{{ customer_name | escape }}">
         <span class="pf-err" data-err="name"></span>
       </label>
+      {%- if allow_photos -%}
       <label class="pf-field"><span>Photos <span class="pf-hint">(optional, up to 5)</span></span>
         <input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple>
         <span class="pf-err" data-err="images"></span>
       </label>
+      {%- endif -%}
       <p class="pf-err" data-err="form" role="alert"></p>
       <button type="submit" class="pf-btn pf-btn--full">Submit review</button>
     </form>

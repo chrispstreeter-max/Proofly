@@ -85,6 +85,7 @@ module.exports = {
         "app/lib/tenant.server.ts", // shops table + tenant transactions
         "app/routes/webhooks.app.uninstalled.tsx", // sessions table only
         "app/routes/webhooks.app.scopes_update.tsx", // sessions table only
+        "app/lib/http.server.ts", // rate_limits table only (hashed keys, not merchant data)
       ],
       rules: {
         "no-restricted-imports": ["error", { patterns: [{ group: ["**/db.server", "../db.server", "./db.server"], message: "Access merchant data through withTenant() in app/lib/tenant.server.ts." }] }],

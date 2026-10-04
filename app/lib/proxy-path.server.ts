@@ -37,16 +37,21 @@ export const SET_APP_METAFIELD_MUTATION = `#graphql
     metafieldsSet(metafields: $metafields) { userErrors { field message code } }
   }`;
 
-/** Writes the shop's proxy path to its app-data metafield (idempotent). Throws on Shopify errors. */
-export async function publishProxyPath(graphql: Graphql, path: string) {
+/** Storefront switches the theme extension reads (display only — the server enforces them on every request). */
+export const STOREFRONT_SETTINGS_METAFIELD = { namespace: "proofly", key: "storefront", type: "json" } as const;
+
+/** Writes app-data metafields on this shop's AppInstallation (idempotent). Throws on Shopify errors. */
+export async function publishAppMetafields(graphql: Graphql, entries: { namespace: string; key: string; type: string; value: string }[]) {
   const inst = (await (await graphql(CURRENT_APP_INSTALLATION_QUERY)).json()) as { data?: { currentAppInstallation?: { id: string } } };
   const ownerId = inst.data?.currentAppInstallation?.id;
   if (!ownerId) throw new Error("currentAppInstallation unavailable");
   const res = (await (await graphql(SET_APP_METAFIELD_MUTATION, {
-    variables: { metafields: [{ ownerId, ...PROXY_PATH_METAFIELD, value: path }] },
+    variables: { metafields: entries.map((e) => ({ ownerId, ...e })) },
   })).json()) as { data?: { metafieldsSet?: { userErrors: unknown[] } }; errors?: unknown };
-  if (res.errors || !res.data?.metafieldsSet || res.data.metafieldsSet.userErrors.length) throw new Error(`proxy path metafield: ${JSON.stringify(res.errors ?? res.data)}`);
+  if (res.errors || !res.data?.metafieldsSet || res.data.metafieldsSet.userErrors.length) throw new Error(`app metafields: ${JSON.stringify(res.errors ?? res.data)}`);
 }
+
+export const publishProxyPath = (graphql: Graphql, path: string) => publishAppMetafields(graphql, [{ ...PROXY_PATH_METAFIELD, value: path }]);
 
 /** Merchant changes their proxy path (must match what they configured in Shopify). Returns the saved path or null. */
 export async function setProxyPath({ db, shopId }: Tenant, raw: unknown, actor: string) {

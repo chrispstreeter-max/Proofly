@@ -49,7 +49,7 @@ development store domains (the fictional dev shop exists only behind `NODE_ENV=d
 5. **Same response for missing and foreign** — admin detail/actions return the same 404; storefront endpoints return
    the same empty result for unknown and other-shop products.
 6. **Secrets** — Shopify access/refresh tokens are encrypted at rest (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`).
-7. **Per-shop limits, origins and proxy paths** — rate-limit keys include the shop; the storefront Origin check uses only
+7. **Per-shop limits, origins and proxy paths** — rate-limit keys include the shop (shared Postgres counters, hashed keys); the storefront Origin check uses only
    that shop's own hosts; each shop's proxy path is its own (no global default accepted).
 8. **Billing is per shop** — `billing_state` and `subscriptions` are row-level-security tenant tables; plan state is
    read from the shop's own Admin API; no request field can choose a plan ([BILLING.md](BILLING.md)).

@@ -442,3 +442,15 @@ merchant-confirmed manual match. Exact-title matches are suggestions only and re
 (manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
 When identity is uncertain, Proofly does not guess. Suggestions are always products of the importing shop only.
 
+### 11.13 Merchant review management (checkpoint 7)
+- **Admin pages:** Dashboard, Reviews (filters including held-by-plan and source; bulk approve / hide / reject /
+  return to pending), Review detail, Products (catalogue, published vs stored reviews, rating ownership and sync state,
+  deleted products), Import, Plan, Settings.
+- **Bulk approval** goes through the plan allowance like single approval. What doesn't fit stays approved and held,
+  and the merchant is told how many. Another shop's review ids are ignored by the tenant-scoped `moderate()`.
+- **Settings** (`shop_settings`): accept new reviews, allow photos, approve before publishing. They are enforced by
+  the storefront submission route on every request and mirrored to the app-data metafield `proofly.storefront` (JSON)
+  only so the theme can hide the button or photo field. A missing mirror falls back to "on"; the server still refuses.
+- **Rate limits** are shared through Postgres (`rate_limits`, one atomic upsert per request, SHA-256 keys containing
+  the shop and an IP hash, purged after a day), so they hold across any number of app instances.
+

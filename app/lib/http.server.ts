@@ -1,19 +1,25 @@
 import { createHash } from "node:crypto";
+import prisma from "../db.server";
 
-// ponytail: in-memory fixed-window limiter — correct for the single app instance V1 runs on;
-// move to a Postgres/Redis counter if the app is ever scaled horizontally.
-const hits = new Map<string, { n: number; reset: number }>();
-
-export function rateLimit(key: string, max: number, windowMs: number): boolean {
-  const now = Date.now();
-  const h = hits.get(key);
-  if (!h || h.reset < now) {
-    hits.set(key, { n: 1, reset: now + windowMs });
-    if (hits.size > 50_000) for (const [k, v] of hits) if (v.reset < now) hits.delete(k);
-    return true;
-  }
-  return ++h.n <= max;
+/**
+ * Shared fixed-window rate limit (Postgres, so every app instance sees the same counters). One atomic upsert per call;
+ * the key is hashed (it contains a shop id and an IP-derived value) and never linked to any review.
+ * Returns true while the caller is within `max` requests per `windowMs`.
+ */
+export async function rateLimit(key: string, max: number, windowMs: number): Promise<boolean> {
+  const k = createHash("sha256").update(`${process.env.IP_HASH_SALT ?? ""}:${key}`).digest("hex");
+  const since = new Date(Date.now() - windowMs);
+  const rows = await prisma.$queryRaw<{ count: number }[]>`
+    INSERT INTO rate_limits (key, window_start, count) VALUES (${k}, now(), 1)
+    ON CONFLICT (key) DO UPDATE SET
+      count = CASE WHEN rate_limits.window_start < ${since} THEN 1 ELSE rate_limits.count + 1 END,
+      window_start = CASE WHEN rate_limits.window_start < ${since} THEN now() ELSE rate_limits.window_start END
+    RETURNING count`;
+  return (rows[0]?.count ?? 1) <= max;
 }
+
+/** Retention: counters older than a day are useless; the maintenance job deletes them. */
+export const purgeRateLimits = () => prisma.$executeRaw`DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'`;
 
 /** Shopify's app proxy forwards the shopper's IP as the first X-Forwarded-For entry. */
 export function clientIp(request: Request) {

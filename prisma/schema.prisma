@@ -449,3 +449,13 @@ model AuditLog {
   @@index([shopId, entity, entityId])
   @@map("audit_log")
 }
+
+/// Shared rate-limit counters (all app instances). Keys are SHA-256 hashes of "<purpose>:<shop>:<ip hash>" — never linked
+/// to reviews, no merchant data, expire within a day (retention job). Not a tenant table.
+model RateLimit {
+  key         String   @id
+  windowStart DateTime @map("window_start")
+  count       Int
+
+  @@map("rate_limits")
+}

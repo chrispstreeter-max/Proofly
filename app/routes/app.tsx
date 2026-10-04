@@ -20,8 +20,10 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Dashboard</s-link>
         <s-link href="/app/reviews">Reviews</s-link>
+        <s-link href="/app/products">Products</s-link>
         <s-link href="/app/imports">Import</s-link>
         <s-link href="/app/plan">Plan</s-link>
+        <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>
