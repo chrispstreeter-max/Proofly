@@ -159,8 +159,13 @@ The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review
   first page at once, with no request. When `complete`, filters, sorts and every page run in the browser; otherwise
   newest-first pages it covers render locally and everything else goes through the app proxy, in the same order.
   Without a projection (not yet published) the widget works exactly as before, through the proxy.
-- **Not verified live yet:** the `$app:proofly` Liquid access and the definition on a real store need a
-  `shopify app deploy` and a check on Proofly Test.
+- **Verified live (Proofly Test, deploy proofly-dev-4):** the definition is created app-owned (merchant read,
+  storefront read); approving a review wrote the projection in ~2 s; the published Horizon theme's Review widget
+  rendered the summary and review from it, and rating filters ran in the browser, with zero requests to Proofly.
+- **Live finding — uninstall:** Shopify deletes the app's own data on uninstall (app-data metafields: proxy path and
+  storefront switch; `$app` product metafields). Proofly kept believing them published, so after the Phase 0
+  reinstall the storefront had no proxy path. Fixed: the uninstall webhook forgets what was published, the reinstall
+  republishes the app-data metafields, and maintenance republishes every projection.
 
 **Live finding after Phase 1** (2026-10-04, Proofly Test): Shopify's metaobject search is **eventually consistent**.
 A review written or approved a moment ago is not yet returned by `metaobjects(query:)`; the listing found it after

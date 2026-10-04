@@ -166,8 +166,11 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
   });
 
   test("uninstall: C's sessions are deleted and C goes dark; A keeps its session and storefront", async () => {
+    const appData = "gid://shopify/AppInstallation/1|proofly.proxy_path";
+    assert.equal(storeOf(DOMAIN_C).metafields.get(appData), "/apps/proofly"); // published at install
     const res = await uninstalledWebhook(args<ActionFunctionArgs>(webhookRequest(DOMAIN_C, "app/uninstalled", "/webhooks/app/uninstalled", { myshopify_domain: DOMAIN_C })));
     assert.equal(res.status, 200);
+    storeOf(DOMAIN_C).uninstallApp(); // what Shopify does to the app's own data
     const c = await shopC();
     assert.ok(c.uninstalledAt);
     assert.equal(await owner.session.count({ where: { shop: DOMAIN_C } }), 0);
@@ -203,6 +206,10 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
     assert.equal(c.uninstalledAt, null);
     assert.ok(c.installedAt > before.installedAt);
     assert.deepEqual(await audit(c.id), ["shop.installed", "onboarding.completed", "review.submitted", "shop.uninstalled", "shop.reinstalled"]);
+    // Real-Shopify finding (Proofly Test, 2026-10-04): Shopify deleted the app-data metafields on uninstall, but Proofly
+    // still believed them published, so the reinstalled storefront had no proxy path. Reinstall publishes them again.
+    assert.equal(storeOf(DOMAIN_C).metafields.get("gid://shopify/AppInstallation/1|proofly.proxy_path"), "/apps/proofly");
+    assert.equal(storeOf(DOMAIN_C).metafields.get("gid://shopify/AppInstallation/1|proofly.storefront"), JSON.stringify({ submissions: true }));
 
     const d = await dashboard(DOMAIN_C);
     assert.equal(d.stats.total, 1);

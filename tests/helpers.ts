@@ -121,6 +121,10 @@ type FailKind = "throw" | "throttle" | "userError";
 export class FakeShopify {
   metafields = new Map<string, string>(); // `${ownerId}|${namespace}.${key}` → value
   metafieldDefinitions = new Map<string, unknown>(); // `${namespace}.${key}` → definition input
+  /** What Shopify does to app-owned data when the app is uninstalled: app-data and $app metafields are gone. */
+  uninstallApp() {
+    for (const k of [...this.metafields.keys()]) if (k.startsWith("gid://shopify/AppInstallation/") || k.includes("|$app")) this.metafields.delete(k);
+  }
   /** The storefront projection of a product (parsed), or null when none was published. */
   projection(productId: bigint | number) {
     const v = this.metafields.get(`gid://shopify/Product/${productId}|$app:proofly.reviews`);

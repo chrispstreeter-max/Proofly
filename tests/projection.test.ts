@@ -11,7 +11,7 @@ import { runMaintenance } from "../app/lib/maintenance.server";
 import { moderate, saveReply } from "../app/lib/moderation.server";
 import { buildProjection, PROJECTION_MAX_BYTES, PROJECTION_MAX_REVIEWS, PROJECTION_RETRY_AFTER_MS } from "../app/lib/projection.server";
 import { ensureReviewDefinition, type StoredReview } from "../app/lib/review-store.server";
-import { withTenant } from "../app/lib/tenant.server";
+import { markUninstalled, upsertShopFromAuth, withTenant } from "../app/lib/tenant.server";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
 import { liquidProduct, renderBlock } from "../scripts/lib/extension-liquid";
 import { args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, SAME_PRODUCT_ID, seedReview, storeOf, type Merchant } from "./helpers";
@@ -160,6 +160,24 @@ describe("Projection follows every change to public reviews", () => {
     await recomputeProduct(A.api, U);
     assert.equal(storeOf(DOMAIN_A).projection(U), null);
     assert.equal((await productRow(A, U)).projectionStaleSince, null);
+  });
+});
+
+describe("Projections survive an uninstall/reinstall", () => {
+  // Shopify deletes app-owned ($app) metafields on uninstall; Proofly republishes them after a reinstall.
+  test("uninstall marks every managed product's projection stale; after reinstall maintenance republishes them", async () => {
+    const R = 9_600_000_000_005n;
+    await newProduct(A, R);
+    const r = await seedReview(A.api, { productId: R, status: "pending", body: "survives reinstall" });
+    await moderate(A.api, [r.id], "approve", "test");
+    await markUninstalled(DOMAIN_A);
+    storeOf(DOMAIN_A).uninstallApp();
+    assert.equal(storeOf(DOMAIN_A).projection(R), null);
+    assert.ok((await productRow(A, R)).projectionStaleSince);
+    await upsertShopFromAuth(DOMAIN_A, storeOf(DOMAIN_A).graphql); // reinstall
+    const report = await runMaintenance(new Date(), async (shopId) => (shopId === A.shopId ? A.api : null));
+    assert.ok(report.projectionsRepublished >= 1);
+    assert.deepEqual(bodies(A, R), ["survives reinstall"]);
   });
 });
 

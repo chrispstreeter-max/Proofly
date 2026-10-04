@@ -75,7 +75,10 @@ export async function upsertShopFromAuth(sessionShop: string, graphql: GraphqlFn
   const shop = await registerShop({ shopDomain: sessionShop, shopifyShopId, shopName: s.name, storefrontHosts });
   // The theme extension reads the shop's proxy path from an app-data metafield. Best effort: a failure here must not
   // block authentication; it is retried on the next token exchange and from the admin Storefront settings.
-  await publishShopProxyPath(shop.id, graphql).catch((e) => console.warn("proxy path metafield not published", shop.id, e));
+  // Storefront projections dropped by an uninstall are republished by maintenance (products.projection_stale_since).
+  await publishShopProxyPath(shop.id, graphql)
+    .then(async (published) => { if (published) await publishStorefrontSettings(shop.id, graphql); })
+    .catch((e) => console.warn("app metafields not published", shop.id, e));
   return shop;
 }
 
@@ -154,8 +157,12 @@ export async function markUninstalled(domain: string) {
   const shop = await shopByDomain(domain);
   if (!shop || shop.uninstalledAt) return shop;
   await prisma.shop.update({ where: { id: shop.id }, data: { uninstalledAt: new Date() } });
-  await withTenant(shop.id, ({ db, shopId }) =>
-    db.auditLog.create({ data: { shopId, actor: "shopify", action: "shop.uninstalled", entity: "shop", entityId: shopId } }),
-  );
+  await withTenant(shop.id, async ({ db, shopId }) => {
+    await db.auditLog.create({ data: { shopId, actor: "shopify", action: "shop.uninstalled", entity: "shop", entityId: shopId } });
+    // Shopify deletes the app's own data on uninstall (app-data metafields, $app product metafields — verified on a
+    // development store): forget what was published so a reinstall publishes it all again.
+    await db.shopSettings.updateMany({ where: { shopId }, data: { proxyPathPublished: null } });
+    await db.product.updateMany({ where: { shopId, ratingOwnership: "proofly_managed", deletedAt: null }, data: { projectionStaleSince: new Date(0) } });
+  });
   return shop;
 }
