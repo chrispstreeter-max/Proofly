@@ -1,6 +1,6 @@
 import { recomputeProducts } from "./aggregates.server";
 import { DEFAULT_PLAN, PLANS, planHasFeature, type Feature, type Plan, type PlanKey } from "./plans";
-import { bucketOf, getReview, scanReviews, updateReview, type ShopApi, type StoredReview } from "./review-store.server";
+import { bucketOf, bulkRelease, getReview, scanReviews, updateReview, type ShopApi, type StoredReview } from "./review-store.server";
 import { withTenant, type Tenant } from "./tenant.server";
 
 /**
@@ -50,15 +50,22 @@ export async function readStats({ db, shopId }: Tenant): Promise<Stats> {
   return { ...EMPTY, ...((s?.reviewStats ?? {}) as Partial<Stats>) };
 }
 
+/** The bucket a review counts in: an entry edited outside Proofly is never public, so it counts as held. */
+const statBucket = (r: StoredReview): Bucket => (r.editedOutside && bucketOf(r) === "published" ? "planLimited" : (bucketOf(r) as Bucket));
+
 /** Applies one review's change (null = didn't exist / no longer exists) to the cached counts. Row-locked. */
-export async function bumpStats(shopId: string, before: StoredReview | null, after: StoredReview | null) {
-  if (before && after && bucketOf(before) === bucketOf(after) && (before.flags.length > 0) === (after.flags.length > 0)) return;
+export const bumpStats = (shopId: string, before: StoredReview | null, after: StoredReview | null) => bumpStatsMany(shopId, [[before, after]]);
+
+/** Applies many reviews' changes in one row-locked update (imports, bulk releases). */
+export async function bumpStatsMany(shopId: string, changes: [StoredReview | null, StoredReview | null][]) {
+  const same = (a: StoredReview, b: StoredReview) => statBucket(a) === statBucket(b) && (a.flags.length > 0) === (b.flags.length > 0);
+  const real = changes.filter(([b, a]) => !(b && a && same(b, a)));
+  if (!real.length) return;
   await withTenant(shopId, async (t) => {
     await t.db.$executeRaw`SELECT 1 FROM shop_settings WHERE shop_id = ${shopId}::uuid FOR UPDATE`;
     const s = await readStats(t);
-    const apply = (r: StoredReview, d: 1 | -1) => { s[bucketOf(r) as Bucket] += d; s.total += d; if (r.flags.length) s.flagged += d; };
-    if (before) apply(before, -1);
-    if (after) apply(after, 1);
+    const apply = (r: StoredReview, d: 1 | -1) => { s[statBucket(r)] += d; s.total += d; if (r.flags.length) s.flagged += d; };
+    for (const [before, after] of real) { if (before) apply(before, -1); if (after) apply(after, 1); }
     await t.db.shopSettings.update({ where: { shopId }, data: { reviewStats: s as object } });
   });
 }
@@ -68,7 +75,7 @@ export async function recountStats(api: ShopApi) {
   const s = { ...EMPTY };
   for await (const r of scanReviews(api, {})) {
     // A review edited outside Proofly is never public: it counts as held until approved again in Proofly.
-    s[r.editedOutside && bucketOf(r) === "published" ? "planLimited" : (bucketOf(r) as Bucket)]++;
+    s[statBucket(r)]++;
     s.total++;
     if (r.flags.length) s.flagged++;
   }
@@ -105,6 +112,9 @@ async function withEntitlementLock<T>(shopId: string, fn: (t: Tenant) => Promise
   }, { timeoutMs: 300_000 });
 }
 
+/** Up to this many reviews are released one by one under the lock; more go through one Shopify bulk operation. */
+export const BULK_RELEASE_MIN = 100;
+
 /**
  * Releases plan-limited reviews (published + held) into public view, OLDEST FIRST, while the plan has room.
  * Candidates: the given reviews, the reviews of one import, or (no filter) every held review ("Publish eligible
@@ -112,27 +122,55 @@ async function withEntitlementLock<T>(shopId: string, fn: (t: Tenant) => Promise
  * Pass reviews just written as `reviews` (not `importJobId`) where possible: Shopify's search index lags writes by
  * seconds, so a search right after writing can miss them. `known` = other just-written reviews for the aggregates.
  */
-export async function releaseEligibleReviews(api: ShopApi, opts: { reviews?: StoredReview[]; importJobId?: string; actor?: string; known?: StoredReview[] } = {}) {
-  return withEntitlementLock(api.shopId, async (t) => {
+export async function releaseEligibleReviews(api: ShopApi, opts: { reviews?: StoredReview[]; importJobId?: string; actor?: string; known?: StoredReview[]; sleep?: (ms: number) => Promise<void> } = {}) {
+  const decided = await withEntitlementLock(api.shopId, async (t) => {
     let candidates: StoredReview[] = [];
-    if (opts.reviews) {
+    if (opts.reviews && opts.reviews.length <= BULK_RELEASE_MIN) {
       // Re-read under the lock: never act on a stale copy.
       for (const r of opts.reviews) { const fresh = await getReview(api, r.id); if (fresh) candidates.push(fresh); }
+    } else if (opts.reviews) {
+      // ponytail: too many to re-read one by one (a large import). A stale copy is harmless: bulkRelease writes only the
+      // release fields, so an entry that changed meanwhile fails its signature and stays private.
+      candidates = opts.reviews;
     } else {
       for await (const r of scanReviews(api, { status: "published", held: true, ...(opts.importJobId ? { importJobId: opts.importJobId } : {}) }, { oldestFirst: true })) candidates.push(r);
     }
-    candidates = candidates.filter((r) => r.status === "published" && r.held).sort(byAdmissionOrder);
+    // An entry edited outside Proofly is never released: only re-approval (which re-signs it) can make it public.
+    candidates = candidates.filter((r) => r.status === "published" && r.held && !r.editedOutside).sort(byAdmissionOrder);
     const { reviewRoom } = await getPlanStatus(t);
     const fit = candidates.slice(0, reviewRoom);
-    const released: StoredReview[] = [];
-    for (const r of fit) { const next = await updateReview(api, r, { held: false }); await bumpStats(api.shopId, r, next); released.push(next); }
-    if (released.length) await recomputeProducts(api, released.map((r) => r.productId), [...(opts.known ?? []), ...released]);
     const stillHeld = candidates.length - fit.length;
     if (opts.actor && (fit.length || stillHeld)) {
       await t.db.auditLog.create({ data: { shopId: api.shopId, actor: opts.actor, action: "plan.reviews_released", entity: "reviews", details: { released: fit.length, stillHeld } } });
     }
-    return { released: fit.length, stillHeld, reviews: released };
+    if (fit.length <= BULK_RELEASE_MIN) {
+      const released: StoredReview[] = [];
+      for (const r of fit) { const next = await updateReview(api, r, { held: false }); await bumpStats(api.shopId, r, next); released.push(next); }
+      return { fit, stillHeld, released, bulk: false };
+    }
+    // Large release: take the room now (counted as published) so concurrent decisions see it gone; Shopify's bulk
+    // write runs after the lock (it can take minutes).
+    await bumpStatsMany(api.shopId, fit.map((r) => [r, { ...r, held: false }]));
+    return { fit, stillHeld, released: [] as StoredReview[], bulk: true };
   });
+  let released = decided.released;
+  if (decided.bulk) {
+    const now = await bulkRelease(api, decided.fit, { sleep: opts.sleep });
+    released = [];
+    const correction: [StoredReview, StoredReview][] = [];
+    for (const r of decided.fit) {
+      const after = now.get(r.id);
+      if (after?.isPublic) { correction.push([{ ...r, held: false }, after]); released.push(after); continue; }
+      // Not public: undo the reservation. If the entry changed after the decision (e.g. a moderation), our partial
+      // write left its signature stale — it stays private and the admin shows it as edited outside Proofly until it is
+      // re-approved; either way it counts where it counted before (statBucket).
+      // ponytail: rare race (a moderation during the bulk write); re-sign only if it ever needs to look clean.
+      correction.push([{ ...r, held: false }, r]);
+    }
+    await bumpStatsMany(api.shopId, correction);
+  }
+  if (released.length) await recomputeProducts(api, released.map((r) => r.productId), [...(opts.known ?? []), ...released]);
+  return { released: released.length, stillHeld: decided.stillHeld + decided.fit.length - released.length, reviews: released };
 }
 
 /**

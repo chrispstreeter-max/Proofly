@@ -135,7 +135,7 @@ The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review
   - Local dev preview routes were removed (use a development store).
 - **Still open:**
   - ~~Phase 2: the storefront reads from a product JSON projection~~ — built, §8.
-  - Phase 3: bulk mutations for large imports.
+  - ~~Phase 3: bulk mutations for large imports~~ — built, §9.
   - Phase 4: remove the remaining server-side caches where possible.
 
 ## 8. Phase 2 — built (2026-10-04)
@@ -177,3 +177,23 @@ about 5 seconds. Proofly therefore never relies on a search immediately after it
 Reads by id are always current. Admin lists and the storefront may show a change a few seconds late, which is
 acceptable. Regression tests simulate the lag (`FakeShopify.searchLag`). Re-verified live: Shopify's rating updates
 right after approval.
+
+## 9. Phase 3 — built (2026-10-04)
+
+- **Bulk module.** `app/lib/bulk.server.ts`: staged JSONL upload → `bulkOperationRunMutation` → poll
+  `bulkOperation(id)` with backoff → download the result file; results matched by `__lineNumber` (Shopify doesn't
+  keep order).
+- **Imports** of 250+ rows create entries in bulk chunks (≤ 5,000 rows, ≤ 90 MB estimated). `metaobjectCreate`, not
+  upsert: an existing handle is TAKEN and left untouched, so search lag can never cause an overwrite. The operation id
+  is stored on the job (`import_jobs.bulk_operation`) before waiting, so a crash is resumed from Shopify's result file;
+  rejected rows stop the import before the cursor moves and are retried on resume. Counts are applied in one locked
+  update per chunk (`bumpStatsMany`).
+- **Plan releases** over 100 reviews: decided and reserved under the entitlement lock, written after it in one bulk
+  operation that sets only `held`, `public` and the signature. A review that changed meanwhile fails its signature
+  and stays private (shown as edited outside Proofly until re-approved). The Plan page runs such releases in the
+  background.
+- **Fix found while building:** a held review edited outside Proofly could be published by "Publish eligible reviews"
+  (the one-by-one write re-signed the outside edit). Both paths now skip such reviews; only re-approval publishes them.
+- **Aggregates** for more than 20 products are recomputed from one pass over the shop's public reviews.
+- **Not verified live yet:** a real bulk operation through Proofly's code on Proofly Test (Phase 0 verified the
+  platform side: 200 entries in 17 s).

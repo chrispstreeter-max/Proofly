@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { buildClientSchema, coerceInputValue, getIntrospectionQuery, parse, validate, type GraphQLInputType } from "graphql";
 import { API_VERSION } from "../app/shopify-api-version";
 import { SUBSCRIPTION_STATE_QUERY } from "../app/lib/billing.server";
+import { BULK_STAGED_INPUT, BULK_STATUS_QUERY, RUN_BULK_MUTATION, STAGE_BULK_INPUT_MUTATION } from "../app/lib/bulk.server";
 import { SKU_LOOKUP_QUERY } from "../app/lib/import.server";
 import { PRODUCTS_PAGE_QUERY } from "../app/lib/products.server";
 import { PUBLISH_PROJECTION_MUTATION } from "../app/lib/projection.server";
@@ -27,9 +28,14 @@ const OPERATIONS = {
   REVIEW_DEFINITION_QUERY, CREATE_REVIEW_DEFINITION_MUTATION, UPDATE_REVIEW_DEFINITION_MUTATION, REVIEWS_QUERY, REVIEW_QUERY, CREATE_REVIEW_MUTATION, UPDATE_REVIEW_MUTATION,
   // Storefront projection (app/lib/projection.server.ts)
   CREATE_PROJECTION_DEFINITION_MUTATION, PUBLISH_PROJECTION_MUTATION,
+  // Bulk operations (app/lib/bulk.server.ts)
+  STAGE_BULK_INPUT_MUTATION, RUN_BULK_MUTATION, BULK_STATUS_QUERY,
 };
 /** Constant variable values sent with the operations above, checked against the schema's input types (enums included). */
-const INPUTS: [string, string, unknown][] = [["PROJECTION_DEFINITION", "MetafieldDefinitionInput", PROJECTION_DEFINITION]];
+const INPUTS: [string, string, unknown][] = [
+  ["PROJECTION_DEFINITION", "MetafieldDefinitionInput", PROJECTION_DEFINITION],
+  ["BULK_STAGED_INPUT", "StagedUploadInput", BULK_STAGED_INPUT],
+];
 
 const i = process.argv.indexOf("--schema");
 const introspection = i > -1

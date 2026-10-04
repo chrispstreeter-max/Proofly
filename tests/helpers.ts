@@ -75,6 +75,8 @@ export const storeOf = (domain: string) => {
 /** The review store of a test shop: its own fake Admin API (never another shop's). */
 export const apiOf = (domain: string, shopId: string): ShopApi => ({ shopId, graphql: storeOf(domain).graphql });
 // The app's real Admin API clients (authenticate.admin / appProxy / unauthenticated) reach the same fake store.
+// Shopify's staged-upload storage (bulk mutation inputs and results) of a test shop: https://fake-shopify-storage.test/<shop>/…
+(globalThis as { __prooflyFakeStorage?: (url: URL, init?: RequestInit) => Promise<Response> }).__prooflyFakeStorage = (url, init) => storeOf(url.pathname.split("/")[1]).storage(url, init);
 (globalThis as { __prooflyFakeAdmin?: (url: URL, init?: RequestInit) => Promise<Response> }).__prooflyFakeAdmin = async (url, init) => {
   const body = JSON.parse(String(init?.body ?? "{}")) as { query: string; variables?: Record<string, unknown> };
   return storeOf(url.hostname).graphql(body.query, { variables: body.variables });
@@ -131,6 +133,24 @@ export class FakeShopify {
     return v ? (JSON.parse(v) as { summary: { count: number; average: number; distribution: number[] }; complete: boolean; reviews: { rating: number; title: string; body: string; name: string; date: string; verified: boolean; reply: { body: string; date: string } | null }[] }) : null;
   }
   calls: { op: string; variables?: Record<string, unknown> }[] = [];
+  // Bulk mutations: staged input files and operations. Each line runs through this fake's own mutation handling.
+  staged = new Map<string, string>(); // staged upload key → JSONL
+  bulkOps = new Map<string, { status: string; result: string; pollsLeft: number; lines: number }>();
+  /** Polls that report RUNNING before an operation completes (heartbeat / resume tests). */
+  bulkPolls = 0;
+  /** Bulk input line numbers whose mutation reports a (non-TAKEN) error. */
+  bulkFailLines = new Set<number>();
+  /** Storage host of staged uploads and result files (tests/no-network.ts routes it here). */
+  async storage(url: URL, init?: RequestInit) {
+    const [, , kind, key] = url.pathname.split("/");
+    if (kind === "upload" && init?.method === "POST") {
+      const form = await new Request(url, init).formData();
+      this.staged.set(String(form.get("key")), await (form.get("file") as Blob).text());
+      return new Response(null, { status: 204 });
+    }
+    if (kind === "results") return new Response(this.bulkOps.get(decodeURIComponent(key))?.result ?? "", { status: 200 });
+    return new Response("not found", { status: 404 });
+  }
   products: { legacyResourceId: string; handle: string; title: string; status: string; updatedAt: string }[] = [];
   missingProducts = new Set<string>(); // product gids Shopify no longer has
   /** Variant SKUs of this shop's Shopify catalogue: sku → Shopify product ids. */
@@ -302,6 +322,33 @@ export class FakeShopify {
       }
       case "ProoflyEnableRatingDefinition":
         return Response.json({ data: { standardMetafieldDefinitionEnable: { userErrors: [] } } });
+      case "ProoflyStageBulkInput": {
+        const key = `tmp/bulk/${randomUUID()}/proofly_bulk.jsonl`;
+        const url = `https://fake-shopify-storage.test/${this.identity?.myshopifyDomain ?? "shop"}/upload`;
+        return Response.json({ data: { stagedUploadsCreate: { stagedTargets: [{ url, resourceUrl: null, parameters: [{ name: "key", value: key }, { name: "Content-Type", value: "text/jsonl" }] }], userErrors: [] } } });
+      }
+      case "ProoflyRunBulk": {
+        const input = this.staged.get(v.path as string);
+        if (input === undefined) return Response.json({ data: { bulkOperationRunMutation: { bulkOperation: null, userErrors: [{ field: ["stagedUploadPath"], message: "file not found", code: "NO_SUCH_FILE" }] } } });
+        const lines = input.split("\n").filter(Boolean);
+        const out: string[] = [];
+        for (const [i, line] of lines.entries()) {
+          const res = this.bulkFailLines.has(i)
+            ? { data: { metaobjectCreate: { metaobject: null, userErrors: [{ message: "Value is invalid (injected)", code: "INVALID" }] } } }
+            : await (await this.graphql(v.mutation as string, { variables: JSON.parse(line) })).json();
+          out.push(JSON.stringify({ ...res, __lineNumber: i }));
+        }
+        const id = `gid://shopify/BulkOperation/${FakeShopify.nextId++}`;
+        this.bulkOps.set(id, { status: "COMPLETED", result: out.reverse().join("\n"), pollsLeft: this.bulkPolls, lines: lines.length }); // not in input order
+        return Response.json({ data: { bulkOperationRunMutation: { bulkOperation: { id, status: "CREATED" }, userErrors: [] } } });
+      }
+      case "ProoflyBulkStatus": {
+        const op = this.bulkOps.get(v.id as string);
+        if (!op) return Response.json({ data: { bulkOperation: null } });
+        const running = op.pollsLeft-- > 0;
+        const url = running ? null : `https://fake-shopify-storage.test/${this.identity?.myshopifyDomain ?? "shop"}/results/${encodeURIComponent(v.id as string)}`;
+        return Response.json({ data: { bulkOperation: { id: v.id, status: running ? "RUNNING" : op.status, errorCode: null, objectCount: String(op.lines), url, partialDataUrl: null } } });
+      }
       case "ProoflyCreateProjectionDefinition": {
         const d = v.d as { namespace: string; key: string };
         const taken = this.metafieldDefinitions.has(`${d.namespace}.${d.key}`);

@@ -3,7 +3,7 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { requireAdminTenant } from "../lib/admin.server";
 import { planSelectionUrl, reconcileBilling, reconcileIfStale } from "../lib/billing.server";
-import { getPlanStatus, releaseEligibleReviews } from "../lib/entitlements.server";
+import { BULK_RELEASE_MIN, getPlanStatus, releaseEligibleReviews } from "../lib/entitlements.server";
 import { annualSavingPercent, FEATURES, PLAN_ORDER, PLANS, planHasFeature, type Feature } from "../lib/plans";
 import { syncAfterRatingChange } from "../lib/rating-cache.server";
 import { withTenant } from "../lib/tenant.server";
@@ -56,8 +56,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { message: r.outcome === "confirmed" ? `Plan confirmed with Shopify: ${PLANS[r.plan].name}.` : "Shopify couldn't be reached. Your current plan stays in place; try again shortly." };
   }
   if (intent === "publish_eligible") {
-    const r = await releaseEligibleReviews(api, { actor });
-    await syncAfterRatingChange(shop.id, admin.graphql);
+    const release = () => releaseEligibleReviews(api, { actor }).then(async (r) => { await syncAfterRatingChange(shop.id, admin.graphql); return r; });
+    const { usage } = await withTenant(shop.id, (t) => getPlanStatus(t));
+    if (usage.planLimitedReviews > BULK_RELEASE_MIN) {
+      // Many reviews: Shopify writes them in a bulk operation that can take minutes, so it runs in the background.
+      void release().catch((e) => console.warn("publish eligible failed", shop.id, e));
+      return { message: "Publishing eligible reviews in the background, oldest first. Refresh this page in a few minutes to see the result." };
+    }
+    const r = await release();
     return { message: r.released ? `Published ${r.released} review${r.released === 1 ? "" : "s"}${r.stillHeld ? `; ${r.stillHeld} still held by your plan limit` : ""}.` : "No room in your current plan to publish more reviews." };
   }
   return { message: "Unknown action." };

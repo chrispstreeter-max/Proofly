@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { recomputeProducts } from "./aggregates.server";
 import { parseCsv } from "./csv";
-import { bumpStats, can, releaseEligibleReviews } from "./entitlements.server";
+import { BULK_MAX_BYTES } from "./bulk.server";
+import { bumpStats, bumpStatsMany, can, releaseEligibleReviews } from "./entitlements.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
-import { createReview, findByHandles, reviewHandle, scanReviews, updateReview, type ShopApi, type StoredReview } from "./review-store.server";
+import { createReview, findByHandles, finishBulkCreate, reviewHandle, scanReviews, startBulkCreate, updateReview, type ReviewInput, type ShopApi, type StoredReview } from "./review-store.server";
 import { importFileKey, readPrivate, storePrivateFile } from "./storage.server";
 import { isShopActive, withTenant, type Tenant } from "./tenant.server";
 
@@ -28,6 +30,8 @@ const MB = 1024 ** 2;
 export const IMPORT_LIMITS = Object.freeze({
   csvBytes: 50 * MB,
   bodyChars: 20_000, titleChars: 255, nameChars: 255, batchRows: 50, reportProblems: 1_000,
+  // Imports with at least this many rows write in Shopify bulk operations of up to bulkRows rows each.
+  bulkMinRows: 250, bulkRows: 5_000,
 });
 
 export class ImportError extends Error {
@@ -335,7 +339,13 @@ const ZERO: Counts = { imported: 0, alreadyImported: 0, adopted: 0, repliesImpor
  * store (app/lib/review-store.server.ts). Safe to call again after any failure: it continues at the job's cursor;
  * a review is never written twice (its handle is derived from source + source review id).
  */
-export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?: number; failAfterBatches?: number; syncRatings?: boolean } = {}) {
+export interface RunOptions {
+  batchRows?: number; failAfterBatches?: number; syncRatings?: boolean;
+  /** Tests: bulk thresholds, poll sleep, and a simulated crash right after a bulk operation started. */
+  bulkMinRows?: number; bulkRows?: number; sleep?: (ms: number) => Promise<void>; crashAfterBulkStart?: boolean;
+}
+
+export async function runImport(api: ShopApi, jobId: string, opts: RunOptions = {}) {
   const { shopId } = api;
   const job = await withTenant(shopId, async (t) => {
     const { db } = t;
@@ -370,10 +380,16 @@ export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?:
       for (const r of g) dupFlag.set(r, g.some((o) => o !== r && o.ref === r.ref) ? "possible_duplicate" : "cross_product_repeat");
     }
 
-    const size = opts.batchRows ?? IMPORT_LIMITS.batchRows;
     const written: StoredReview[] = []; // what THIS run wrote — finalize must not rely on Shopify's lagging search alone
+    let start = job.cursor;
+    // A bulk operation started by an earlier, interrupted run: collect its results instead of writing the chunk again.
+    const pending = job.bulkOperation as { id: string; nextCursor: number } | null;
+    if (pending) { written.push(...await finishBulkWrite(api, jobId, pending.id, pending.nextCursor, opts)); start = pending.nextCursor; }
+    const bulkMode = rows.length - start >= (opts.bulkMinRows ?? IMPORT_LIMITS.bulkMinRows);
+    const size = opts.batchRows ?? (bulkMode ? opts.bulkRows ?? IMPORT_LIMITS.bulkRows : IMPORT_LIMITS.batchRows);
     let batches = 0;
-    for (let cursor = job.cursor; cursor < rows.length; cursor += size) {
+    for (let cursor = start, end = 0; cursor < rows.length; cursor = end) {
+      end = bulkMode ? bulkChunkEnd(rows, cursor, size) : Math.min(cursor + size, rows.length);
       const cancelled = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId }, select: { cancelRequestedAt: true } }));
       if (cancelled?.cancelRequestedAt) {
         await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { status: "cancelled", finishedAt: new Date() } }));
@@ -381,9 +397,9 @@ export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?:
       }
       if (opts.failAfterBatches !== undefined && batches++ >= opts.failAfterBatches) throw new Error("simulated process failure");
       const productOf = (r: Analysed) => shopifyIds.get(matches.get(r.ref)!.productId!)!;
-      written.push(...await writeBatch(api, job.source, jobId, rows.slice(cursor, cursor + size), productOf, dupFlag, Math.min(cursor + size, rows.length)));
+      written.push(...await writeBatch(api, job.source, jobId, rows.slice(cursor, end), productOf, dupFlag, end, bulkMode ? opts : { ...opts, bulkMinRows: Infinity }));
     }
-    await finalize(api, jobId, written);
+    await finalize(api, jobId, written, opts.sleep);
   } catch (e) {
     const msg = e instanceof ImportError ? e.message : "The import stopped unexpectedly. It can be resumed.";
     console.warn("import failed", jobId, e instanceof Error ? e.message.slice(0, 120) : "");
@@ -394,9 +410,22 @@ export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?:
   return getImport(shopId, jobId);
 }
 
-async function writeBatch(api: ShopApi, source: string, jobId: string, batch: Analysed[], productOf: (r: Analysed) => bigint, dupFlag: Map<Analysed, string>, nextCursor: number) {
+/** End of the next bulk chunk: ≤ `rows` rows and safely below Shopify's bulk input limit (≈2× text + 2 KB per row). */
+function bulkChunkEnd(rows: Analysed[], cursor: number, max: number) {
+  let bytes = 0, end = cursor;
+  while (end < rows.length && end - cursor < max) {
+    const r = rows[end];
+    bytes += 2 * Buffer.byteLength(`${r.title}${r.body}${r.reviewerName}${r.reply ?? ""}`) + 2_048;
+    if (bytes > BULK_MAX_BYTES && end > cursor) break;
+    end++;
+  }
+  return end;
+}
+
+async function writeBatch(api: ShopApi, source: string, jobId: string, batch: Analysed[], productOf: (r: Analysed) => bigint, dupFlag: Map<Analysed, string>, nextCursor: number, opts: RunOptions) {
   const { shopId } = api;
   const written: StoredReview[] = [];
+  const toCreate: { r: Analysed; input: ReviewInput }[] = [];
   const valid = batch.filter((r) => r.ok);
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { counts: true } }));
   const c: Counts = { ...ZERO, ...(job.counts as Partial<Counts>) };
@@ -414,27 +443,61 @@ async function writeBatch(api: ShopApi, source: string, jobId: string, batch: An
       continue;
     }
     const flags = [...(r.warnings.includes("unknown_status") ? ["unknown_source_status"] : []), ...(dupFlag.has(r) ? [dupFlag.get(r)!] : [])];
-    const created = await createReview(api, {
+    toCreate.push({ r, input: {
       productId: productOf(r), source, sourceReviewId: r.sourceReviewId, rating: r.rating, title: r.title, body: r.body,
       reviewerName: r.reviewerName, reviewDate: r.reviewDate, status: r.intent,
       // Published rows enter HELD; finalize admits them oldest-first within the plan allowance.
       held: r.intent === "published", reply: r.reply ? r.reply.slice(0, 5_000) : null, replyDate: r.reply ? r.reviewDate : null,
       imported: true, importJobId: jobId, flags,
-    });
+    } });
+  }
+  if (toCreate.length >= (opts.bulkMinRows ?? IMPORT_LIMITS.bulkMinRows)) {
+    // One Shopify bulk operation for the chunk. Recorded before waiting, so a crash resumes it (runImport).
+    const id = await startBulkCreate(api, toCreate.map((x) => x.input));
+    await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { bulkOperation: { id, nextCursor }, counts: c, heartbeatAt: new Date() } }));
+    if (opts.crashAfterBulkStart) throw new Error("simulated process failure");
+    return [...written, ...await finishBulkWrite(api, jobId, id, nextCursor, opts)];
+  }
+  for (const { r, input } of toCreate) {
+    const created = await createReview(api, input);
     if (!created) { c.alreadyImported++; continue; } // created concurrently
     written.push(created);
     await bumpStats(shopId, null, created);
-    c.imported++;
-    if (r.intent === "pending") c.importedPending++;
-    if (r.intent === "hidden") c.importedHidden++;
-    if (r.intent === "rejected") c.importedRejected++;
+    count(c, created);
     if (r.reply) c.repliesImported++;
   }
   await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } }));
   return written;
 }
 
-async function finalize(api: ShopApi, jobId: string, written: StoredReview[]) {
+function count(c: Counts, created: StoredReview) {
+  c.imported++;
+  if (created.status === "pending") c.importedPending++;
+  if (created.status === "hidden") c.importedHidden++;
+  if (created.status === "rejected") c.importedRejected++;
+}
+
+/**
+ * Collects a bulk create's results and moves the job past its chunk. Rows Shopify rejected (other than "already
+ * exists") stop the import before the cursor moves, so resuming writes them again (creation never duplicates).
+ */
+async function finishBulkWrite(api: ShopApi, jobId: string, bulkId: string, nextCursor: number, opts: RunOptions) {
+  const { shopId } = api;
+  const heartbeat = async () => { await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { heartbeatAt: new Date() } })); };
+  const res = await finishBulkCreate(api, bulkId, { sleep: opts.sleep, onPoll: heartbeat });
+  await bumpStatsMany(shopId, res.created.map((r) => [null, r]));
+  await withTenant(shopId, async ({ db }) => {
+    const job = await db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { counts: true } });
+    const c: Counts = { ...ZERO, ...(job.counts as Partial<Counts>) };
+    for (const r of res.created) { count(c, r); if (r.reply) c.repliesImported++; }
+    c.alreadyImported += res.taken;
+    await db.importJob.update({ where: { id: jobId }, data: { counts: c, bulkOperation: Prisma.DbNull, heartbeatAt: new Date(), ...(res.failed ? {} : { cursor: nextCursor }) } });
+  });
+  if (res.failed) throw new ImportError("bulk_rows_failed", `Shopify couldn't store ${res.failed} review${res.failed === 1 ? "" : "s"}. Resume the import to retry them.`);
+  return res.created;
+}
+
+async function finalize(api: ShopApi, jobId: string, written: StoredReview[], sleep?: (ms: number) => Promise<void>) {
   const { shopId } = api;
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } }));
   // The job's reviews: what this run wrote (exact) plus what a search finds (earlier, interrupted runs of the job).
@@ -443,7 +506,7 @@ async function finalize(api: ShopApi, jobId: string, written: StoredReview[]) {
   for await (const r of scanReviews(api, { importJobId: jobId })) mine.set(r.id, r);
   for (const r of written) mine.set(r.id, r);
   // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
-  const admitted = await releaseEligibleReviews(api, { reviews: [...mine.values()].filter((r) => r.status === "published" && r.held), actor: job.actor ?? "import", known: [...mine.values()] });
+  const admitted = await releaseEligibleReviews(api, { reviews: [...mine.values()].filter((r) => r.status === "published" && r.held), actor: job.actor ?? "import", known: [...mine.values()], sleep });
   // 2. Outcome + aggregates through the one aggregate path (the released reviews were re-read under the lock).
   for (const r of admitted.reviews) mine.set(r.id, r);
   let published = 0, planLimited = 0, pending = 0, replies = 0;
@@ -609,12 +672,12 @@ export async function importProblemReport(shopId: string, jobId: string) {
 // ---------------------------------------------------------------------------------------------------------------
 /** Typed-row convenience (tests, internal callers): rows → template CSV → the same engine (one import mechanism). */
 export interface ImportRow { sourceReviewId: string; shopifyProductId: bigint; rating: number; title?: string; body: string; reviewerName: string; reviewDate: Date; status?: Intent; reply?: string }
-export async function importReviews(api: ShopApi, input: { source: string; rows: ImportRow[]; actor: string; publishMode?: PublishMode }) {
+export async function importReviews(api: ShopApi, input: { source: string; rows: ImportRow[]; actor: string; publishMode?: PublishMode; run?: RunOptions }) {
   const q = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
   const csv = ["review_id,product_id,rating,title,body,reviewer_name,review_date,status,reply",
     ...input.rows.map((r) => [r.sourceReviewId, String(r.shopifyProductId), String(r.rating), r.title ?? "", r.body, r.reviewerName, r.reviewDate.toISOString(), r.status ?? "", r.reply ?? ""].map(q).join(","))].join("\n");
   const { jobId } = await createImport(api.shopId, { csv: Buffer.from(csv), options: { source: input.source, publishMode: input.publishMode ?? "publish" }, actor: input.actor });
-  const done = await runImport(api, jobId);
+  const done = await runImport(api, jobId, input.run);
   const a = done!.analysis as { totalRows: number; invalidRows: number; duplicateSourceRows: number; conflictingSourceIds: number; unmatchedRows: number; ambiguousRows: number };
   const c = done!.counts as Counts & { published: number; planLimited: number; awaitingModeration: number };
   return {

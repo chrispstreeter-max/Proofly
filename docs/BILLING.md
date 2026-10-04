@@ -100,7 +100,8 @@ handle ever upgrades. A client-sent plan, price, interval, shop id or subscripti
 
 When Shopify confirms the higher plan, the allowance grows. **Nothing publishes automatically.** The Plan page says
 "You have N eligible reviews ready to publish." Then:
-- **Publish eligible reviews** releases held reviews oldest first, up to the new allowance.
+- **Publish eligible reviews** releases held reviews oldest first, up to the new allowance. With more than 100 held
+  reviews it runs in the background (one Shopify bulk operation) and the page says so.
 
 ## 6. Downgrade (locked rule: grandfathering)
 

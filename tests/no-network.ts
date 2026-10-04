@@ -9,6 +9,9 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestIni
   // Admin API calls of a test shop go to that shop's in-memory FakeShopify (tests/helpers.ts registers the handler).
   const fake = (globalThis as { __prooflyFakeAdmin?: (url: URL, init?: RequestInit) => Promise<Response> }).__prooflyFakeAdmin;
   if (fake && url.hostname.endsWith(".myshopify.com") && url.pathname.includes("/admin/api/")) return fake(url, init);
+  // Shopify's staged-upload storage for bulk operations: the test shop's in-memory storage (tests/helpers.ts).
+  const storage = (globalThis as { __prooflyFakeStorage?: (url: URL, init?: RequestInit) => Promise<Response> }).__prooflyFakeStorage;
+  if (storage && url.hostname === "fake-shopify-storage.test") return storage(url, init);
   if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new TypeError(`network access blocked in tests: ${url.host}`);
   return realFetch(input, init);
 }) as typeof fetch;

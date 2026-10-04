@@ -232,6 +232,8 @@ model ImportJob {
   report            Json      @default("{}")
   totalRows         Int       @default(0) @map("total_rows")
   cursor            Int       @default(0)
+  /// Running Shopify bulk operation of this import: { id, nextCursor } (app/lib/import.server.ts). Null when none.
+  bulkOperation     Json?     @map("bulk_operation")
   actor             String?
   error             String?
   startedAt         DateTime? @map("started_at")

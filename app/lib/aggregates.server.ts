@@ -65,8 +65,25 @@ export async function recomputeProduct(api: ShopApi, shopifyProductId: bigint, k
   return a;
 }
 
+/** Above this many products, one pass over the shop's public reviews replaces a search per product (large imports). */
+const SHOP_PASS_MIN_PRODUCTS = 20;
+
 export async function recomputeProducts(api: ShopApi, shopifyProductIds: Iterable<bigint>, known: StoredReview[] = []) {
-  for (const id of new Set([...shopifyProductIds].map(String))) await recomputeProduct(api, BigInt(id), known);
+  const ids = new Set([...shopifyProductIds].map(String));
+  if (ids.size <= SHOP_PASS_MIN_PRODUCTS) {
+    for (const id of ids) await recomputeProduct(api, BigInt(id), known);
+    return;
+  }
+  const byProduct = new Map<string, Map<string, StoredReview>>();
+  const add = (r: StoredReview) => { if (ids.has(String(r.productId))) byProduct.set(String(r.productId), (byProduct.get(String(r.productId)) ?? new Map()).set(r.id, r)); };
+  for await (const r of scanReviews(api, { isPublic: true })) add(r);
+  for (const k of known) add(k); // overrides the lagging search index (see computeAggregate)
+  for (const id of ids) {
+    const reviews = [...(byProduct.get(id)?.values() ?? [])].filter((r) => r.isPublic).sort(newestFirst);
+    const a = aggregateOf(reviews);
+    await store(api.shopId, BigInt(id), a);
+    await publishProjection(api, BigInt(id), reviews, a);
+  }
 }
 
 /** Every product of the shop in one pass over its public reviews. */

@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { awaitBulk, startBulk } from "./bulk.server";
 import { STATUSES, type ReviewStatus } from "./review-status";
 
 /**
@@ -250,14 +251,61 @@ const DEFAULTS = { reply: null, replyDate: null, verified: false, flags: [] as s
 
 /** Creates a review. Returns null when a review with the same (source, source review id) already exists. */
 export async function createReview(api: ShopApi, input: ReviewInput): Promise<StoredReview | null> {
+  const r = createResult(await call<CreateData>(api, CREATE_REVIEW_MUTATION, createVariables(input)));
+  if (r === "taken") return null;
+  if (r instanceof StoreError) throw r;
+  return r;
+}
+
+type CreateData = { metaobjectCreate: { metaobject: Node | null; userErrors: { message: string; code?: string }[] } };
+const createVariables = (input: ReviewInput) => {
   const handle = reviewHandle(input.source, input.sourceReviewId);
-  const full = { ...DEFAULTS, ...input };
-  const d = await call<{ metaobjectCreate: { metaobject: Node | null; userErrors: { message: string; code?: string }[] } }>(api, CREATE_REVIEW_MUTATION, {
-    m: { type: REVIEW_TYPE, handle, fields: toFields(full, handle) },
+  return { m: { type: REVIEW_TYPE, handle, fields: toFields({ ...DEFAULTS, ...input }, handle) } };
+};
+/** TAKEN = an entry with this handle exists: creation never overwrites anything. */
+function createResult(d: CreateData): StoredReview | "taken" | StoreError {
+  if (d.metaobjectCreate.userErrors.some((e) => e.code === "TAKEN" || /taken|already exists/i.test(e.message))) return "taken";
+  if (d.metaobjectCreate.userErrors.length || !d.metaobjectCreate.metaobject) return new StoreError(d.metaobjectCreate.userErrors.map((e) => e.message).join("; ") || "no entry");
+  return fromNode(d.metaobjectCreate.metaobject);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Bulk writes (app/lib/bulk.server.ts) for large imports and large plan releases.
+
+/** Starts creating these reviews in one Shopify bulk operation; returns its id (persist it to resume). */
+export const startBulkCreate = (api: ShopApi, inputs: ReviewInput[]) => startBulk(api, CREATE_REVIEW_MUTATION, inputs.map(createVariables));
+
+/** Result of a bulk create: the entries created, how many already existed (TAKEN), how many failed. */
+export async function finishBulkCreate(api: ShopApi, id: string, opts: Parameters<typeof awaitBulk>[2] = {}) {
+  const { results } = await awaitBulk(api, id, opts);
+  const out = { created: [] as StoredReview[], taken: 0, failed: 0 };
+  for (const data of results.values()) {
+    const r = createResult(data as CreateData);
+    if (r === "taken") out.taken++;
+    else if (r instanceof StoreError) out.failed++;
+    else out.created.push(r);
+  }
+  return out;
+}
+
+/**
+ * Releases held reviews (held → false) in one bulk operation. Writes ONLY the fields a release changes (held, public,
+ * signature), never the whole entry: if anything else changed meanwhile (a moderation, an outside edit), the signature
+ * no longer matches the entry, so it can't become public — a race can only ever leave a review private.
+ * Returns the entries as Shopify now holds them, by id; reviews with no result are absent.
+ */
+export async function bulkRelease(api: ShopApi, reviews: StoredReview[], opts: Parameters<typeof awaitBulk>[2] = {}) {
+  const lines = reviews.map((r) => {
+    const next = { ...r, held: false };
+    return { id: r.id, m: { fields: [{ key: "held", value: "false" }, { key: "public", value: String(isPublicState(next.status, false)) }, { key: "integrity", value: sign(next) }] } };
   });
-  if (d.metaobjectCreate.userErrors.some((e) => e.code === "TAKEN" || /taken|already exists/i.test(e.message))) return null;
-  userErrors(d.metaobjectCreate.userErrors);
-  return fromNode(d.metaobjectCreate.metaobject!);
+  const { results } = await awaitBulk(api, await startBulk(api, UPDATE_REVIEW_MUTATION, lines), opts);
+  const out = new Map<string, StoredReview>();
+  for (const data of results.values()) {
+    const m = (data as { metaobjectUpdate?: { metaobject: Node | null } }).metaobjectUpdate?.metaobject;
+    if (m && m.fields.some((f) => f.key === "status")) out.set(m.id, fromNode(m));
+  }
+  return out;
 }
 
 /** Writes a review's Proofly-owned state (status, hold, reply, …) and re-signs it. */

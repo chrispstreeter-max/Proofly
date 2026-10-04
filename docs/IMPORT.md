@@ -33,8 +33,15 @@ resume, cancel, re-import), `app.imports.$id_.report.tsx` (problem report CSV).
 - **Upload** checks the limits and stores the CSV privately (`s/<shop>/imports/<job>/…`, never
   served). It then parses, validates and matches every record and saves the analysis and per-product matches.
   Job → `queued`.
-- **Run** claims the job (`running`) and writes 50 records per transaction, committing the job's cursor and counts in
-  the same transaction.
+- **Run** claims the job (`running`) and writes the reviews into the shop's Shopify store, committing the job's cursor
+  and counts after each chunk. Fewer than 250 rows: one entry at a time, 50 rows per chunk. 250 rows or more: Shopify
+  bulk operations (`app/lib/bulk.server.ts`) of up to 5,000 rows (and well under Shopify's 100 MB input limit) each.
+  - Bulk creation never overwrites: an entry whose handle already exists is reported "already imported" by Shopify
+    and left untouched, even if search hadn't shown it yet.
+  - The running bulk operation is recorded on the job before Proofly waits for it; a resumed import collects that
+    operation's results instead of sending the chunk again.
+  - Rows Shopify rejects stop the import before the cursor moves; resuming retries them (without duplicates).
+  - While Shopify works, the job keeps its heartbeat; a cancel takes effect after the current chunk.
 - **Finalize** admits the job's reviews (date order), recomputes aggregates, flags duplicates and records
   the outcome. Job → `completed` or `completed_with_warnings`.
 
@@ -133,6 +140,10 @@ stored or reported, and the review itself imports normally.
   the review's stable handle (a hash of source + source review id); it never depends on rating, content or row order.
 - **Grandfathering:** published reviews stay public after a downgrade, and imports then hold new reviews.
 - **No automatic publication on upgrade:** the merchant uses "Publish eligible reviews".
+- **Large releases:** more than 100 reviews are released in one Shopify bulk operation after the decision (taken
+  under the shop's entitlement lock, which also reserves the room). The bulk write changes only the release fields,
+  so a review that changed meanwhile can't become public. A review edited outside Proofly is never released; only
+  re-approval publishes it.
 - **Aggregates and rating cache:** aggregates are recomputed through `recomputeProduct`; the Shopify rating cache is
   synced through `rating-cache.server` (Proofly-managed products only). The importer never writes metafields or
   product data.
