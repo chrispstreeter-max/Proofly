@@ -44,6 +44,12 @@ test("container image: no secrets, local data, fixtures or tests; runs as a non-
   assert.doesNotMatch(runtime, /COPY \. \./);
   assert.match(runtime, /npm ci --omit=dev/);
   assert.match(runtime, /^USER node$/m);
+  // The non-root user can't write node_modules (owned by root): the Prisma client is generated at build time, and the
+  // start command only migrates and serves (regenerating at start would fail with EACCES).
+  assert.match(runtime, /RUN npx prisma generate/);
+  const start = JSON.parse(readFileSync("package.json", "utf8")).scripts["docker-start"] as string;
+  assert.doesNotMatch(start, /prisma generate|npm run setup/);
+  assert.match(start, /prisma migrate deploy/);
 });
 
 test("an import whose worker stopped can be resumed straight away (before maintenance runs)", async () => {
