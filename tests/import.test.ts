@@ -364,7 +364,7 @@ describe("Plan limits on import (date order only)", () => {
     await setPlan(m, "starter");
     assert.equal((await publishedIds(m)).length, 100); // no automatic publication
     const r = await releaseEligibleReviews(m.api, { actor: "merchant" });
-    assert.deepEqual(r, { released: 160, stillHeld: 0 });
+    assert.deepEqual([r.released, r.stillHeld], [160, 0]);
     assert.equal(await countIn(m), 260);
   });
 });

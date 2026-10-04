@@ -137,3 +137,14 @@ The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review
   - Phase 2: the storefront reads from a product JSON projection, with no server round trip for the first page.
   - Phase 3: bulk mutations for large imports.
   - Phase 4: remove the remaining server-side caches where possible.
+
+**Live finding after Phase 1** (2026-10-04, Proofly Test): Shopify's metaobject search is **eventually consistent**.
+A review written or approved a moment ago is not yet returned by `metaobjects(query:)`; the listing found it after
+about 5 seconds. Proofly therefore never relies on a search immediately after its own writes:
+- aggregates overlay the reviews just written (`computeAggregate(api, product, known)`);
+- plan admission takes the just-written reviews as explicit candidates, re-read by id under the lock;
+- import finalisation combines what the run wrote with what search finds.
+
+Reads by id are always current. Admin lists and the storefront may show a change a few seconds late, which is
+acceptable. Regression tests simulate the lag (`FakeShopify.searchLag`). Re-verified live: Shopify's rating updates
+right after approval.

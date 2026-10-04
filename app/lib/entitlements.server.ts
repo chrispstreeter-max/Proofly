@@ -109,8 +109,10 @@ async function withEntitlementLock<T>(shopId: string, fn: (t: Tenant) => Promise
  * Releases plan-limited reviews (published + held) into public view, OLDEST FIRST, while the plan has room.
  * Candidates: the given reviews, the reviews of one import, or (no filter) every held review ("Publish eligible
  * reviews"). Reviews that don't fit simply stay held — never rejected, never deleted. Public reviews are never touched.
+ * Pass reviews just written as `reviews` (not `importJobId`) where possible: Shopify's search index lags writes by
+ * seconds, so a search right after writing can miss them. `known` = other just-written reviews for the aggregates.
  */
-export async function releaseEligibleReviews(api: ShopApi, opts: { reviews?: StoredReview[]; importJobId?: string; actor?: string } = {}) {
+export async function releaseEligibleReviews(api: ShopApi, opts: { reviews?: StoredReview[]; importJobId?: string; actor?: string; known?: StoredReview[] } = {}) {
   return withEntitlementLock(api.shopId, async (t) => {
     let candidates: StoredReview[] = [];
     if (opts.reviews) {
@@ -122,13 +124,14 @@ export async function releaseEligibleReviews(api: ShopApi, opts: { reviews?: Sto
     candidates = candidates.filter((r) => r.status === "published" && r.held).sort(byAdmissionOrder);
     const { reviewRoom } = await getPlanStatus(t);
     const fit = candidates.slice(0, reviewRoom);
-    for (const r of fit) await bumpStats(api.shopId, r, await updateReview(api, r, { held: false }));
-    if (fit.length) await recomputeProducts(api, fit.map((r) => r.productId));
+    const released: StoredReview[] = [];
+    for (const r of fit) { const next = await updateReview(api, r, { held: false }); await bumpStats(api.shopId, r, next); released.push(next); }
+    if (released.length) await recomputeProducts(api, released.map((r) => r.productId), [...(opts.known ?? []), ...released]);
     const stillHeld = candidates.length - fit.length;
     if (opts.actor && (fit.length || stillHeld)) {
       await t.db.auditLog.create({ data: { shopId: api.shopId, actor: opts.actor, action: "plan.reviews_released", entity: "reviews", details: { released: fit.length, stillHeld } } });
     }
-    return { released: fit.length, stillHeld };
+    return { released: fit.length, stillHeld, reviews: released };
   });
 }
 
@@ -145,6 +148,6 @@ export async function admitReviews(api: ShopApi, reviews: StoredReview[], actor?
     await bumpStats(api.shopId, r, next);
     held.push(next);
   }
-  if (!held.length) return { released: 0, stillHeld: 0 };
+  if (!held.length) return { released: 0, stillHeld: 0, reviews: [] as StoredReview[] };
   return releaseEligibleReviews(api, { reviews: held, actor });
 }

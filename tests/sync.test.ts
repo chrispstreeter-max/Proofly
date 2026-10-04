@@ -8,6 +8,7 @@ import { after, before, describe, test } from "node:test";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import prisma from "../app/db.server";
 import { recomputeProduct, recomputeProducts } from "../app/lib/aggregates.server";
+import { importReviews } from "../app/lib/import.server";
 import { moderate } from "../app/lib/moderation.server";
 import { bumpStats, releaseEligibleReviews } from "../app/lib/entitlements.server";
 import { getReview, updateReview, type ShopApi, type StoredReview } from "../app/lib/review-store.server";
@@ -23,7 +24,7 @@ import { API_VERSION } from "../app/shopify-api-version";
 import { renderBlock, liquidProduct } from "../scripts/lib/extension-liquid";
 import {
   args, DOMAIN_A, DOMAIN_B, DOMAIN_C, FakeShopify, installMerchant, owner, proxyRequest, resetDb, reviewsIn, run, SAME_HANDLE, SAME_PRODUCT_ID,
-  seedReview, webhookRequest, type Merchant,
+  seedReview, storeOf, webhookRequest, type Merchant,
 } from "./helpers";
 
 const noSleep = async () => {};
@@ -219,6 +220,42 @@ describe("Canonical aggregation — every public review counts; held, pending an
     const shopify = new FakeShopify();
     await syncRatingCache(A.shopId, shopify.graphql, { productIds: [p.id], sleep: noSleep });
     assert.deepEqual(shopify.rating(PID), { average: "4.00", count: 4 });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Real-Shopify finding (live check, 2026-10-04): metaobject search is eventually consistent — a review approved a
+// moment ago is not yet returned by `metaobjects(query:)`, so Shopify's rating was computed without it. Proofly now
+// overlays the reviews it just wrote.
+describe("Shopify's search index lags writes: aggregates and admission stay right", () => {
+  test("approving a review updates the aggregate and Shopify's rating at once, though search can't see it yet", async () => {
+    const LAG = 9_500_000_000_077n;
+    await asA((t) => product(t, LAG, "lag-product"));
+    const store = storeOf(DOMAIN_A);
+    store.searchLag = true;
+    try {
+      const pending = await seedReview(A.api, { productId: LAG, rating: 4, status: "pending" });
+      await moderate(A.api, [pending.id], "approve", "test");
+      assert.equal((await reviewsIn(A.api)).some((r) => r.id === pending.id && r.isPublic), false); // search: still stale
+      const row = (await rowA(LAG))!;
+      assert.deepEqual([row.reviewCount, Number(row.averageRating)], [1, 4]); // the aggregate is right anyway
+      const shopify = new FakeShopify();
+      await syncRatingCache(A.shopId, shopify.graphql, { sleep: noSleep });
+      assert.deepEqual(shopify.rating(LAG), { average: "4.00", count: 1 });
+    } finally { store.searchLag = false; store.flushIndex(); }
+  });
+
+  test("an import finalised while search lags still admits and counts every row it wrote", async () => {
+    const IMP = 9_500_000_000_078n;
+    await asA((t) => product(t, IMP, "lag-import"));
+    const store = storeOf(DOMAIN_A);
+    store.searchLag = true;
+    try {
+      const r = await importReviews(A.api, { source: "lagcsv", rows: [1, 2, 3].map((i) => ({ sourceReviewId: `lag-${i}`, shopifyProductId: IMP, rating: 5, body: `Lag ${i}`, reviewerName: "L", reviewDate: new Date(Date.UTC(2024, 0, i)) })), actor: "test" });
+      assert.deepEqual([r.imported, r.published, r.planLimited], [3, 3, 0]);
+      const row = (await rowA(IMP))!;
+      assert.equal(row.reviewCount, 3);
+    } finally { store.searchLag = false; store.flushIndex(); }
   });
 });
 

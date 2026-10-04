@@ -42,7 +42,8 @@ export async function moderate(api: ShopApi, reviewIds: string[], action: Modera
   await withTenant(api.shopId, ({ db, shopId }) => db.auditLog.createMany({
     data: changed.map(({ before, after }) => ({ shopId, actor, action: `review.${action}`, entity: "review", entityId: after.id, details: { from: before.status, to: after.status, held: after.held } })),
   }));
-  await recomputeProducts(api, changed.map((c) => c.after.productId));
+  // The reviews just written override Shopify's (lagging) search index in the aggregates.
+  await recomputeProducts(api, changed.map((c) => c.after.productId), changed.map((c) => c.after));
   return changed.map((c) => c.after);
 }
 

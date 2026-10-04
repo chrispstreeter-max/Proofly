@@ -3,7 +3,7 @@ import { recomputeProducts } from "./aggregates.server";
 import { parseCsv } from "./csv";
 import { bumpStats, can, releaseEligibleReviews } from "./entitlements.server";
 import { syncAfterRatingChange } from "./rating-cache.server";
-import { createReview, findByHandles, reviewHandle, scanReviews, updateReview, type ShopApi } from "./review-store.server";
+import { createReview, findByHandles, reviewHandle, scanReviews, updateReview, type ShopApi, type StoredReview } from "./review-store.server";
 import { importFileKey, readPrivate, storePrivateFile } from "./storage.server";
 import { isShopActive, withTenant, type Tenant } from "./tenant.server";
 
@@ -371,6 +371,7 @@ export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?:
     }
 
     const size = opts.batchRows ?? IMPORT_LIMITS.batchRows;
+    const written: StoredReview[] = []; // what THIS run wrote — finalize must not rely on Shopify's lagging search alone
     let batches = 0;
     for (let cursor = job.cursor; cursor < rows.length; cursor += size) {
       const cancelled = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId }, select: { cancelRequestedAt: true } }));
@@ -380,9 +381,9 @@ export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?:
       }
       if (opts.failAfterBatches !== undefined && batches++ >= opts.failAfterBatches) throw new Error("simulated process failure");
       const productOf = (r: Analysed) => shopifyIds.get(matches.get(r.ref)!.productId!)!;
-      await writeBatch(api, job.source, jobId, rows.slice(cursor, cursor + size), productOf, dupFlag, Math.min(cursor + size, rows.length));
+      written.push(...await writeBatch(api, job.source, jobId, rows.slice(cursor, cursor + size), productOf, dupFlag, Math.min(cursor + size, rows.length)));
     }
-    await finalize(api, jobId);
+    await finalize(api, jobId, written);
   } catch (e) {
     const msg = e instanceof ImportError ? e.message : "The import stopped unexpectedly. It can be resumed.";
     console.warn("import failed", jobId, e instanceof Error ? e.message.slice(0, 120) : "");
@@ -395,6 +396,7 @@ export async function runImport(api: ShopApi, jobId: string, opts: { batchRows?:
 
 async function writeBatch(api: ShopApi, source: string, jobId: string, batch: Analysed[], productOf: (r: Analysed) => bigint, dupFlag: Map<Analysed, string>, nextCursor: number) {
   const { shopId } = api;
+  const written: StoredReview[] = [];
   const valid = batch.filter((r) => r.ok);
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId }, select: { counts: true } }));
   const c: Counts = { ...ZERO, ...(job.counts as Partial<Counts>) };
@@ -406,7 +408,7 @@ async function writeBatch(api: ShopApi, source: string, jobId: string, batch: An
       // finalize admits it in date order with everything else (no review is ever written twice).
       if (e.importJobId && e.importJobId !== jobId) {
         const prev = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: e.importJobId! }, select: { finalizedAt: true } }));
-        if (prev && !prev.finalizedAt) { await updateReview(api, e, { importJobId: jobId }); c.adopted++; continue; }
+        if (prev && !prev.finalizedAt) { written.push(await updateReview(api, e, { importJobId: jobId })); c.adopted++; continue; }
       }
       if (e.importJobId !== jobId) c.alreadyImported++;
       continue;
@@ -420,6 +422,7 @@ async function writeBatch(api: ShopApi, source: string, jobId: string, batch: An
       imported: true, importJobId: jobId, flags,
     });
     if (!created) { c.alreadyImported++; continue; } // created concurrently
+    written.push(created);
     await bumpStats(shopId, null, created);
     c.imported++;
     if (r.intent === "pending") c.importedPending++;
@@ -428,23 +431,30 @@ async function writeBatch(api: ShopApi, source: string, jobId: string, batch: An
     if (r.reply) c.repliesImported++;
   }
   await withTenant(shopId, ({ db }) => db.importJob.update({ where: { id: jobId }, data: { cursor: nextCursor, counts: c, heartbeatAt: new Date() } }));
+  return written;
 }
 
-async function finalize(api: ShopApi, jobId: string) {
+async function finalize(api: ShopApi, jobId: string, written: StoredReview[]) {
   const { shopId } = api;
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirstOrThrow({ where: { shopId, id: jobId } }));
+  // The job's reviews: what this run wrote (exact) plus what a search finds (earlier, interrupted runs of the job).
+  // Shopify's metaobject search lags writes by seconds, so the search alone would miss this run's latest reviews.
+  const mine = new Map<string, StoredReview>();
+  for await (const r of scanReviews(api, { importJobId: jobId })) mine.set(r.id, r);
+  for (const r of written) mine.set(r.id, r);
   // 1. Admission across the WHOLE job, date order only (entitlements), so the result never depends on row order.
-  await releaseEligibleReviews(api, { importJobId: jobId, actor: job.actor ?? "import" });
-  // 2. Outcome + aggregates through the one aggregate path.
+  const admitted = await releaseEligibleReviews(api, { reviews: [...mine.values()].filter((r) => r.status === "published" && r.held), actor: job.actor ?? "import", known: [...mine.values()] });
+  // 2. Outcome + aggregates through the one aggregate path (the released reviews were re-read under the lock).
+  for (const r of admitted.reviews) mine.set(r.id, r);
   let published = 0, planLimited = 0, pending = 0, replies = 0;
   const products = new Set<bigint>();
-  for await (const r of scanReviews(api, { importJobId: jobId })) {
+  for (const r of mine.values()) {
     products.add(r.productId);
     if (r.status === "published") { if (r.held) planLimited++; else published++; }
     if (r.status === "pending") pending++;
     if (r.reply) replies++;
   }
-  await recomputeProducts(api, products);
+  await recomputeProducts(api, products, [...mine.values()]);
   await withTenant(shopId, async (t) => {
     const repliesVisible = (await can(t, "replies")) ? replies : 0;
     const c = { ...ZERO, ...(job.counts as Partial<Counts>), published, planLimited, awaitingModeration: pending, repliesVisible, repliesSuppressed: replies - repliesVisible };

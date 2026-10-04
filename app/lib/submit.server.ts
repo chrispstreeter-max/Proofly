@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { recomputeProduct } from "./aggregates.server";
 import { admitReviews, bumpStats } from "./entitlements.server";
-import { createReview as storeCreate, type ShopApi } from "./review-store.server";
+import { createReview as storeCreate, getReview, type ShopApi } from "./review-store.server";
 import { withTenant, type Tenant } from "./tenant.server";
 
 type AdminContext = { graphql: (q: string, o?: { variables?: Record<string, unknown> }) => Promise<Response> } | undefined;
@@ -64,7 +64,8 @@ export async function createReview(api: ShopApi, input: { shopifyProductId: bigi
   await bumpStats(api.shopId, null, review);
   if (autoPublish) {
     await admitReviews(api, [review], "storefront");
-    await recomputeProduct(api, input.shopifyProductId);
+    const current = await getReview(api, review.id); // read by id: always current (search lags writes)
+    await recomputeProduct(api, input.shopifyProductId, current ? [current] : []);
   }
   await withTenant(api.shopId, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor: "storefront", action: "review.submitted", entity: "review", entityId: review.id } }));
   return review;

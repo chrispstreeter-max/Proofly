@@ -21,11 +21,16 @@ export function aggregateOf(reviews: Iterable<Pick<StoredReview, "rating" | "isP
  * THE rating aggregate of one product — the only place review counts, averages and star distribution are calculated.
  * Reads the product's public reviews from Shopify (app/lib/review-store.server.ts). Every eligible review counts;
  * nothing is selected by rating or content.
+ *
+ * Shopify's metaobject search is EVENTUALLY consistent (verified on a real store: a just-written entry appears in
+ * filtered searches only seconds later). `known` = reviews this request just wrote, in their current state: they
+ * override whatever the search index still returns for them, so the aggregate is right immediately.
  */
-export async function computeAggregate(api: ShopApi, shopifyProductId: bigint) {
-  const reviews: StoredReview[] = [];
-  for await (const r of scanReviews(api, { productIds: [shopifyProductId], isPublic: true })) reviews.push(r);
-  return aggregateOf(reviews);
+export async function computeAggregate(api: ShopApi, shopifyProductId: bigint, known: StoredReview[] = []) {
+  const byId = new Map<string, StoredReview>();
+  for await (const r of scanReviews(api, { productIds: [shopifyProductId], isPublic: true })) byId.set(r.id, r);
+  for (const k of known) if (String(k.productId) === String(shopifyProductId)) byId.set(k.id, k);
+  return aggregateOf(byId.values());
 }
 
 /** Stores one product's aggregate in Proofly's product cache (the source for Shopify's rating metafields). */
@@ -42,15 +47,16 @@ async function store(shopId: string, shopifyProductId: bigint, a: Aggregate) {
   });
 }
 
-/** Recomputes and stores one product's aggregate. Call after ANY change that can alter public eligibility. */
-export async function recomputeProduct(api: ShopApi, shopifyProductId: bigint) {
-  const a = await computeAggregate(api, shopifyProductId);
+/** Recomputes and stores one product's aggregate. Call after ANY change that can alter public eligibility, passing
+ *  the reviews just written as `known` (see computeAggregate). */
+export async function recomputeProduct(api: ShopApi, shopifyProductId: bigint, known: StoredReview[] = []) {
+  const a = await computeAggregate(api, shopifyProductId, known);
   await store(api.shopId, shopifyProductId, a);
   return a;
 }
 
-export async function recomputeProducts(api: ShopApi, shopifyProductIds: Iterable<bigint>) {
-  for (const id of new Set([...shopifyProductIds].map(String))) await recomputeProduct(api, BigInt(id));
+export async function recomputeProducts(api: ShopApi, shopifyProductIds: Iterable<bigint>, known: StoredReview[] = []) {
+  for (const id of new Set([...shopifyProductIds].map(String))) await recomputeProduct(api, BigInt(id), known);
 }
 
 /** Every product of the shop in one pass over its public reviews. */

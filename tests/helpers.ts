@@ -94,6 +94,7 @@ export async function seedReview(api: ShopApi, input: Partial<ReviewInput> & Pic
 /** Empties a shop's review store and its cached counts (tests that need to start from zero reviews). */
 export async function clearReviews(m: { domain: string; shopId: string }) {
   storeOf(m.domain).metaobjects.clear();
+  storeOf(m.domain).indexed.clear();
   await owner.shopSettings.update({ where: { shopId: m.shopId }, data: { reviewStats: {} } });
 }
 
@@ -130,6 +131,14 @@ export class FakeShopify {
   /** Metaobject definitions and entries of THIS store (ids are unique across all fake stores, as in Shopify). */
   definitions = new Map<string, { id: string; type: string; access: { admin: string; storefront: string }; fields: { key: string; type: string; filterable: boolean }[] }>();
   metaobjects = new Map<string, { id: string; type: string; handle: string; updatedAt: string; fields: Map<string, string> }>();
+  /**
+   * What metaobject SEARCH sees. Real Shopify indexes writes only seconds later (verified live); with `searchLag` on,
+   * writes stay invisible to `metaobjects(query:)` until flushIndex(), while reads by id are always current.
+   */
+  indexed = new Map<string, FakeMetaobject>();
+  searchLag = false;
+  flushIndex() { this.indexed = new Map([...this.metaobjects].map(([id, m]) => [id, { ...m, fields: new Map(m.fields) }])); }
+  private indexWrite(m: FakeMetaobject) { if (!this.searchLag) this.indexed.set(m.id, { ...m, fields: new Map(m.fields) }); }
   static nextId = 1;
   private failures: { op: string; kind: FailKind; times: number }[] = [];
   constructor(public identity?: Identity) {}
@@ -149,6 +158,7 @@ export class FakeShopify {
   editOutside(id: string, fields: Record<string, string>) {
     const m = this.metaobjects.get(id)!;
     for (const [k, val] of Object.entries(fields)) m.fields.set(k, val);
+    this.indexWrite(m);
   }
 
   failNext(op: string, kind: FailKind, times = 1) { this.failures.push({ op, kind, times }); }
@@ -251,7 +261,7 @@ export class FakeShopify {
         try { match = v.query ? compileQuery(String(v.query), def?.fields ?? []) : () => true; } catch (e) {
           return Response.json({ errors: [{ message: (e as Error).message, extensions: { code: "definition-not-admin-filterable" } }] });
         }
-        const all = [...this.metaobjects.values()].filter((m) => m.type === v.type && match(m))
+        const all = [...this.indexed.values()].filter((m) => m.type === v.type && match(m) && this.metaobjects.has(m.id))
           .sort((a, b) => (a.fields.get("sort_key") ?? "").localeCompare(b.fields.get("sort_key") ?? "") * (v.reverse ? -1 : 1));
         const start = v.after ? Number(v.after) : 0;
         const nodes = all.slice(start, start + Number(v.first));
@@ -268,6 +278,7 @@ export class FakeShopify {
         }
         const created = { id: `gid://shopify/Metaobject/${FakeShopify.nextId++}`, type: m.type, handle: m.handle, updatedAt: new Date().toISOString(), fields: new Map(m.fields.map((f) => [f.key, f.value])) };
         this.metaobjects.set(created.id, created);
+        this.indexWrite(created);
         return Response.json({ data: { metaobjectCreate: { metaobject: FakeShopify.node(created), userErrors: [] } } });
       }
       case "ProoflyUpdateReview": {
@@ -275,6 +286,7 @@ export class FakeShopify {
         if (!m) return Response.json({ data: { metaobjectUpdate: { metaobject: null, userErrors: [{ message: "Metaobject not found" }] } } });
         for (const f of (v.m as { fields: { key: string; value: string }[] }).fields) m.fields.set(f.key, f.value);
         m.updatedAt = new Date().toISOString();
+        this.indexWrite(m);
         return Response.json({ data: { metaobjectUpdate: { metaobject: FakeShopify.node(m), userErrors: [] } } });
       }
       case "ProoflyEnableRatingDefinition":

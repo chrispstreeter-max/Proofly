@@ -319,7 +319,7 @@ describe("Fairness: date order only (regression guards)", () => {
     await seedReview(m.api, { productId: P, source: "x", sourceReviewId: "newer-5star", rating: 5, body: "great", reviewerName: "x", reviewDate: new Date("2023-06-01"), held: true, verified: true });
     await seedReview(m.api, { productId: P, source: "x", sourceReviewId: "older-1star", rating: 1, body: "bad", reviewerName: "x", reviewDate: new Date("2023-01-01"), held: true });
     const r = await releaseEligibleReviews(m.api);
-    assert.deepEqual(r, { released: 1, stillHeld: 1 });
+    assert.deepEqual([r.released, r.stillHeld], [1, 1]);
     const released = (await reviewsIn(m.api)).filter((x) => x.source === "x" && x.isPublic);
     assert.deepEqual(released.map((x) => x.sourceReviewId), ["older-1star"]);
   });
