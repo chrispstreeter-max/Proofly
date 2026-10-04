@@ -162,8 +162,11 @@ storefront-branding rules allow).
    3. SKU (exact, any variant) where available
    4. Other exact identifiers the source provides
    5. **Controlled manual matching:** merchant picks the Shopify product for each unmatched source product; choices
-      are saved per import and re-used on re-runs
+      are saved per import and re-used on re-runs (checkpoint 8 — not built yet)
    Ambiguous or unmatched → **flagged**, never guessed; unresolved rows are skipped and reported.
+   **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
+   merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation
+   (manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
 5. **Validate** — rating 1–5, body present, date parseable, lengths, image references resolvable, duplicates.
 6. **Confirm** — publish now or hold for moderation; imported reviews are always unverified.
 7. **Import** — background job with live progress; batched writes; images from the ZIP (implemented) or `https` URLs fetched safely (checkpoint 8)

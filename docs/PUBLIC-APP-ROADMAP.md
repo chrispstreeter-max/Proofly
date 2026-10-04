@@ -163,6 +163,9 @@ dataset used locally lives in a development tenant created by a local-only scrip
 Checkpoint 6 (import engine + CSV importer: validation and matching before writes, resumable batches, idempotent
 re-imports, date-ordered admission, ZIP photos) complete locally — see [IMPORT.md](IMPORT.md). The wizard, manual
 matching and remote image fetching remain checkpoint 8.
+**Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
+merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation
+(manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
 Checkpoint 6 decision (reply visibility): Imported replies are retained regardless of plan. Public reply visibility is feature-gated. Plans without Replies store imported replies privately and suppress them from storefront responses. Upgrading restores eligibility without requiring re-import.
 - **Entitlement service**: one plan config (fields and per-plan values in ARCHITECTURE §6.2 — limits for
   published reviews, imports, storage; replies, advanced customisation, advanced analytics, API access, review

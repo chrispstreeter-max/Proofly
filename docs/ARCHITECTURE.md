@@ -436,3 +436,9 @@ photos) runs once per import by date order through `entitlements.server`; aggreg
 and the Shopify cache through `rating-cache.server`. Equal review dates are resolved by `(source, source_review_id)`,
 so results never depend on row order. Details: [IMPORT.md](IMPORT.md).
 
+### 11.12 Product matching for imports (locked, checkpoint 6)
+**Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
+merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation
+(manual matching UI: checkpoint 8, not built yet). Near, fuzzy or similar titles are never used — not even as suggestions.
+When identity is uncertain, Proofly does not guess. Suggestions are always products of the importing shop only.
+

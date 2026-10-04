@@ -6,7 +6,9 @@ place, and display them beautifully across your store.
 > Status: **Checkpoint 6 — import engine and CSV importer** (on top of checkpoints 1–5: multi-tenancy, installation,
 > storefront, product sync and rating cache, billing and entitlements). The guided import wizard is a later checkpoint;
 > nothing is deployed, installed or connected to a Shopify store. Import: [docs/IMPORT.md](docs/IMPORT.md) · Billing:
-> [docs/BILLING.md](docs/BILLING.md). See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
+> [docs/BILLING.md](docs/BILLING.md).
+> Import rule: title is never an automatic product-matching key (ID → handle → SKU → other exact identifiers →
+> merchant-confirmed manual match; exact titles are suggestions only). See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
 
 - Brand: [docs/BRAND.md](docs/BRAND.md)
 - Product spec (V1): [docs/PRODUCT-SPEC-V1.md](docs/PRODUCT-SPEC-V1.md)

@@ -66,6 +66,8 @@ Rules:
 - **Product ID given but not live** (deleted, or not in this shop's catalogue) while handle or SKU points to a product
   → **ambiguous**. Identity is uncertain.
 - **Nothing matches** → **unmatched**, with a reason.
+- Locked rule, enforced by `tests/title-matching.test.ts` (turning on title matching fails 8 tests):
+  exact-title matches are suggestions only and require explicit merchant confirmation.
 - **Exact title** (trimmed, case-insensitive) on live products of **this shop** is offered only as `candidates` for
   the merchant. It never creates an association and never changes a match's status. No fuzzy or similar-title logic
   exists.
