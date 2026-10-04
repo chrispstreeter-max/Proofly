@@ -1,4 +1,4 @@
-import { recomputeProducts } from "./aggregates.server";
+import { recomputeProduct, recomputeProducts } from "./aggregates.server";
 import { admitReviews, bumpStats } from "./entitlements.server";
 import { getReview, updateReview, type ReviewStatus, type ShopApi, type StoredReview } from "./review-store.server";
 import { withTenant, type Tenant } from "./tenant.server";
@@ -52,8 +52,9 @@ export async function saveReply(api: ShopApi, reviewId: string, reply: string, a
   const review = await getReview(api, reviewId);
   if (!review) return false;
   const text = reply.trim().slice(0, 5000);
-  await updateReview(api, review, text ? { reply: text, replyDate: review.replyDate ?? new Date() } : { reply: null, replyDate: null });
+  const after = await updateReview(api, review, text ? { reply: text, replyDate: review.replyDate ?? new Date() } : { reply: null, replyDate: null });
   await withTenant(api.shopId, ({ db, shopId }) => db.auditLog.create({ data: { shopId, actor, action: text ? "reply.save" : "reply.delete", entity: "review", entityId: review.id } }));
+  if (review.isPublic || after.isPublic) await recomputeProduct(api, after.productId, [after]); // the storefront projection shows replies
   return true;
 }
 

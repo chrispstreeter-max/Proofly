@@ -120,6 +120,12 @@ type FailKind = "throw" | "throttle" | "userError";
  */
 export class FakeShopify {
   metafields = new Map<string, string>(); // `${ownerId}|${namespace}.${key}` → value
+  metafieldDefinitions = new Map<string, unknown>(); // `${namespace}.${key}` → definition input
+  /** The storefront projection of a product (parsed), or null when none was published. */
+  projection(productId: bigint | number) {
+    const v = this.metafields.get(`gid://shopify/Product/${productId}|$app:proofly.reviews`);
+    return v ? (JSON.parse(v) as { summary: { count: number; average: number; distribution: number[] }; complete: boolean; reviews: { rating: number; title: string; body: string; name: string; date: string; verified: boolean; reply: { body: string; date: string } | null }[] }) : null;
+  }
   calls: { op: string; variables?: Record<string, unknown> }[] = [];
   products: { legacyResourceId: string; handle: string; title: string; status: string; updatedAt: string }[] = [];
   missingProducts = new Set<string>(); // product gids Shopify no longer has
@@ -196,6 +202,7 @@ export class FakeShopify {
       case "ProoflyCurrentAppInstallation":
         return Response.json({ data: { currentAppInstallation: { id: "gid://shopify/AppInstallation/1" } } });
       case "ProoflySetAppMetafield":
+      case "ProoflyPublishProjection":
       case "ProoflySetRatings": {
         const mfs = v.metafields as { ownerId: string; namespace: string; key: string; value: string }[];
         for (const m of mfs) this.metafields.set(`${m.ownerId}|${m.namespace}.${m.key}`, m.value);
@@ -291,6 +298,12 @@ export class FakeShopify {
       }
       case "ProoflyEnableRatingDefinition":
         return Response.json({ data: { standardMetafieldDefinitionEnable: { userErrors: [] } } });
+      case "ProoflyCreateProjectionDefinition": {
+        const d = v.d as { namespace: string; key: string };
+        const taken = this.metafieldDefinitions.has(`${d.namespace}.${d.key}`);
+        this.metafieldDefinitions.set(`${d.namespace}.${d.key}`, v.d);
+        return Response.json({ data: { metafieldDefinitionCreate: { createdDefinition: taken ? null : { id: "gid://shopify/MetafieldDefinition/1" }, userErrors: taken ? [{ code: "TAKEN", message: "Key is in use" }] : [] } } });
+      }
       default:
         throw new Error(`FakeShopify: unexpected operation ${op}`);
     }

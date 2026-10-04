@@ -3,7 +3,7 @@ import prisma from "../app/db.server";
 import { runMaintenance } from "../app/lib/maintenance.server";
 import { unauthenticated } from "../app/shopify.server";
 
-// Daily recount of review counts needs each installed shop's Admin API (offline session).
+// The daily recount and projection retries need each installed shop's Admin API (offline session).
 const report = await runMaintenance(new Date(), async (shopId) => {
   const shop = await prisma.shop.findUnique({ where: { id: shopId } });
   if (!shop || shop.uninstalledAt) return null;

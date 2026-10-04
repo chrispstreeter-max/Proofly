@@ -144,8 +144,14 @@ async function call<T>(api: ShopApi, query: string, variables: Record<string, un
 const userErrors = (errs: { message: string }[] | undefined) => { if (errs?.length) throw new StoreError(errs.map((e) => e.message).join("; ")); };
 
 // ---------------------------------------------------------------------------------------------------------------
-/** Creates the `proofly_review` definition, or brings an existing one up to date (missing fields, filter capability). */
+/** Shopify-side definitions Proofly needs: the `proofly_review` metaobject type and the storefront projection metafield. */
 export async function ensureReviewDefinition(api: ShopApi) {
+  await ensureMetaobjectDefinition(api);
+  await ensureProjectionDefinition(api);
+}
+
+/** Creates the `proofly_review` definition, or brings an existing one up to date (missing fields, filter capability). */
+async function ensureMetaobjectDefinition(api: ShopApi) {
   const d = await call<{ metaobjectDefinitionByType: { id: string; fieldDefinitions: { key: string; capabilities: { adminFilterable: { enabled: boolean } } }[] } | null }>(api, REVIEW_DEFINITION_QUERY, { type: REVIEW_TYPE });
   const def = d.metaobjectDefinitionByType;
   const spec = (f: (typeof FIELDS)[number]) => ({ key: f.key, name: f.name, type: f.type, required: f.required, capabilities: { adminFilterable: { enabled: f.filter } } });
@@ -163,6 +169,24 @@ export async function ensureReviewDefinition(api: ShopApi) {
   if (!changes.length) return;
   const r = await call<{ metaobjectDefinitionUpdate: { userErrors: { message: string }[] } }>(api, UPDATE_REVIEW_DEFINITION_MUTATION, { id: def.id, d: { fieldDefinitions: changes } });
   userErrors(r.metaobjectDefinitionUpdate.userErrors);
+}
+
+/**
+ * The storefront projection (app/lib/projection.server.ts): an APP-OWNED product metafield ($app reserved namespace —
+ * only Proofly can write it; merchants can read it, not edit it). The theme app extension reads it as
+ * product.metafields["$app:proofly"].reviews. Its content is public by design (it is what the widget shows).
+ */
+export const PROJECTION = { namespace: "$app:proofly", key: "reviews", type: "json" } as const;
+export const CREATE_PROJECTION_DEFINITION_MUTATION = `#graphql
+  mutation ProoflyCreateProjectionDefinition($d: MetafieldDefinitionInput!) {
+    metafieldDefinitionCreate(definition: $d) { createdDefinition { id } userErrors { code message } }
+  }`;
+
+export const PROJECTION_DEFINITION = { ...PROJECTION, name: "Proofly reviews (storefront)", ownerType: "PRODUCT", access: { admin: "MERCHANT_READ", storefront: "PUBLIC_READ" } } as const;
+
+async function ensureProjectionDefinition(api: ShopApi) {
+  const r = await call<{ metafieldDefinitionCreate: { userErrors: { code: string; message: string }[] } }>(api, CREATE_PROJECTION_DEFINITION_MUTATION, { d: PROJECTION_DEFINITION });
+  userErrors(r.metafieldDefinitionCreate.userErrors.filter((e) => e.code !== "TAKEN")); // TAKEN = already defined
 }
 
 // ---------------------------------------------------------------------------------------------------------------

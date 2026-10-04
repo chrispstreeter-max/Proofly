@@ -69,7 +69,7 @@ export function shopifyRatingFor(p: Pick<Product, "shopifyProductId" | "reviewCo
 class ShopifyWriteError extends Error {}
 
 /** One Admin API call with retries for throttling / transient failures (not for userErrors). */
-async function call(graphql: Graphql, query: string, variables: Record<string, unknown>, sleep: Sleep, attempts = 4) {
+export async function call(graphql: Graphql, query: string, variables: Record<string, unknown>, sleep: Sleep, attempts = 4) {
   for (let i = 1; ; i++) {
     try {
       const body = (await (await graphql(query, { variables })).json()) as { data?: Record<string, unknown>; errors?: { extensions?: { code?: string } }[] };

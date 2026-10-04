@@ -25,7 +25,7 @@
 | Review truth | Postgres `reviews` (RLS) | Shopify metaobject type `proofly_review` (merchant-owned) in each store |
 | Replies | `review_replies` | Fields on the review entry |
 | Moderation | `status`/`hold_reason` columns | Entry fields (`status`, `held`); history as a JSON field (best effort: merchant edits bypass it) |
-| Storefront list | App proxy → Postgres | Public projection published by Proofly into a product JSON metafield (newest ≤ ~100 public reviews, replies only if the plan allows); further pages through the proxy → Admin API |
+| Storefront list | App proxy → Postgres | Public projection published by Proofly into an app-owned product JSON metafield (newest ≤ 300 public reviews within 120 KB, replies only if the plan allows); further pages through the proxy → Admin API |
 | Ratings | Standard `reviews.rating` / `rating_count` metafields | Unchanged |
 | Aggregates | Postgres columns | Computed from entries; stored in the product metafields |
 | Plan usage (published reviews) | `COUNT` in Postgres | Counter in an app-data metafield, recomputed from entries on reconcile |
@@ -134,9 +134,33 @@ The 230 spike entries were deleted afterwards (`--cleanup`). The `proofly_review
   - Duplicate-text flags are computed within an import file.
   - Local dev preview routes were removed (use a development store).
 - **Still open:**
-  - Phase 2: the storefront reads from a product JSON projection, with no server round trip for the first page.
+  - ~~Phase 2: the storefront reads from a product JSON projection~~ — built, §8.
   - Phase 3: bulk mutations for large imports.
   - Phase 4: remove the remaining server-side caches where possible.
+
+## 8. Phase 2 — built (2026-10-04)
+
+- **Projection.** `app/lib/projection.server.ts` is the only code that writes it: product metafield
+  `$app:proofly.reviews` (type `json`, app-owned — only Proofly writes it; merchants can read it in admin, not edit it;
+  definition created with storefront `PUBLIC_READ`). Content:
+  `{ summary: {count, average, distribution}, complete, reviews: [newest first] }`.
+  - Only public reviews (published, not held, not edited outside Proofly), only the proxy's allow-listed fields,
+    replies only when the current plan includes Replies.
+  - Capped at 300 reviews and 120,000 bytes (Shopify's limit is 131,072); `complete` says whether all of them fit.
+  - Only products Proofly manages (they have had a public Proofly review) carry one; when the last review stops being
+    public it is rewritten empty, never left behind.
+- **When it is written.** Every aggregate recompute (moderation, admission, submissions, imports, dashboard sync) and
+  every reply save, using the reviews just written so search lag can't leave it stale. A plan change that adds or
+  removes Replies rebuilds every projection of the shop.
+- **Failures.** A failed write never undoes the change. `products.projection_stale_since` stays set; the retry waits
+  2 minutes (it rebuilds from search, which must have caught up) and runs from the plan change path and hourly
+  maintenance.
+- **Widget.** The Review widget block embeds the projection as an HTML-escaped attribute and renders the summary and
+  first page at once, with no request. When `complete`, filters, sorts and every page run in the browser; otherwise
+  newest-first pages it covers render locally and everything else goes through the app proxy, in the same order.
+  Without a projection (not yet published) the widget works exactly as before, through the proxy.
+- **Not verified live yet:** the `$app:proofly` Liquid access and the definition on a real store need a
+  `shopify app deploy` and a check on Proofly Test.
 
 **Live finding after Phase 1** (2026-10-04, Proofly Test): Shopify's metaobject search is **eventually consistent**.
 A review written or approved a moment ago is not yet returned by `metaobjects(query:)`; the listing found it after

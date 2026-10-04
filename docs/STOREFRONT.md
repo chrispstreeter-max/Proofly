@@ -59,6 +59,17 @@ The store's app proxy path belongs to the merchant (default `/apps/proofly`; mer
 - **How the server checks it:** a request is accepted only if Shopify signed it with that shop's own path. No path is
   hard-coded outside `app/lib/proxy-path.server.ts`.
 
+## Storefront projection (no request for the first pages)
+
+The Review widget block reads `product.metafields["$app:proofly"].reviews` — an app-owned JSON metafield Proofly
+publishes whenever the product's public reviews change ([SHOPIFY-DATA.md §8](SHOPIFY-DATA.md)): the summary and the
+newest public reviews (up to 300, within 120 KB), in exactly the proxy's shape and order, replies only when the plan
+includes them. It is embedded as an HTML-escaped `data-initial` attribute and rendered immediately.
+
+- `complete: true` (every public review fits): filters, sorts and paging run in the browser; no request at all.
+- Otherwise: newest-first pages it covers render locally; later pages, rating filters and rating sorts use the proxy.
+- No projection yet (or the product has no reviews): the widget uses the proxy as described below.
+
 ## How full reviews are retrieved
 
 `GET {locale root}{proxy path}/products/<productId>/reviews?page=&sort=recent|highest|lowest&rating=&summary=1`
@@ -73,8 +84,9 @@ goes through the shop's own Shopify app proxy:
 - **Response fields.** The response is an allow-listed JSON shape: rating, title, body, name, date, verified and reply
   (body, date). `reply` is included only when the shop's current plan includes Replies;
   otherwise it is `null`, exactly as for a review without a reply (the stored reply is kept, never deleted). It has no ids, email, customer or order ids, IP hashes, status or flags.
-- **When it's requested.** The widget asks only if the product has reviews (according to the metafield count), only
-  once the widget nears the viewport, and once per page or filter change. The Admin API is never called.
+- **When it's requested.** Only for what the projection can't answer, only if the product has reviews (according to
+  the metafield count), only once the widget nears the viewport (when there is no projection), and once per page or
+  filter change.
 
 ## Visibility rules
 
@@ -87,7 +99,8 @@ aggregates, metafields and card ratings. The following never reach the storefron
 
 ## Failure behaviour
 
-- If Proofly can't be reached, the server-rendered summary still shows and the list shows "Reviews couldn't be loaded
+- If Proofly can't be reached, everything the projection covers still shows (it is served by Shopify with the page).
+- Beyond the projection (or without one), the server-rendered summary still shows and the list shows "Reviews couldn't be loaded
   right now" with a Try again button.
 - Card stars stay absent rather than showing wrong data.
 - Products with no reviews show an empty state and make no request.

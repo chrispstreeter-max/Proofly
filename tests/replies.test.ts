@@ -9,11 +9,11 @@ import { reconcileBilling } from "../app/lib/billing.server";
 import { serializeReview } from "../app/lib/reviews.server";
 import { getReview } from "../app/lib/review-store.server";
 import { loader as proxyList } from "../app/routes/proxy.products.$id.reviews";
-import { args, DOMAIN_A, DOMAIN_B, FakeShopify, installMerchant, owner, proxyRequest, resetDb, reviewsIn, SAME_PRODUCT_ID, seedReview, type Merchant } from "./helpers";
+import { args, DOMAIN_A, DOMAIN_B, installMerchant, owner, proxyRequest, resetDb, reviewsIn, SAME_PRODUCT_ID, seedReview, storeOf, type Merchant } from "./helpers";
 
 let A: Merchant, B: Merchant;
 const setPlan = (m: Merchant, handle: string | null) => {
-  const s = new FakeShopify();
+  const s = storeOf(m.domain); s.subscriptions = []; // the shop's own Shopify (billing + its reviews)
   if (handle) s.subscriptions = [{ id: `gid://shopify/AppSubscription/${handle}`, name: handle, status: "ACTIVE", planHandle: handle }];
   return reconcileBilling(m.shopId, s.graphql);
 };

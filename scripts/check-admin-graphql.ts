@@ -5,15 +5,17 @@
  * Needs network unless --schema is given, so it is a separate check, not part of `npm test`.
  */
 import { readFileSync } from "node:fs";
-import { buildClientSchema, getIntrospectionQuery, parse, validate } from "graphql";
+import { buildClientSchema, coerceInputValue, getIntrospectionQuery, parse, validate, type GraphQLInputType } from "graphql";
 import { API_VERSION } from "../app/shopify-api-version";
 import { SUBSCRIPTION_STATE_QUERY } from "../app/lib/billing.server";
 import { SKU_LOOKUP_QUERY } from "../app/lib/import.server";
 import { PRODUCTS_PAGE_QUERY } from "../app/lib/products.server";
+import { PUBLISH_PROJECTION_MUTATION } from "../app/lib/projection.server";
 import { CURRENT_APP_INSTALLATION_QUERY, SET_APP_METAFIELD_MUTATION } from "../app/lib/proxy-path.server";
 import { DELETE_RATINGS_MUTATION, ENABLE_DEFINITION_MUTATION, READ_RATINGS_QUERY, SET_RATINGS_MUTATION } from "../app/lib/rating-cache.server";
 import {
-  CREATE_REVIEW_DEFINITION_MUTATION, CREATE_REVIEW_MUTATION, REVIEW_DEFINITION_QUERY, REVIEW_QUERY, REVIEWS_QUERY, UPDATE_REVIEW_DEFINITION_MUTATION, UPDATE_REVIEW_MUTATION,
+  CREATE_PROJECTION_DEFINITION_MUTATION, CREATE_REVIEW_DEFINITION_MUTATION, CREATE_REVIEW_MUTATION, PROJECTION_DEFINITION, REVIEW_DEFINITION_QUERY, REVIEW_QUERY, REVIEWS_QUERY,
+  UPDATE_REVIEW_DEFINITION_MUTATION, UPDATE_REVIEW_MUTATION,
 } from "../app/lib/review-store.server";
 import { PRODUCT_LOOKUP_QUERY } from "../app/lib/submit.server";
 import { SHOP_IDENTITY_QUERY } from "../app/lib/tenant.server";
@@ -23,7 +25,11 @@ const OPERATIONS = {
   SET_RATINGS_MUTATION, DELETE_RATINGS_MUTATION, READ_RATINGS_QUERY, ENABLE_DEFINITION_MUTATION, SUBSCRIPTION_STATE_QUERY, SKU_LOOKUP_QUERY,
   // Reviews stored in Shopify (app/lib/review-store.server.ts)
   REVIEW_DEFINITION_QUERY, CREATE_REVIEW_DEFINITION_MUTATION, UPDATE_REVIEW_DEFINITION_MUTATION, REVIEWS_QUERY, REVIEW_QUERY, CREATE_REVIEW_MUTATION, UPDATE_REVIEW_MUTATION,
+  // Storefront projection (app/lib/projection.server.ts)
+  CREATE_PROJECTION_DEFINITION_MUTATION, PUBLISH_PROJECTION_MUTATION,
 };
+/** Constant variable values sent with the operations above, checked against the schema's input types (enums included). */
+const INPUTS: [string, string, unknown][] = [["PROJECTION_DEFINITION", "MetafieldDefinitionInput", PROJECTION_DEFINITION]];
 
 const i = process.argv.indexOf("--schema");
 const introspection = i > -1
@@ -40,4 +46,10 @@ for (const [name, op] of Object.entries(OPERATIONS)) {
   failed += errors.length ? 1 : 0;
 }
 console.log(`${Object.keys(OPERATIONS).length - failed}/${Object.keys(OPERATIONS).length} Admin operations valid against ${API_VERSION}`);
+for (const [name, type, value] of INPUTS) {
+  const errors: string[] = [];
+  coerceInputValue(value, schema.getType(type) as GraphQLInputType, (path, _v, e) => errors.push(`${path.join(".")}: ${e.message}`));
+  console.log(`${errors.length ? "✗" : "✓"} ${name} (${type})${errors.length ? `: ${errors.join("; ")}` : ""}`);
+  failed += errors.length ? 1 : 0;
+}
 process.exit(failed ? 1 : 0);

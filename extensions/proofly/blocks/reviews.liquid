@@ -1,9 +1,10 @@
 {%- comment -%}
   Proofly — Review Widget (app block, product pages).
   Average, stars and count are rendered server-side by Shopify from the product's standard metafields
-  reviews.rating / reviews.rating_count (Proofly mirrors them from its database), so they need no JavaScript and
-  cause no layout shift. The review list (filters, sorting, load more) is fetched from Proofly through the store's own
-  app proxy only when the section approaches the viewport, and only if the product has reviews.
+  reviews.rating / reviews.rating_count (written by Proofly), so they need no JavaScript and cause no layout shift.
+  The review list renders from the storefront projection Proofly publishes on the product (an app-owned metafield:
+  summary + the newest public reviews), so the first pages need no request. Older pages — and filters/sorts when not
+  every review fits — come from Proofly through the store's own app proxy.
 {%- endcomment -%}
 {%- liquid
   assign count = product.metafields.reviews.rating_count.value | default: 0
@@ -20,6 +21,8 @@
   if avg10.size != 2
     assign avg_display = '0.0'
   endif
+  # Storefront projection (app-owned metafield, written only by Proofly). Missing → the list loads through the proxy.
+  assign projection = product.metafields['$app:proofly'].reviews.value
   # The merchant's app proxy path comes from Proofly (app-data metafield). No path is hard-coded: without it the
   # widget shows only the Shopify-rendered summary and makes no request.
   assign proxy = app.metafields.proofly.proxy_path.value
@@ -46,6 +49,7 @@
   data-count="{{ count }}"
   data-api="{{ api }}"
   data-shop-name="{{ shop.name | escape }}"
+  {%- if count > 0 and projection != blank %} data-initial="{{ projection | json | escape }}"{% endif %}
   {{ block.shopify_attributes }}
 >
   <h2 class="pf-h">{{ block.settings.heading | escape }}</h2>

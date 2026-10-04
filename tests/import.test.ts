@@ -49,7 +49,7 @@ const A = (j: { analysis: unknown }) => j.analysis as Record<string, number> & {
 const reviewsOf = async (m: Merchant) => (await reviewsIn(m.api)).sort((a, b) => (a.sourceReviewId < b.sourceReviewId ? -1 : 1));
 const publishedIds = async (m: Merchant) => (await reviewsIn(m.api)).filter((r) => r.isPublic).map((r) => r.sourceReviewId).sort();
 const countIn = async (m: Merchant, pred: (r: StoredReview) => boolean = () => true) => (await reviewsIn(m.api)).filter(pred).length;
-const setPlan = (m: Merchant, handle: string | null) => { const s = new FakeShopify(); if (handle) s.subscriptions = [{ id: `gid://shopify/AppSubscription/${handle}`, name: handle, status: "ACTIVE", planHandle: handle }]; return reconcileBilling(m.shopId, s.graphql); };
+const setPlan = (m: Merchant, handle: string | null) => { const s = storeOf(m.domain); s.subscriptions = []; if (handle) s.subscriptions = [{ id: `gid://shopify/AppSubscription/${handle}`, name: handle, status: "ACTIVE", planHandle: handle }]; return reconcileBilling(m.shopId, s.graphql); };
 const P1: P = { id: 9_800_000_000_001n, handle: "alpha-example-mug", title: "Alpha Example Mug" };
 const P2: P = { id: 9_800_000_000_002n, handle: "beta-sample-tote", title: "Beta Sample Tote" };
 const P3: P = { id: 9_800_000_000_003n, handle: "gamma-demo-lamp", title: "Gamma Demo Lamp" };

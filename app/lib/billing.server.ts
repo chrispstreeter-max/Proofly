@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
-import { PLAN_ORDER, PLANS, planForHandle, type PlanKey } from "./plans";
+import { retryStaleProjections } from "./aggregates.server";
+import { PLAN_ORDER, PLANS, planForHandle, planHasFeature, type PlanKey } from "./plans";
 import { withTenant } from "./tenant.server";
 
 /**
@@ -76,7 +77,7 @@ export async function reconcileBilling(shopId: string, graphql: Graphql, opts: {
     failure = `Shopify billing API unreachable: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`;
   }
 
-  return withTenant(shopId, async ({ db }) => {
+  const result = await withTenant(shopId, async ({ db }): Promise<ReconcileResult> => {
     const before = (await db.billingState.findUnique({ where: { shopId } })) ?? (await db.billingState.create({ data: { shopId } }));
     const audit = (action: string, details: Prisma.InputJsonValue) => db.auditLog.create({ data: { shopId, actor, action, entity: "billing", entityId: shopId, details } });
     const d = failure ? { kind: "unverified" as const, error: failure, sub: null } : decide(active, recent);
@@ -110,6 +111,10 @@ export async function reconcileBilling(shopId: string, graphql: Graphql, opts: {
         ...(changedPlan ? { planChangedAt: new Date() } : {}),
       },
     });
+    if (changedPlan && planHasFeature(d.plan, "replies") !== planHasFeature(before.plan, "replies")) {
+      // Replies appear in the storefront projections: every one is rebuilt now (already-stale ones keep their own retry time: search may still lag their last write).
+      await db.product.updateMany({ where: { shopId, ratingOwnership: "proofly_managed", deletedAt: null, projectionStaleSince: null }, data: { projectionStaleSince: new Date(0) } });
+    }
     if (changedPlan) {
       const direction = PLAN_ORDER.indexOf(d.plan) > PLAN_ORDER.indexOf(before.plan) ? "upgrade" : "downgrade";
       await audit(`billing.plan_${direction}d`, { from: before.plan, to: d.plan, allowance: PLANS[d.plan].publishedReviewAllowance, shopifySubscriptionId: sub?.id ?? null });
@@ -119,6 +124,9 @@ export async function reconcileBilling(shopId: string, graphql: Graphql, opts: {
     }
     return { outcome: "confirmed", plan: d.plan, previousPlan: before.plan, changed: changedPlan, shopifyStatus: d.shopifyStatus };
   });
+  // Best effort; whatever is not republished now is retried by maintenance.
+  if (result.changed) await retryStaleProjections({ shopId, graphql }).catch((e) => console.warn("projection republish deferred", shopId, e));
+  return result;
 }
 
 const STALE_MS = 10 * 60_000;

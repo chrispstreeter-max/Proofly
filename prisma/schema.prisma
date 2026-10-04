@@ -55,12 +55,12 @@ model Shop {
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  settings          ShopSettings?
-  billing           BillingState?
-  subscriptions     Subscription[]
-  products          Product[]
-  importJobs        ImportJob[]
-  auditLogs         AuditLog[]
+  settings      ShopSettings?
+  billing       BillingState?
+  subscriptions Subscription[]
+  products      Product[]
+  importJobs    ImportJob[]
+  auditLogs     AuditLog[]
 
   @@map("shops")
 }
@@ -171,38 +171,40 @@ enum RatingOwnership {
 }
 
 model Product {
-  id               String          @id @default(uuid()) @db.Uuid
-  shopId           String          @map("shop_id") @db.Uuid
-  shopifyProductId BigInt          @map("shopify_product_id")
-  shopifyVariantId BigInt?         @map("shopify_variant_id")
-  handle           String
-  title            String
-  image            String?
+  id                   String          @id @default(uuid()) @db.Uuid
+  shopId               String          @map("shop_id") @db.Uuid
+  shopifyProductId     BigInt          @map("shopify_product_id")
+  shopifyVariantId     BigInt?         @map("shopify_variant_id")
+  handle               String
+  title                String
+  image                String?
   /// Shopify ProductStatus, lower-case: active | draft | archived | unlisted. Deleted products keep their last status.
-  status           String?
+  status               String?
   /// Shopify's updatedAt of the version stored here — older webhook deliveries never overwrite newer data.
-  shopifyUpdatedAt DateTime?       @map("shopify_updated_at")
+  shopifyUpdatedAt     DateTime?       @map("shopify_updated_at")
   /// Last time a catalogue sync or webhook saw this product in Shopify (full-sync sweep marks the rest deleted).
-  lastSeenAt       DateTime?       @map("last_seen_at")
+  lastSeenAt           DateTime?       @map("last_seen_at")
   /// Deleted in Shopify. Reviews are kept; the row is never re-attached to a new product (identity = shopifyProductId).
-  deletedAt        DateTime?       @map("deleted_at")
+  deletedAt            DateTime?       @map("deleted_at")
   // Canonical aggregate over PUBLIC reviews (published, not held). Written only by app/lib/aggregates.server.ts.
-  reviewCount      Int             @default(0) @map("review_count")
-  averageRating    Decimal         @default(0) @map("average_rating") @db.Decimal(3, 2)
-  rating1          Int             @default(0) @map("rating_1")
-  rating2          Int             @default(0) @map("rating_2")
-  rating3          Int             @default(0) @map("rating_3")
-  rating4          Int             @default(0) @map("rating_4")
-  rating5          Int             @default(0) @map("rating_5")
-  ratingOwnership  RatingOwnership @default(unmanaged) @map("rating_ownership")
-  ratingManagedAt  DateTime?       @map("rating_managed_at")
+  reviewCount          Int             @default(0) @map("review_count")
+  averageRating        Decimal         @default(0) @map("average_rating") @db.Decimal(3, 2)
+  rating1              Int             @default(0) @map("rating_1")
+  rating2              Int             @default(0) @map("rating_2")
+  rating3              Int             @default(0) @map("rating_3")
+  rating4              Int             @default(0) @map("rating_4")
+  rating5              Int             @default(0) @map("rating_5")
+  ratingOwnership      RatingOwnership @default(unmanaged) @map("rating_ownership")
+  ratingManagedAt      DateTime?       @map("rating_managed_at")
   // Last values confirmed written to Shopify's rating metafields (derived cache). Differs from the aggregate = needs sync.
-  syncedCount      Int?            @map("synced_count")
-  syncedAverage    Decimal?        @map("synced_average") @db.Decimal(3, 2)
-  ratingSyncedAt   DateTime?       @map("rating_synced_at")
-  ratingSyncError  String?         @map("rating_sync_error")
-  createdAt        DateTime        @default(now()) @map("created_at")
-  updatedAt        DateTime        @updatedAt @map("updated_at")
+  syncedCount          Int?            @map("synced_count")
+  syncedAverage        Decimal?        @map("synced_average") @db.Decimal(3, 2)
+  ratingSyncedAt       DateTime?       @map("rating_synced_at")
+  ratingSyncError      String?         @map("rating_sync_error")
+  /// Public reviews changed and the storefront projection metafield is not yet confirmed written (app/lib/projection.server.ts).
+  projectionStaleSince DateTime?       @map("projection_stale_since")
+  createdAt            DateTime        @default(now()) @map("created_at")
+  updatedAt            DateTime        @updatedAt @map("updated_at")
 
   shop          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   confirmations ProductMatchConfirmation[]

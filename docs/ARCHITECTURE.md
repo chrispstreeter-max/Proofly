@@ -469,6 +469,13 @@ Owner decision: reviews live in each merchant's own Shopify store as entries of 
 - Every passage in §1–§10 and §11.1–§11.16 that places reviews, replies or moderation history in Postgres is
   superseded by this section.
 
+### 11.18 Storefront projection (Phase 2, 2026-10-04)
+The Review widget renders from an app-owned product metafield (`$app:proofly.reviews`) that Proofly publishes on
+every change to a product's public reviews: summary + newest public reviews, allow-listed fields only, replies only
+when entitled ([SHOPIFY-DATA.md §8](SHOPIFY-DATA.md)). The first pages need no request to Proofly; the app proxy
+serves the rest. `app/lib/projection.server.ts` is the only writer; failed writes are retried
+(`products.projection_stale_since`).
+
 ### 11.12 Product matching for imports (locked, checkpoint 6)
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
 merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation

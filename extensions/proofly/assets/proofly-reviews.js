@@ -1,5 +1,5 @@
-/* Proofly — Review Widget. No dependencies, no polling. Loads reviews through the store's own app proxy only when
-   the widget nears the viewport and the product has reviews. Review data is only ever written with textContent /
+/* Proofly — Review Widget. No dependencies, no polling. Renders from the storefront projection Shopify served with
+   the page (data-initial); anything beyond it loads through the store's own app proxy. Review data is only ever written with textContent /
    attributes (never innerHTML) so customer text cannot inject markup. */
 (() => {
   const root = document.getElementById("pf-reviews");
@@ -12,6 +12,10 @@
   const list = $("[data-list]");
   const more = $("[data-more]");
   const state = { page: 1, sort: "recent", rating: 0, summary: null, loading: false };
+  const PAGE = 10; // the proxy's page size
+  let initial = null; // { summary, complete, reviews (newest first) } — published by Proofly on the product
+  try { initial = JSON.parse(root.dataset.initial || "null"); } catch { /* ignore: the proxy serves everything */ }
+  if (!initial || !Array.isArray(initial.reviews) || !initial.summary) initial = null;
   const dateFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 
   const el = (tag, cls, text) => {
@@ -79,6 +83,17 @@
     return li;
   }
 
+  // The projection answers when it holds every review, or for newest-first pages it covers; otherwise the proxy.
+  function fromProjection() {
+    if (!initial || !(initial.complete || (state.sort === "recent" && !state.rating && state.page * PAGE <= initial.reviews.length))) return null;
+    let rows = initial.reviews.map((r, i) => [r, i]);
+    if (state.rating) rows = rows.filter(([r]) => r.rating === state.rating);
+    const dir = state.sort === "highest" ? -1 : state.sort === "lowest" ? 1 : 0;
+    if (dir) rows.sort((a, b) => dir * (a[0].rating - b[0].rating) || a[1] - b[1]); // ties: newest first, as the proxy
+    const end = state.page * PAGE;
+    return { reviews: rows.slice(end - PAGE, end).map(([r]) => r), hasMore: rows.length > end || !initial.complete };
+  }
+
   async function load(reset) {
     if (state.loading) return;
     state.loading = true;
@@ -89,10 +104,13 @@
     if (state.rating) q.set("rating", String(state.rating));
     if (!state.summary) q.set("summary", "1");
     try {
-      if (!API) throw new Error("no proxy path");
-      const res = await fetch(`${API}/products/${productId}/reviews?${q}`, { headers: { Accept: "application/json" } });
-      if (!res.ok) throw new Error(String(res.status));
-      const data = await res.json();
+      let data = fromProjection();
+      if (!data) {
+        if (!API) throw new Error("no proxy path");
+        const res = await fetch(`${API}/products/${productId}/reviews?${q}`, { headers: { Accept: "application/json" } });
+        if (!res.ok) throw new Error(String(res.status));
+        data = await res.json();
+      }
       if (data.summary) renderSummary((state.summary = data.summary));
       if (reset) list.replaceChildren();
       data.reviews.forEach((r) => list.append(renderReview(r)));
@@ -173,8 +191,10 @@
     }
   });
 
-  // Fetch only when the section approaches the viewport.
   if (!list) return;
+  // Projection served with the page: render now, no request.
+  if (initial) { renderSummary((state.summary = initial.summary)); load(true); return; }
+  // Otherwise fetch only when the section approaches the viewport.
   if ("IntersectionObserver" in window) {
     const io = new IntersectionObserver((entries) => {
       if (entries.some((x) => x.isIntersecting)) { io.disconnect(); load(true); }

@@ -1,6 +1,8 @@
+import { retryStaleProjections } from "./aggregates.server";
 import { purgeRateLimits } from "./http.server";
 import { recountStats } from "./entitlements.server";
 import { STALE_MS } from "./import.server";
+import { staleProjectionProducts } from "./projection.server";
 import type { ShopApi } from "./review-store.server";
 import { deleteObjects, listObjects, shopPrefix } from "./storage.server";
 import { allShopIds, withTenant } from "./tenant.server";
@@ -14,13 +16,14 @@ import { allShopIds, withTenant } from "./tenant.server";
  *    still has unresolved (unmatched / ambiguous, not skipped) products, whose rows exist only in that file
  *  - stored files no import references (e.g. an upload whose import was refused) are deleted after a 24 h grace period
  *  - once a day per installed shop, review counts are recounted from the shop's Shopify store (repairs drift from
- *    edits made outside Proofly) — only when `recount` is given (the scheduled entry point passes Shopify access)
+ *    edits made outside Proofly), and storefront projections whose write failed are republished — only when `shopApi`
+ *    is given (the scheduled entry point passes Shopify access)
  */
 export const IMPORT_FILE_RETENTION_DAYS = 30;
 export const ORPHAN_GRACE_MS = 24 * 3_600_000;
 
-export async function runMaintenance(now = new Date(), recount?: (shopId: string) => Promise<ShopApi | null>) {
-  const report = { rateLimitsPurged: Number(await purgeRateLimits()), importsMarkedResumable: 0, importFilesDeleted: 0, orphanObjectsDeleted: 0, shops: 0, recounted: 0 };
+export async function runMaintenance(now = new Date(), shopApi?: (shopId: string) => Promise<ShopApi | null>) {
+  const report = { rateLimitsPurged: Number(await purgeRateLimits()), importsMarkedResumable: 0, importFilesDeleted: 0, orphanObjectsDeleted: 0, shops: 0, recounted: 0, projectionsRepublished: 0 };
   for (const shopId of await allShopIds()) {
     report.shops++;
     const r = await withTenant(shopId, async ({ db }) => {
@@ -46,10 +49,13 @@ export async function runMaintenance(now = new Date(), recount?: (shopId: string
     // ponytail: lists every object of the shop; sweep incrementally by prefix if a shop ever holds very many imports.
     const orphans = (await listObjects(`${shopPrefix(shopId)}/`)).filter((o) => !kept.has(o.key) && +o.modified < +now - ORPHAN_GRACE_MS).map((o) => o.key);
     report.orphanObjectsDeleted += await deleteObjects(orphans);
-    if (recount) {
+    if (shopApi) {
       const last = await withTenant(shopId, async ({ db }) => (await db.auditLog.findFirst({ where: { shopId, action: "reviews.recounted" }, orderBy: { createdAt: "desc" } }))?.createdAt);
-      const api = !last || +now - +last > 86_400_000 ? await recount(shopId) : null;
-      if (api) {
+      const recountDue = !last || +now - +last > 86_400_000;
+      const staleProjections = (await staleProjectionProducts(shopId, now)).length > 0;
+      const api = recountDue || staleProjections ? await shopApi(shopId) : null;
+      if (api && staleProjections) report.projectionsRepublished += await retryStaleProjections(api, now);
+      if (api && recountDue) {
         await recountStats(api);
         await withTenant(shopId, ({ db }) => db.auditLog.create({ data: { shopId, actor: "system", action: "reviews.recounted", entity: "reviews" } }));
         report.recounted++;
