@@ -60,6 +60,15 @@ describe("Theme app extension build", () => {
     assert.equal(blockSchema("rating-summary").javascript, undefined); // rating summary ships no JavaScript
   });
 
+  // Real-Shopify finding (Proofly Test, 2026-10-04): `.pf-more { display: block }` beat the browser's [hidden] rule, so
+  // "Show more reviews" showed with nothing more to load.
+  test("anything the widget hides with the hidden attribute stays hidden (no display rule overrides it)", () => {
+    const css = readFileSync(ext("assets/proofly.css"), "utf8");
+    assert.match(css, /\.pf \[hidden\] \{ display: none; \}/);
+    const general = css.indexOf(".pf [hidden]");
+    for (const m of css.matchAll(/^([^{}\n]*\[hidden\][^{}\n]*)\{/gm)) assert.equal(m.index, general, `narrower [hidden] rule: ${m[1]}`);
+  });
+
   test("budgets: storefront JS < 10 KB gzipped in total, Liquid within Shopify's 100 KB extension limit", () => {
     const gz = (f: string) => gzipSync(readFileSync(ext(f)), { level: 9 }).length;
     const js = files("assets").filter((f) => f.endsWith(".js"));
