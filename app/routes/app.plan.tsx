@@ -17,6 +17,7 @@ const COMPARISON: { label: string; feature?: Feature }[] = [
   { label: "Photo reviews", feature: "photoReviews" },
   { label: "Review moderation", feature: "moderation" },
   { label: "Review import (CSV and photos)", feature: "reviewImport" },
+  { label: "Review export (CSV)", feature: "csvExport" },
   { label: "Public replies to reviews", feature: "replies" },
   { label: "Priority support", feature: "prioritySupport" },
 ];

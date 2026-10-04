@@ -1,5 +1,7 @@
 import type { Prisma, Shop } from "@prisma/client";
+import { createHash } from "node:crypto";
 import prisma from "../db.server";
+import { deleteShopObjects } from "./media.server";
 import { DEFAULT_PROXY_PATH, publishAppMetafields, publishProxyPath, STOREFRONT_SETTINGS_METAFIELD } from "./proxy-path.server";
 
 /**
@@ -126,6 +128,34 @@ export async function registerShop(input: { shopDomain: string; shopifyShopId: b
   });
   return shop;
 }
+
+/**
+ * shop/redact (48 h after uninstall): permanently deletes everything Proofly holds for the shop — every merchant table
+ * (cascade from shops), sessions, and all stored files (private originals, public derivatives, import files). Only for
+ * a shop that is still uninstalled (a reinstall in the meantime keeps the data). Idempotent: an unknown shop is a no-op.
+ * Leaves only a non-personal record (SHA-256 of the domain, time, counts).
+ */
+export async function redactShop(domain: string) {
+  const shop = await shopByDomain(domain);
+  if (!shop) return { deleted: false as const, reason: "unknown_or_already_deleted" };
+  if (!shop.uninstalledAt) return { deleted: false as const, reason: "reinstalled" };
+  const counts = await withTenant(shop.id, async ({ db }) => ({
+    reviews: await db.review.count({ where: { shopId: shop.id } }),
+    images: await db.reviewImage.count({ where: { shopId: shop.id } }),
+    products: await db.product.count({ where: { shopId: shop.id } }),
+    imports: await db.importJob.count({ where: { shopId: shop.id } }),
+  }));
+  const objects = await deleteShopObjects(shop.id);
+  await prisma.$transaction([
+    prisma.session.deleteMany({ where: { shop: shop.shopDomain } }),
+    prisma.shop.delete({ where: { id: shop.id } }), // cascades through every merchant table
+  ]);
+  await prisma.shopDeletion.create({ data: { domainHash: createHash("sha256").update(shop.shopDomain).digest("hex"), details: { ...counts, objects } } });
+  return { deleted: true as const, counts, objects };
+}
+
+/** Every shop id (maintenance only — iterates tenants, never reads their data outside withTenant). */
+export const allShopIds = async () => (await prisma.shop.findMany({ select: { id: true } })).map((s) => s.id);
 
 /** app/uninstalled: tenant becomes inactive immediately (storefront + admin stop serving), data is retained.
  *  Idempotent: Shopify may deliver the webhook more than once. */

@@ -5,6 +5,7 @@ import { requireAdminTenant } from "../lib/admin.server";
 import {
   cancelImport, explain, getImport, ImportError, refreshAnalysis, reimportFromJob, resolveProductMatch, runImport, skuLookupFromAdmin,
 } from "../lib/import.server";
+import { IMPORT_FILE_RETENTION_DAYS } from "../lib/maintenance.server";
 import { isUuid, withTenant } from "../lib/tenant.server";
 
 // One import: what the file contains, which products need the merchant's decision, and the outcome. Another shop's
@@ -28,7 +29,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     job: { ...job, createdAt: job.createdAt.toISOString().slice(0, 16).replace("T", " "), finishedAt: job.finishedAt?.toISOString().slice(0, 16).replace("T", " ") ?? null },
     problems: (a.problems ?? []).slice(0, 50).map((p) => ({ record: p.record, text: [p.code, ...p.warnings, ...p.images].filter(Boolean).map((c) => explain(c as string)).join(" ") })),
     attention: job.matches.filter((m) => m.status !== "matched" || m.method === "manual").map((m) => ({ ...m, refKey: JSON.stringify(m.ref), explanation: m.reason ? explain(m.reason) : "" })),
-    pq, search,
+    pq, search, retentionDays: IMPORT_FILE_RETENTION_DAYS,
   };
 };
 
@@ -65,7 +66,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function ImportDetail() {
-  const { job, problems, attention, pq, search } = useLoaderData<typeof loader>();
+  const { job, problems, attention, pq, search, retentionDays } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   const a = job.analysis as Record<string, number>;
@@ -80,6 +81,7 @@ export default function ImportDetail() {
   return (
     <s-page heading={`Import · ${job.status.replaceAll("_", " ")}`}>
       {result && <s-banner tone="info"><s-paragraph>{result.message}</s-paragraph></s-banner>}
+      {job.filesDeletedAt && <s-banner tone="info"><s-paragraph>The uploaded file was deleted {retentionDays} days after this import finished (Proofly keeps import files only as long as needed). Imported reviews are not affected; to import more rows, upload the file again — rows already imported are skipped.</s-paragraph></s-banner>}
       {job.error && <s-banner tone="critical"><s-paragraph>{job.error} Your data is safe; you can resume.</s-paragraph></s-banner>}
       <s-section heading="File">
         <s-paragraph>
@@ -90,10 +92,10 @@ export default function ImportDetail() {
           {job.status === "queued" && <Form method="post"><input type="hidden" name="intent" value="start" /><s-button type="submit" variant="primary" loading={busy || undefined}>{unresolved ? `Start import (${unresolved} product${unresolved === 1 ? "" : "s"} unresolved — those rows are skipped)` : "Start import"}</s-button></Form>}
           {job.status === "failed" && <Form method="post"><input type="hidden" name="intent" value="resume" /><s-button type="submit" variant="primary">Resume import</s-button></Form>}
           {["queued", "running", "failed"].includes(job.status) && <Form method="post"><input type="hidden" name="intent" value="cancel" /><s-button type="submit" tone="critical">Cancel</s-button></Form>}
-          {["completed", "completed_with_warnings", "cancelled"].includes(job.status) && attention.some((m) => m.method === "manual") && (
+          {!job.filesDeletedAt && ["completed", "completed_with_warnings", "cancelled"].includes(job.status) && attention.some((m) => m.method === "manual") && (
             <Form method="post"><input type="hidden" name="intent" value="reimport" /><s-button type="submit" variant="primary">Import newly matched rows</s-button></Form>
           )}
-          <s-button onClick={download}>Download problem report (CSV)</s-button>
+          {!job.filesDeletedAt && <s-button onClick={download}>Download problem report (CSV)</s-button>}
         </s-stack>
       </s-section>
 

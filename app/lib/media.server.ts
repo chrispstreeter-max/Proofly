@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import { GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // Review image storage.
 //  - originals: byte-identical copy in PRIVATE storage (never served publicly; GPS EXIF stays private)
@@ -73,6 +73,59 @@ export async function readPrivate(key: string): Promise<Buffer | null> {
     return bytes ? Buffer.from(bytes) : null;
   }
   return readFile(path.join(localDir(), "private", key)).catch(() => null);
+}
+
+type Vis = "private" | "public";
+const bucket = (v: Vis) => (v === "public" ? process.env.S3_BUCKET_PUBLIC : process.env.S3_BUCKET_PRIVATE);
+
+/** Lists stored objects under a prefix (keys are Proofly-generated, e.g. "s/<shop>/"), with their last-modified time. */
+export async function listObjects(v: Vis, prefix: string): Promise<{ key: string; modified: Date }[]> {
+  if ((process.env.MEDIA_DRIVER || "local") === "s3") {
+    const out: { key: string; modified: Date }[] = [];
+    let token: string | undefined;
+    do {
+      const r = await s3Client().send(new ListObjectsV2Command({ Bucket: bucket(v), Prefix: prefix, ContinuationToken: token }));
+      for (const o of r.Contents ?? []) if (o.Key) out.push({ key: o.Key, modified: o.LastModified ?? new Date(0) });
+      token = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (token);
+    return out;
+  }
+  const root = path.join(localDir(), v);
+  const out: { key: string; modified: Date }[] = [];
+  const walk = async (dir: string) => {
+    for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else out.push({ key: path.relative(root, full).split(path.sep).join("/"), modified: (await stat(full)).mtime });
+    }
+  };
+  await walk(path.join(root, prefix));
+  return out;
+}
+
+/** Deletes stored objects by key (idempotent). */
+export async function deleteObjects(v: Vis, keys: string[]) {
+  if (!keys.length) return 0;
+  if ((process.env.MEDIA_DRIVER || "local") === "s3") {
+    for (let i = 0; i < keys.length; i += 1000) {
+      await s3Client().send(new DeleteObjectsCommand({ Bucket: bucket(v), Delete: { Objects: keys.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true } }));
+    }
+    return keys.length;
+  }
+  const root = path.join(localDir(), v);
+  for (const k of keys) {
+    const full = path.resolve(root, k);
+    if (full.startsWith(root + path.sep)) await rm(full, { force: true });
+  }
+  return keys.length;
+}
+
+/** Everything stored for a shop (both stores), for shop/redact. */
+export async function deleteShopObjects(shopId: string) {
+  let n = 0;
+  for (const v of ["private", "public"] as const) n += await deleteObjects(v, (await listObjects(v, `${shopPrefix(shopId)}/`)).map((o) => o.key));
+  if ((process.env.MEDIA_DRIVER || "local") !== "s3") for (const v of ["private", "public"]) await rm(path.join(localDir(), v, shopPrefix(shopId)), { recursive: true, force: true });
+  return n;
 }
 
 export function localDir() {

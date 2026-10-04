@@ -124,6 +124,12 @@ export default function Reviews() {
 
       {result && <s-banner tone="info"><s-paragraph>{result.message}</s-paragraph></s-banner>}
       <s-section heading={`${count.toLocaleString()} review${count === 1 ? "" : "s"}`}>
+        <s-button onClick={async () => {
+          const res = await fetch("/app/reviews/export"); // App Bridge adds the session token
+          const url = URL.createObjectURL(await res.blob());
+          Object.assign(document.createElement("a"), { href: url, download: `proofly-reviews-${new Date().toISOString().slice(0, 10)}.csv` }).click();
+          URL.revokeObjectURL(url);
+        }}>Export all reviews (CSV)</s-button>
         <Form method="post" id="bulk">
           <s-stack direction="inline" gap="base">
             <s-select name="intent" label="With selected">

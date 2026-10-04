@@ -398,6 +398,8 @@ model ImportJob {
   heartbeatAt       DateTime? @map("heartbeat_at")
   cancelRequestedAt DateTime? @map("cancel_requested_at")
   finalizedAt       DateTime? @map("finalized_at")
+  /// Set when the retention job deleted the stored source file / images archive (report rows are kept).
+  filesDeletedAt    DateTime? @map("files_deleted_at")
   createdAt         DateTime  @default(now()) @map("created_at")
   finishedAt        DateTime? @map("finished_at")
 
@@ -478,4 +480,16 @@ model ProductMatchConfirmation {
 
   @@unique([shopId, source, sourceProductRef])
   @@map("product_match_confirmations")
+}
+
+/// Proof that a shop's data was deleted on shop/redact (checkpoint 9). Holds no merchant or personal data: a SHA-256
+/// of the shop domain, the time, and how much was deleted. Not a tenant table (the tenant no longer exists).
+model ShopDeletion {
+  id         String   @id @default(uuid()) @db.Uuid
+  domainHash String   @map("domain_hash")
+  deletedAt  DateTime @default(now()) @map("deleted_at")
+  details    Json     @default("{}")
+
+  @@index([domainHash])
+  @@map("shop_deletions")
 }

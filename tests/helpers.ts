@@ -19,7 +19,7 @@ export const SAME_SOURCE_REVIEW_ID = "fixture-review-1"; // deliberately identic
 export const SAME_HANDLE = "fixture-product"; // deliberately identical in both shops
 
 export async function resetDb() {
-  await owner.$executeRawUnsafe(`TRUNCATE TABLE shops, "Session" RESTART IDENTITY CASCADE`);
+  await owner.$executeRawUnsafe(`TRUNCATE TABLE shops, "Session", rate_limits, shop_deletions RESTART IDENTITY CASCADE`);
 }
 
 /** Fictional custom storefront host of a fixture merchant. */

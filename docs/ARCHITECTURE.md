@@ -436,6 +436,14 @@ photos) runs once per import by date order through `entitlements.server`; aggreg
 and the Shopify cache through `rating-cache.server`. Equal review dates are resolved by `(source, source_review_id)`,
 so results never depend on row order. Details: [IMPORT.md](IMPORT.md).
 
+### 11.15 Privacy, retention and export (checkpoint 9)
+`shop/redact` deletes the shop's storage objects, sessions and `shops` row (cascading through every merchant table)
+once the shop is still uninstalled, and appends a domain-hash-only record to `shop_deletions` (insert-only for the app
+role). Customer compliance topics never store the customer id. Scheduled maintenance deletes import files 30 days after
+an import finishes unless unresolved products remain, marks stalled imports resumable, sweeps unreferenced objects older
+than 24 h and purges rate-limit counters. Review export is a formula-safe CSV in import-template columns. Details:
+[PRIVACY.md](PRIVACY.md).
+
 ### 11.12 Product matching for imports (locked, checkpoint 6)
 **Title is never an automatic product-matching key.** The hierarchy is ID → handle → SKU → other exact identifiers →
 merchant-confirmed manual match. Exact-title matches are suggestions only and require explicit merchant confirmation

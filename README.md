@@ -3,10 +3,10 @@
 **Proofly** is a Shopify App Store app for product reviews: bring your existing reviews with you, manage them in one
 place, and display them beautifully across your store.
 
-> Status: **Checkpoint 8 — guided import** (on top of checkpoints 1–6: multi-tenancy, installation,
-> storefront, product sync and rating cache, billing and entitlements, import engine, review management). The guided import wizard is a later checkpoint;
+> Status: **Checkpoint 9 — privacy, retention and export** (on top of checkpoints 1–8: multi-tenancy, installation,
+> storefront, product sync and rating cache, billing and entitlements, import engine, review management, guided import);
 > nothing is deployed, installed or connected to a Shopify store. Import: [docs/IMPORT.md](docs/IMPORT.md) · Billing:
-> [docs/BILLING.md](docs/BILLING.md).
+> [docs/BILLING.md](docs/BILLING.md) · Privacy and retention: [docs/PRIVACY.md](docs/PRIVACY.md).
 > Import rule: title is never an automatic product-matching key (ID → handle → SKU → other exact identifiers →
 > merchant-confirmed manual match; exact titles are suggestions only). See [docs/ARCHITECTURE.md §11](docs/ARCHITECTURE.md).
 
@@ -40,6 +40,9 @@ npm test                                              # unit, integration, tenan
 npm run fixtures:generate && npm run fixtures:check   # synthetic, fictional dataset — no real merchant data
 npm run scan:merchant-data                            # fails if merchant/customer data could ship
 ```
+
+Scheduled job (production: hourly): `npm run maintenance` — import-file retention, stalled imports, orphaned
+storage, rate-limit counters ([docs/PRIVACY.md](docs/PRIVACY.md)).
 
 Real merchant datasets never live in this repository. Authorised local testing against a private dataset uses files
 outside the repo and, optionally, a private hashed denylist (`PROOFLY_PRIVATE_DENYLIST`).

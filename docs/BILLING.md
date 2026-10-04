@@ -38,7 +38,7 @@ pages were read directly.
   subscription's price is authoritative.
 - **Identifiers and handles:** ids are stable enum values (`PlanKey`), never prices and never Shopify subscription ids.
   The handles must be configured identically in the Partner Dashboard.
-- **Features:** each feature has a `released` flag. Unreleased features (review import UI, CSV export, unlimited
+- **Features:** each feature has a `released` flag. Unreleased features (unlimited
   migration, advanced customisation, advanced analytics, API access, review requests, verified purchases) are never
   enabled or shown, whatever the plan.
 - **Shown today:** review display (widget, summary, card stars), photo reviews and moderation on all plans; public

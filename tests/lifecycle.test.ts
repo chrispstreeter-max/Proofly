@@ -173,7 +173,7 @@ describe("Lifecycle: authenticate → onboard → use → uninstall → reinstal
     assert.equal(aStill.response?.status ?? 200, 200);
     assert.equal(await owner.session.count({ where: { shop: DOMAIN_A } }), 1);
 
-    // Data is retained (deletion happens only on shop/redact, checkpoint 10).
+    // Data is retained (deletion happens only on shop/redact — tests/privacy.test.ts).
     assert.equal(await owner.review.count({ where: { shopId: c.id } }), 1);
   });
 

@@ -20,7 +20,7 @@ export const FEATURES = {
   replies: { label: "Public replies to reviews", released: true },
   prioritySupport: { label: "Priority support", released: true },
   reviewImport: { label: "Review import (CSV and photos)", released: true }, // guided importer: checkpoints 6 + 8
-  csvExport: { label: "CSV export", released: false },
+  csvExport: { label: "Review export (CSV)", released: true },
   unlimitedMigration: { label: "Unlimited review migration", released: false },
   advancedCustomisation: { label: "Advanced widget customisation", released: false },
   advancedAnalytics: { label: "Advanced analytics", released: false },

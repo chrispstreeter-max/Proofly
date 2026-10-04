@@ -11,7 +11,7 @@ Every Shopify store that installs Proofly is an independent tenant (`shops` row)
 | Public media | No tenant input at all: an opaque asset id → `proofly_public_media_key()` → storage key only while the photo is public |
 | Webhooks | `authenticate.webhook` verifies Shopify's HMAC → `shop` → `shops` row (product webhooks: active shops only; body fields such as shop ids are ignored) |
 | Install / reinstall | Shopify-managed installation → token exchange → `afterAuth` hook → Admin API `shop { id name myshopifyDomain primaryDomain }` → create or reactivate tenant (`upsertShopFromAuth`); refused if the reported domain differs from the session's |
-| Uninstall | `app/uninstalled` → sessions deleted, `uninstalled_at` set (idempotent); admin and storefront stop serving the tenant; data retained until `shop/redact` |
+| Uninstall | `app/uninstalled` → sessions deleted, `uninstalled_at` set (idempotent); admin and storefront stop serving the tenant; data retained until `shop/redact`, which deletes all of it ([PRIVACY.md](PRIVACY.md)) |
 
 Never used as tenant authority: shop domains, shop ids or tenant ids in query strings, bodies or headers; hard-coded or
 development store domains (the fictional dev shop exists only behind `NODE_ENV=development`).

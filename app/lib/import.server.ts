@@ -268,7 +268,7 @@ export function skuLookupFromAdmin(graphql: (q: string, o?: { variables?: Record
 
 // ---------------------------------------------------------------------------------------------------------------
 const ACTIVE = ["queued", "running"];
-const STALE_MS = 10 * 60_000;
+export const STALE_MS = 10 * 60_000;
 const lockImports = (t: Tenant) => t.db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`imports:${t.shopId}`}))`;
 const sourceLabel = (s?: string) => {
   const v = (s ?? "csv").trim().toLowerCase();
@@ -540,7 +540,7 @@ export async function getImport(shopId: string, jobId: string) {
     if (!j) return null;
     return {
       id: j.id, status: j.status, source: j.source, createdAt: j.createdAt, finishedAt: j.finishedAt, error: j.error,
-      totalRows: j.totalRows, processedRows: j.cursor, analysis: j.analysis, counts: j.counts,
+      totalRows: j.totalRows, processedRows: j.cursor, analysis: j.analysis, counts: j.counts, filesDeletedAt: j.filesDeletedAt,
       matches: j.matches.map((m) => ({ ref: JSON.parse(m.sourceProductRef), status: m.status, method: m.method, productId: m.productId, reason: m.reason, candidates: m.candidates, rows: m.rows })),
     };
   });
@@ -643,9 +643,9 @@ export async function refreshAnalysis(shopId: string, jobId: string) {
  */
 export async function reimportFromJob(shopId: string, jobId: string, actor: string, skuLookup: SkuLookup | null = null) {
   const job = await withTenant(shopId, ({ db }) => db.importJob.findFirst({ where: { shopId, id: jobId } }));
-  if (!job?.fileKey) throw new ImportError("not_found", "Import not found.");
-  const csv = await readPrivate(job.fileKey);
-  if (!csv) throw new ImportError("file_missing", "The original file is no longer available. Upload it again.");
+  if (!job) throw new ImportError("not_found", "Import not found.");
+  const csv = job.fileKey ? await readPrivate(job.fileKey) : null;
+  if (!csv) throw new ImportError("file_missing", "The original file is no longer kept (import files are deleted 30 days after an import finishes). Upload it again — rows already imported are skipped.");
   const images = job.imagesKey ? await readPrivate(job.imagesKey) : null;
   return createImport(shopId, { csv, images, options: job.options as unknown as ImportOptions, actor, skuLookup });
 }
