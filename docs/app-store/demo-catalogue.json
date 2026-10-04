@@ -1,0 +1,11 @@
+{
+  "note": "Synthetic demo-store catalogue for App Store review. Fictional products; no real brands or people.",
+  "products": [
+    { "handle": "demo-stoneware-mug", "title": "Stoneware Mug", "sku": "DEMO-MUG-01" },
+    { "handle": "demo-linen-tote", "title": "Linen Tote Bag", "sku": "DEMO-TOTE-01" },
+    { "handle": "demo-walnut-board", "title": "Walnut Serving Board", "sku": "DEMO-BOARD-01" },
+    { "handle": "demo-beeswax-candle", "title": "Beeswax Candle", "sku": "DEMO-CANDLE-01" },
+    { "handle": "demo-wool-throw", "title": "Wool Throw Blanket", "sku": "DEMO-THROW-01" },
+    { "handle": "demo-pour-over-set", "title": "Ceramic Pour-Over Set", "sku": "DEMO-POUR-01" }
+  ]
+}

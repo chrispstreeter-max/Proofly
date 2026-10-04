@@ -14,9 +14,10 @@ App Store app. Brand: [BRAND.md](BRAND.md) · V1 scope: [PRODUCT-SPEC-V1.md](PRO
 > (ZIP or links), no photo display, no media storage allowance in plans. Every passage below that describes photos,
 > media, storage-limited media or public media ids is superseded (removed in code; see ARCHITECTURE §11.16).
 
-> **STATUS: AUDIT + PLAN ONLY. Nothing in this document has been implemented. The commercial refactor has
-> not been approved.** No Shopify connection, credentials, Partner app, billing, hosting or deployment exists.
-> No merchant store or theme has been touched.
+> **STATUS (2026-10-04): V1 implemented** (checkpoints 1–10 and SHOPIFY-DATA Phases 1–4) and validated on the
+> development store Proofly Test with the development app Proofly Dev ([REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md)).
+> No production app, hosting or deployment exists yet; launch tracking: [V1-LAUNCH-CHECKLIST.md](V1-LAUNCH-CHECKLIST.md).
+> The sections below are the original audit and plan, kept as history.
 >
 > **Decisions recorded 2026-10-03** (§0). V1 scope, data model and architecture are specified in
 > [PRODUCT-SPEC-V1.md](PRODUCT-SPEC-V1.md); this roadmap covers the audit and implementation sequence.
@@ -216,16 +217,16 @@ Checkpoint 6 decision (reply visibility): Imported replies are retained regardle
 | Latest App Bridge, embedded admin | ✅ template | Keep updated; Polaris web components |
 | GraphQL Admin API only | ✅ | Keep |
 | OAuth immediately on install/reinstall, redirect to app UI | ✅ template | Test reinstall path explicitly |
-| Shopify billing for charges, self-serve plan changes | ❌ | CP9 |
+| Shopify billing for charges, self-serve plan changes | ✅ Shopify App Pricing (CP9) | Test charges on a development store |
 | Theme app extensions only, no theme code edits, onboarding instructions | ⚠️ embed relies on existing theme markup | CP5 + onboarding deep links |
-| Minimal scopes | ✅ `read_products`, `write_products` only (CP2) | V1.1 asks for order/customer scopes when built |
+| Minimal scopes | ✅ products + metaobjects (six scopes, reviews stored in Shopify) | V1.1 asks for order/customer scopes when built |
 | Protected customer data | ⚠️ current build reads orders/customers | V1 uses none; apply for Level 1 only when V1.1 is ready |
-| Compliance webhooks actually honoured | ✅ shop/redact deletes DB + storage; customer topics handled (checkpoint 9) | Verify delivery on a dev store |
+| Compliance webhooks actually honoured | ✅ shop/redact deletes Proofly's database records (no file storage since Phase 4); customer topics handled (checkpoint 9) | Verify delivery on a dev store |
 | No fake/incentivised reviews; neutral request wording | ✅ no incentives | Keep request copy neutral; no “review for discount” features; verified only with evidence |
 | Merchants cannot fake “verified” | ✅ no UI to set it | Keep; any future merchant-evidence path requires evidence + audit |
 | Storefront branding rules | ✅ none | Keep none |
 | Data returned to merchant admin | ✅ reviews live in admin; CSV export (checkpoint 9) | — |
-| Functional, error-free UI; performance | ⚠️ admin never run in Shopify | CP3/CP13: run on dev stores, Lighthouse/Web Vitals budget (storefront ≤ ~10 KB gz product page, ~2 KB elsewhere) |
+| Functional, error-free UI; performance | ✅ admin run in Shopify on Proofly Test | Lighthouse: no more than a 10-point drop (Shopify); storefront budget ≤ ~10 KB gz |
 | Listing: privacy policy, support contact, screenshots, demo store | ❌ | CP13 |
 
 ---
@@ -288,7 +289,7 @@ after App Store approval and explicit owner authorisation.
 | D2 | First launch merchant | **Decided:** development store, then App Store approval, then ordinary-merchant install. No bypass. |
 | D3 | Hosting + data region | **Decided:** managed Node + managed PostgreSQL (no R2/CDN since Phase 4); Canada or US; single region. Provider choice open **[decide]**. |
 | D4 | Reviewer email | **Decided:** not collected by default; no IP/country/customer data |
-| D5 | Pricing | **Decided:** launch pricing in ARCHITECTURE §6.1; open details P1–P7 (§9 there) |
+| D5 | Pricing | **Decided:** launch pricing in ARCHITECTURE §6.1; P1–P7 resolved 2026-10-03 (§9 there; P1 media storage no longer applies — no photos) |
 | D6 | Verified purchase | **Decided:** V1.1, with automated review requests and order-based links |
 | R1 | Merchant-customised proxy path | Mitigated by proxy-path setting passed from Liquid |
 | R2 | Card stars on themes without metafield support or hooks | Native metafield path + documented hook + legacy mode; onboarding explains |

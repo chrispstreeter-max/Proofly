@@ -22,12 +22,13 @@ not the brand. Legacy review providers that merchants migrate away from have no 
 | Asset | File | Notes |
 |---|---|---|
 | Primary logo (mark + wordmark, horizontal) | [`brand/proofly-logo.png`](../brand/proofly-logo.png) | 1774 × 887 px, PNG, transparent background. SHA-256 `ccbd68a384772826cfcfe6714a3166b764578c4eb215f12bdfcc34fe95e53677` |
+| App Store icon (mark only) | [`brand/proofly-app-icon-1200.png`](../brand/proofly-app-icon-1200.png) | 1200 × 1200 px PNG, white background. The mark cut from the primary logo by transparency, unaltered, scaled ≈2.1× and centred with 16 % padding; no text (Shopify icon rules) |
 
 The supplied file is the **canonical** Proofly logo: a blue-to-violet gradient “P” review bubble containing a white
 bubble with an indigo star, followed by the dark **Proofly** wordmark. It is used exactly as supplied.
 
-Still needed from the brand owner (do not improvise): vector master (SVG), mark-only square icon for the Shopify App
-Store listing (1200 × 1200) and favicon, and a reversed (light-on-dark) version.
+Still needed from the brand owner (do not improvise): vector master (SVG) and a reversed (light-on-dark) version. The
+App Store icon above is derived from the supplied raster without redrawing; a vector master would make it sharper.
 
 ### Clear space
 Measured on the master file the mark is 438 px tall. Keep clear space on every side of the logo of at least

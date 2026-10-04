@@ -1,8 +1,8 @@
 # Proofly — Architecture
 
-> **STATUS:** decision record (§1–§10) plus the implemented foundation (§11, checkpoints 1–4, local only).
-> No production Shopify app, hosting or credentials exist. Where §1–§10 describe something not built yet, it says so;
-> §11 is authoritative for what the code does today.
+> **STATUS:** decision record (§1–§10) plus the implementation (§11: checkpoints 1–10, §11.17–§11.19: reviews in
+> Shopify, storefront projection, server slimming), validated on a development store. No production Shopify app or
+> hosting exists yet. §11 and the current-state block below are authoritative for what the code does today.
 > **Commercial rules resolved 2026-10-03 (§9). Test-data policy: §10.**
 
 > **Current state and locked decisions (2026-10-04).** Reviews live in each merchant's Shopify store (merchant-owned

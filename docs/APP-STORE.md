@@ -3,29 +3,44 @@
 Drafts for the owner to review. Items marked **[decide]** are owner decisions: contact details, legal entity and
 listing copy are not invented here.
 
-## 1. Listing draft
+## 1. Listing
 
-- **Name:** Proofly
-- **Tagline:** Bring your reviews with you. Show them beautifully.
-- **Introduction:** Move your existing product reviews into Shopify in minutes, moderate them in one place, and display
-  them with fast, theme-native blocks.
-- **Key benefits:**
-  - **Migration first:** import your reviews from a CSV. Proofly matches products by ID, handle or SKU.
-    It never guesses, so anything uncertain waits for your decision.
-  - **Your reviews stay in your store:** reviews are saved in your own Shopify store as Shopify custom data, so they
-    stay yours even if you stop using Proofly.
-  - **Native storefront:** a review widget, a rating summary and product-card stars built as theme app blocks. There are
-    no theme code edits, and they use Shopify's standard rating fields.
-  - **Fair plans:** nothing is ever deleted because of a plan limit. Reviews over the allowance are kept and published
-    oldest first when you have room.
-- **Features (V1):** text reviews with star ratings, moderation (approve, hide, reject, plus bulk actions), public replies (Starter and
-  above), CSV review export, and product-rating sync to Shopify.
-  - Do not list unreleased features: verified purchases, review requests, advanced analytics and API access.
-- **Pricing:** the five plans in `app/lib/plans.ts` / [BILLING.md](BILLING.md), billed by Shopify.
-- **Screenshots [decide, on a demo store]:** dashboard, import with product matching, reviews moderation, product page
-  widget, product-card stars.
-- **Support [decide]:** support email, support page URL, and response time (priority support from Growth).
-- **Demo store [decide]:** a development store containing only synthetic data.
+Limits and image specifications from Shopify's [app requirements checklist](https://shopify.dev/docs/apps/launch/app-requirements-checklist)
+(read 2026-10-04): name ≤ 30 characters, introduction ≤ 100, details ≤ 500; icon 1200 × 1200 PNG/JPEG, square with
+padding, no text; 3–6 desktop screenshots at 1600 × 900 with browser chrome and sensitive information cropped out.
+
+- **App name (7):** Proofly
+- **Introduction (94):** Import your existing reviews, moderate them in one place and show them with fast theme blocks.
+- **Details (463):** Proofly moves your product reviews into Shopify from a CSV and keeps them in your own store as
+  Shopify data. Products are matched by ID, handle or SKU; anything uncertain waits for your confirmation. Moderate,
+  reply and export from one dashboard. Theme app blocks show a review widget, a rating summary and product-card stars
+  using Shopify's standard rating fields, with no theme code edits. Plan limits never delete reviews: extras wait and
+  publish oldest first.
+- **Feature list:**
+  - CSV import with ID, handle and SKU matching
+  - Reviews stored in your own Shopify store
+  - Moderation with bulk approve, hide and reject
+  - Public replies to reviews (Starter and above)
+  - Review widget, rating summary and card stars
+  - Shopify standard rating metafields for themes
+  - CSV export of all reviews
+- Do not list unreleased features: verified purchases, review requests, advanced analytics, API access, photos.
+- **Pricing:** recurring charges through Shopify App Pricing — the five plans in `app/lib/plans.ts` /
+  [BILLING.md](BILLING.md) (Free, Starter, Growth, Pro, Scale; monthly or annual). Free trial: **[REQUIRED FROM
+  CHRIS]** (Shopify recommends 14 days; none is configured today).
+- **Icon:** [`brand/proofly-app-icon-1200.png`](../brand/proofly-app-icon-1200.png) — the supplied mark, unaltered,
+  centred on white with padding, no text (scaled up ≈2.1× from the raster logo; a vector master from the brand owner
+  would make it sharper, optional).
+- **Screenshots (1600 × 900, 3–6):** dashboard; import with product matching; reviews moderation; review detail with
+  reply; product-page widget; product-card stars — taken on the demo store (synthetic data, no PII, no prices).
+  Shopify's checklist also says to avoid "reviews" in screenshots; whether that covers a review app's own widget
+  showing synthetic reviews is **UNKNOWN** — keep the widget screenshot to one image.
+- **Demo store:** a development store with the synthetic catalogue in
+  [`app-store/demo-catalogue.json`](app-store/demo-catalogue.json) and the reviewer sample
+  [`app-store/reviewer-sample.csv`](app-store/reviewer-sample.csv) (8 rows: ID/handle/SKU matches, one pending, one
+  reply, one title-only row that needs a manual match, one unmatched product).
+- **Support:** support email, support page URL, response time **[REQUIRED FROM CHRIS]**; emergency developer contact
+  in the Partner Dashboard **[REQUIRED FROM CHRIS]**.
 
 ## 2. Privacy policy draft (merchant-facing)
 
@@ -75,32 +90,52 @@ import needs them). Proofly uses no separate file storage. Reviews are stored in
 
 ## 3. Reviewer test plan (for Shopify's app review)
 
-1. Install on the review store. The app opens in the admin without any login screen, and the dashboard shows an empty
-   account with three setup steps.
-2. **Set up Proofly:**
-   - Use **Add review widget** and **Add rating summary**. The Theme Editor opens with the block preselected; save.
-   - Use **Open app embeds** and turn on **Product card stars**.
-   - Then use **Finish setup**. Products import in the background (**Products** page).
-3. **Storefront:** open a product page and choose **Write a review**. Submit a rating, text and a name. The
-   review is pending: it is not visible yet.
-4. **Admin → Reviews:** approve it. It appears on the product page, and the product's rating updates on cards.
-5. Reply to it (needs Starter or above; on Free the reply is stored but not shown).
-6. **Import:**
-   - Upload the sample CSV supplied with the submission: a few synthetic rows for the demo store's products in the
-     template columns ([IMPORT.md](IMPORT.md)), including one row that needs a manual match **[decide: demo store]**.
-   - Resolve one unmatched product with **Confirm match**, then start the import.
-   - Download the problem report.
-7. **Plan:** the plans open Shopify's hosted plan page. A test charge upgrades the plan, and held reviews are published
-   only with **Publish eligible reviews**.
-8. **Reviews → Export all reviews (CSV)** downloads all reviews.
-9. Uninstall: the storefront blocks stop showing reviews immediately.
+Run on the demo development store (synthetic catalogue: Stoneware Mug, Linen Tote Bag, Walnut Serving Board, Beeswax
+Candle, Wool Throw Blanket, Ceramic Pour-Over Set). Proofly is installed from the App Store listing; no login screen,
+no test credentials (Proofly has no third-party account).
+
+1. **Open Proofly** from the store admin. The dashboard shows the account with three setup steps.
+2. **Set up the storefront:** use **Add review widget** and **Add rating summary** — the Theme Editor opens with the
+   block preselected — save; then **Open app embeds**, turn on **Product card stars**, save; then **Finish setup**.
+3. **Storefront review:** open *Stoneware Mug*, choose **Write a review**, submit a rating, text and a name. It is
+   pending and not visible yet.
+4. **Moderate:** Proofly → **Reviews** → open the review → **Approve**. Reload the product page: the review appears
+   and the rating summary and card stars update.
+5. **Reply:** on the review, write a reply and save. On Free the reply is stored but not shown publicly (Plan page
+   explains); on Starter and above it appears under the review.
+6. **Import:** Proofly → **Import reviews** → upload `reviewer-sample.csv` (supplied with the submission). The
+   analysis shows 6 matched rows, 1 that needs confirmation (*Ceramic Pour-Over Set*, title only) and 1 unmatched
+   product. **Confirm match** for the pour-over set, then **Start import**. Afterwards **Download problem report**
+   (it lists the unmatched row).
+7. **Plan:** Proofly → **Plan** opens Shopify's hosted plan page. Choose Starter (test charge on a development store);
+   back in Proofly the plan shows Starter. Reviews held by the Free limit publish only with **Publish eligible
+   reviews**.
+8. **Export:** Reviews → **Export all reviews (CSV)** downloads every review.
+9. **Uninstall:** the storefront blocks stop showing reviews immediately; the reviews stay in the store's Shopify data.
 
 ## 4. Pre-submission checklist
 
-- [ ] All REAL-SHOPIFY VALIDATION items in [LAUNCH.md](LAUNCH.md) §4 passed on a development store (status: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md))
-- [ ] Listing copy, screenshots, demo store, support contact **[decide]**
-- [ ] Privacy policy published at a public URL **[decide]**
-- [ ] Hosting provider and region (managed Node + managed PostgreSQL only) **[decide]**
-- [ ] App Pricing plans configured with the handles in `app/lib/plans.ts`
-- [ ] Production environment passes the startup checks; `/healthz` monitored; maintenance scheduled hourly
-- [ ] Lighthouse report for a product page with the widget
+Master tracker: [V1-LAUNCH-CHECKLIST.md](V1-LAUNCH-CHECKLIST.md).
+
+- [ ] Real-Shopify validation complete ([REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md))
+- [ ] Production stack running; `/healthz` monitored; maintenance hourly with an alert on exit 1
+- [ ] Production app configured (URL, App Pricing plans `free`, `starter`, `growth`, `pro`, `scale`, webhooks, proxy, extension)
+- [ ] Demo store with the synthetic catalogue, the production app installed, the walk-through above passing
+- [ ] Lighthouse: the app lowers the storefront performance score by no more than 10 points (Shopify's weighting:
+      home 17 %, product 40 %, collection 43 %)
+- [x] Listing text within Shopify's limits; icon 1200 × 1200 (§1)
+- [ ] Screenshots, 3–6 at 1600 × 900
+- [ ] Screencast in English covering the walk-through (Shopify asks for one with the test instructions)
+- [ ] Privacy policy published at a public URL; support and emergency contacts **[REQUIRED FROM CHRIS]**
+
+## 5. REQUIRED FROM CHRIS
+
+Only information or actions that cannot be produced here:
+
+- Legal entity name, registered address, governing law (privacy policy §2).
+- Contact email for privacy requests; support email, support page URL and response time.
+- Emergency developer contact (Partner Dashboard).
+- A public URL to host the privacy policy.
+- Hosting provider account and region (sub-processor names in §2 follow from it).
+- Free trial: yes/no and length.
+- Optional: an SVG master and reversed logo from the brand owner (BRAND.md).

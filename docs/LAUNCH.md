@@ -104,6 +104,9 @@ to 50 MB per import in progress.
 
 ## 4. REAL-SHOPIFY VALIDATION REQUIRED
 
+> Status of every item below: [REAL-SHOPIFY-VALIDATION.md](REAL-SHOPIFY-VALIDATION.md) (authoritative); launch
+> tracking: [V1-LAUNCH-CHECKLIST.md](V1-LAUNCH-CHECKLIST.md) (master tracker).
+
 **Reviews stored in Shopify (Phase 1):** every review read and write goes through the merchant's Shopify store. In
 addition to the items below, validate on a development store: review creation from the storefront, moderation and
 replies from the admin, an import of a few hundred rows, the daily recount, and a review edited in Shopify admin

@@ -1,0 +1,9 @@
+review_id,product_handle,sku,product_title,rating,title,body,reviewer_name,review_date,status,reply
+sample-001,demo-stoneware-mug,,,5,Holds heat well,Keeps coffee warm for ages and feels solid in the hand.,Alex R.,2025-03-02,published,Thank you for the kind words!
+sample-002,demo-stoneware-mug,,,4,Lovely glaze,The glaze is even more beautiful in person. Slightly smaller than expected.,Jordan P.,2025-03-14,published,
+sample-003,,DEMO-TOTE-01,,5,Everyday bag,Sturdy straps and it fits a laptop easily.,Sam K.,2025-04-01,published,
+sample-004,demo-walnut-board,,,4,Great for cheese,Nice weight and the wood grain is beautiful. Needs oiling now and then.,Riley M.,2025-04-20,published,
+sample-005,demo-beeswax-candle,,,5,Clean burn,Burns evenly with a gentle honey scent.,Casey L.,2025-05-05,pending,
+sample-006,demo-wool-throw,,,3,Warm but itchy,Very warm but a little scratchy against bare skin.,Morgan T.,2025-05-18,published,
+sample-007,,,Ceramic Pour-Over Set,5,Morning ritual,Brews a smooth cup. This row has only a product title so it needs a manual match.,Taylor B.,2025-06-02,published,
+sample-008,demo-not-in-store,,,4,Unknown product,This row refers to a product that is not in the demo store and stays unmatched.,Jamie D.,2025-06-10,published,
