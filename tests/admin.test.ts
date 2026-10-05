@@ -93,6 +93,17 @@ describe("Review detail", () => {
   });
 });
 
+describe("Signatures survive Shopify's storage", () => {
+  // Real-Shopify finding (Proofly Test, 2026-10-04): a storefront submission is dated with milliseconds, Shopify stores
+  // date_time fields to the second, so the fresh entry failed its own signature ("Edited outside Proofly").
+  test("a storefront submission is not flagged as edited outside Proofly", async () => {
+    assert.equal((await submit(A, "MA", { body: "Signature check." })).status, 201);
+    const r = (await reviewsIn(A.api)).find((x) => x.body === "Signature check.")!;
+    assert.equal(r.editedOutside, false);
+    assert.equal(r.reviewDate.getMilliseconds(), 0);
+  });
+});
+
 describe("Settings are enforced on the storefront", () => {
   test("submissions off → refused (403) and nothing stored; on → accepted", async () => {
     await run(() => settingsAction(args<ActionFunctionArgs>(post(B, "/app/settings", { intent: "settings", moderationEnabled: "on" }))));

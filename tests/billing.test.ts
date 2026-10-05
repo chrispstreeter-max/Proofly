@@ -307,7 +307,7 @@ describe("Fairness: date order only (regression guards)", () => {
     assert.deepEqual(sorts, [".sort(byAdmissionOrder)"]); // the only ordering applied to candidates
     assert.match(src, /scanReviews\(api, \{ status: "published", held: true[^\n]*\{ oldestFirst: true \}\)/); // read oldest first
     // and the store's oldest-first order IS that ordering: the display name is "review date | handle"
-    assert.match(readFileSync("app/lib/review-store.server.ts", "utf8"), /sort_key: `\$\{r\.reviewDate\.toISOString\(\)\}\|\$\{handle\}`/);
+    assert.match(readFileSync("app/lib/review-store.server.ts", "utf8"), /sort_key: `\$\{atSecond\(r\.reviewDate\)\}\|\$\{handle\}`/);
   });
 
   test("high ratings never jump the queue when publishing eligible reviews", async () => {

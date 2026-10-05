@@ -174,6 +174,10 @@ export class FakeShopify {
   constructor(public identity?: Identity) {}
 
   /** An AppSubscription exactly as the Admin API returns it for ProoflySubscriptionState. */
+  /** What Shopify keeps of a field value: `date_time` fields are stored to the second (verified on a real store). */
+  static stored(key: string, value: string) {
+    return (key === "review_date" || key === "reply_date") && value ? new Date(value).toISOString().replace(/\.\d{3}Z$/, "Z") : value;
+  }
   static subscriptionNode(x: FakeShopify["subscriptions"][number]) {
     return {
       id: x.id, name: x.name, status: x.status, test: x.test ?? false, trialDays: 0, createdAt: x.createdAt ?? "2026-10-01T00:00:00Z", currentPeriodEnd: null,
@@ -307,7 +311,7 @@ export class FakeShopify {
         if ([...this.metaobjects.values()].some((x) => x.type === m.type && x.handle === m.handle)) {
           return Response.json({ data: { metaobjectCreate: { metaobject: null, userErrors: [{ message: "Handle has already been taken", code: "TAKEN" }] } } });
         }
-        const created = { id: `gid://shopify/Metaobject/${FakeShopify.nextId++}`, type: m.type, handle: m.handle, updatedAt: new Date().toISOString(), fields: new Map(m.fields.map((f) => [f.key, f.value])) };
+        const created = { id: `gid://shopify/Metaobject/${FakeShopify.nextId++}`, type: m.type, handle: m.handle, updatedAt: new Date().toISOString(), fields: new Map(m.fields.map((f) => [f.key, FakeShopify.stored(f.key, f.value)])) };
         this.metaobjects.set(created.id, created);
         this.indexWrite(created);
         return Response.json({ data: { metaobjectCreate: { metaobject: FakeShopify.node(created), userErrors: [] } } });
@@ -315,7 +319,7 @@ export class FakeShopify {
       case "ProoflyUpdateReview": {
         const m = this.metaobjects.get(String(v.id));
         if (!m) return Response.json({ data: { metaobjectUpdate: { metaobject: null, userErrors: [{ message: "Metaobject not found" }] } } });
-        for (const f of (v.m as { fields: { key: string; value: string }[] }).fields) m.fields.set(f.key, f.value);
+        for (const f of (v.m as { fields: { key: string; value: string }[] }).fields) m.fields.set(f.key, FakeShopify.stored(f.key, f.value));
         m.updatedAt = new Date().toISOString();
         this.indexWrite(m);
         return Response.json({ data: { metaobjectUpdate: { metaobject: FakeShopify.node(m), userErrors: [] } } });

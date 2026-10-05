@@ -80,19 +80,23 @@ const productGid = (id: bigint) => `gid://shopify/Product/${id}`;
 export const reviewHandle = (source: string, sourceReviewId: string) => `r-${createHash("sha256").update(`${source}\n${sourceReviewId}`).digest("hex").slice(0, 40)}`;
 const isPublicState = (status: ReviewStatus, held: boolean) => status === "published" && !held;
 
+/** Shopify's `date_time` fields keep whole seconds (verified on a real store: …39.191Z is stored as …39Z), so Proofly
+ *  stores and signs review dates at that precision — otherwise a fresh entry would fail its own signature. */
+const atSecond = (d: Date) => new Date(Math.floor(d.getTime() / 1000) * 1000).toISOString();
+
 /** HMAC over the fields Proofly owns. A merchant edit in Shopify admin changes the content but cannot re-sign it. */
 function sign(r: Omit<StoredReview, "id" | "handle" | "updatedAt" | "editedOutside" | "isPublic" | "flags" | "imported" | "importJobId">) {
-  const payload = JSON.stringify([String(r.productId), r.status, r.held, r.rating, r.title, r.body, r.reviewerName, r.reviewDate.toISOString(), r.source, r.sourceReviewId, r.reply ?? "", r.verified]);
+  const payload = JSON.stringify([String(r.productId), r.status, r.held, r.rating, r.title, r.body, r.reviewerName, atSecond(r.reviewDate), r.source, r.sourceReviewId, r.reply ?? "", r.verified]);
   return createHmac("sha256", `proofly-review-signature:${process.env.TOKEN_ENCRYPTION_KEY ?? ""}`).update(payload).digest("hex").slice(0, 32);
 }
 
 function toFields(r: ReviewInput & { reply: string | null; replyDate: Date | null; verified: boolean; flags: string[]; imported: boolean; importJobId: string | null }, handle: string) {
   const v: Record<string, string> = {
     product: productGid(r.productId), status: r.status, held: String(r.held), public: String(isPublicState(r.status, r.held)),
-    rating: String(r.rating), title: r.title, body: r.body, reviewer_name: r.reviewerName, review_date: r.reviewDate.toISOString(),
+    rating: String(r.rating), title: r.title, body: r.body, reviewer_name: r.reviewerName, review_date: atSecond(r.reviewDate),
     source: r.source, source_review_id: r.sourceReviewId, reply: r.reply ?? "", reply_date: r.replyDate?.toISOString() ?? "",
     verified: String(r.verified), flagged: String(r.flags.length > 0), flags: JSON.stringify(r.flags), imported: String(r.imported),
-    import_job: r.importJobId ?? "", sort_key: `${r.reviewDate.toISOString()}|${handle}`, integrity: sign(r),
+    import_job: r.importJobId ?? "", sort_key: `${atSecond(r.reviewDate)}|${handle}`, integrity: sign(r),
   };
   return Object.entries(v).map(([key, value]) => ({ key, value }));
 }
