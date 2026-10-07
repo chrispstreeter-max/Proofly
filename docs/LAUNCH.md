@@ -39,7 +39,7 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
 3. Run migrations. They enable RLS, add the composite foreign keys, and make `shop_deletions` insert-only for the app
    role.
 
-**Storage:** none besides Postgres. Merchants' import CSVs are stored in the `import_files` table (RLS, deleted by
+**Storage:** none besides Postgres. Merchants' import CSVs are stored gzipped in the `import_files` table (RLS, deleted by
 `npm run maintenance` 30 days after an import finishes, and with the shop on `shop/redact`). Size the database for up
 to 50 MB per import in progress.
 
@@ -190,6 +190,13 @@ becomes unhealthy, or a build/deploy fails), Render Blueprint spec (`runtime: do
 `dockerCommand`, `schedule`, `sync: false`, regions), Neon roles (roles created with SQL get only basic public-schema
 privileges — no `neon_superuser`, no `BYPASSRLS`; console-created roles have `CREATEROLE` and `BYPASSRLS`). Region:
 Render `virginia` + Neon AWS `us-east-1` (US, single region, ROADMAP D3). Both need accounts with a payment method.
+
+**Footprint (measured 2026-10-07):** the production server idles at ≈100 MB of memory (Render's smallest paid
+instance is enough); the build is 628 KB. Proofly Test's whole database — 252 products, 313 reviews' metadata, imports,
+logs — is 9.5 MB, because reviews live in Shopify. Shoppers never reach the server for the first pages of reviews (the
+widget reads Shopify's copy), proxy and admin responses are gzip-compressed by the server, import CSVs are stored
+gzipped (≈9× smaller; Postgres' own compression gives ≈5×) and deleted 30 days after an import, rate-limit counters
+are purged daily, and production logs only warnings and errors.
 
 1. **Repository:** create a private Git repository and authorise the push (Render deploys from Git; `render.yaml`
    is at the root).

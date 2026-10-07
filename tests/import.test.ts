@@ -2,6 +2,7 @@
 // Offline: Shopify is FakeShopify; tests/no-network.ts blocks real network access; data is fictional.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -403,8 +404,21 @@ describe("Limits, privacy, aggregates and the rating cache", () => {
     assert.ok(csv.length > 45 * 1024 * 1024 && csv.length <= IMPORT_LIMITS.csvBytes);
     const { jobId } = await createImport(m.shopId, { csv, options: { publishMode: "publish" }, actor: "x" });
     const stored = await owner.importFile.findUniqueOrThrow({ where: { importJobId: jobId } });
-    assert.equal(createHash("sha256").update(stored.data).digest("hex"), createHash("sha256").update(csv).digest("hex"));
+    // Stored gzipped (light database): far smaller, and decompresses to exactly the uploaded bytes.
+    assert.deepEqual([stored.data[0], stored.data[1]], [0x1f, 0x8b]);
+    assert.ok(stored.data.length < csv.length / 20, `${stored.data.length} bytes stored for ${csv.length}`);
+    assert.equal(createHash("sha256").update(gunzipSync(stored.data)).digest("hex"), createHash("sha256").update(csv).digest("hex"));
     await owner.importJob.update({ where: { id: jobId }, data: { status: "cancelled" } });
+  });
+
+  test("a file stored before compression (plain CSV) is still read: the import runs from it", async () => {
+    const m = await emptyShop("ay");
+    await addProducts(m, [P1]);
+    const csv = Buffer.from(["review_id,product_id,rating,body,reviewer_name,review_date", `plain-1,${P1.id},5,Stored before compression.,Pat,2025-01-01`].join("\n"));
+    const { jobId } = await createImport(m.shopId, { csv, options: { publishMode: "publish" }, actor: "x" });
+    await owner.importFile.update({ where: { importJobId: jobId }, data: { data: new Uint8Array(csv) } }); // as stored before
+    const done = (await runImport(m.api, jobId))!;
+    assert.equal((done.counts as { imported: number }).imported, 1);
   });
 
   test("49 + 50. no reviewer email and no customer/order identity is ever stored or reported", async () => {

@@ -1,5 +1,5 @@
 import "@shopify/shopify-app-react-router/adapters/node";
-import { AppDistribution, shopifyApp } from "@shopify/shopify-app-react-router/server";
+import { AppDistribution, LogSeverity, shopifyApp } from "@shopify/shopify-app-react-router/server";
 import prisma from "./db.server";
 import { API_VERSION } from "./shopify-api-version";
 import { EncryptedSessionStorage } from "./lib/session-storage.server";
@@ -48,6 +48,8 @@ const shopify = shopifyApp({
     expiringOfflineAccessTokens: true,
   },
   hooks: { afterAuth },
+  // Production logs warnings and errors only (no line per request); development keeps the library's default.
+  ...(process.env.NODE_ENV === "production" ? { logger: { level: LogSeverity.Warning } } : {}),
 });
 
 export default shopify;
