@@ -1,6 +1,6 @@
 # Build stage: full dependencies (vite, react-router dev) to produce ./build.
-FROM node:22-alpine AS build
-RUN apk add --no-cache openssl
+FROM node:22-bookworm-slim AS build
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -8,8 +8,10 @@ COPY . .
 RUN npx prisma generate && npm run build
 
 # Runtime stage: production dependencies + build output only (no tests, fixtures, docs or local data).
-FROM node:22-alpine
-RUN apk add --no-cache openssl
+# Debian (glibc), not Alpine (musl): on Render the Prisma query engine could not reach Neon from Alpine while
+# prisma migrate could, so the runtime uses the standard glibc image Prisma is most tested on.
+FROM node:22-bookworm-slim
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
