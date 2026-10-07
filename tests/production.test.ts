@@ -84,3 +84,15 @@ test("Render Blueprint: no secret values, scopes identical to the app configurat
   assert.match(yaml, /schedule: "0 \* \* \* \*"/);
   assert.match(yaml, /dockerCommand: npm run maintenance/);
 });
+
+test("production app config mirrors the development app (scopes, install flow, proxy, webhooks, API version) and never follows a dev tunnel", () => {
+  const dev = readFileSync("shopify.app.toml", "utf8");
+  const prod = readFileSync("shopify.app.production.toml", "utf8");
+  const pick = (t: string, re: RegExp) => (re.exec(t) ?? [])[1];
+  for (const re of [/^scopes = "([^"]+)"/m, /^use_legacy_install_flow = (\w+)/m, /^api_version = "([^"]+)"/m, /\[app_proxy\]([\s\S]*?)\n\n/]) assert.equal(pick(prod, re), pick(dev, re), String(re));
+  const hooks = (t: string) => [...t.matchAll(/(?:topics|compliance_topics) = (\[[^\]]+\])\s*\n\s*uri = "([^"]+)"/g)].map((m) => `${m[1]} ${m[2]}`);
+  assert.deepEqual(hooks(prod), hooks(dev));
+  assert.match(prod, /^automatically_update_urls_on_dev = false$/m);
+  assert.match(prod, /^application_url = "https:\/\/[^"]+\.onrender\.com"$/m);
+  assert.notEqual(pick(prod, /^client_id = "([^"]+)"/m), pick(dev, /^client_id = "([^"]+)"/m));
+});

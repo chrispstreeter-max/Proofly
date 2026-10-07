@@ -1,0 +1,48 @@
+# Proofly — PRODUCTION app "Proofly" (organisation CHRISPSDesign), the App Store listing. Hosted on Render
+# (render.yaml, docs/LAUNCH.md §6). Deploy only deliberately: `shopify app deploy --config shopify.app.production.toml`.
+# Never run `shopify app dev` against this file (URLs must stay the production host).
+client_id = "863e500f0791a82ee946ab8c10ebdb6c"
+name = "Proofly"
+application_url = "https://proofly-22x6.onrender.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+include_config_on_deploy = true
+
+[access_scopes]
+# Same as the development app (shopify.app.toml): products + the merchant-owned metaobject type that stores reviews.
+scopes = "read_products,write_products,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects"
+# Shopify-managed installation + token exchange; no OAuth redirect flow.
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = ["https://proofly-22x6.onrender.com/auth/callback"]
+
+[app_proxy]
+url = "/proxy"
+prefix = "apps"
+subpath = "proofly"
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/scopes_update"]
+  uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = ["products/create", "products/update", "products/delete"]
+  uri = "/webhooks/products"
+  include_fields = ["id", "handle", "title", "status", "updated_at"]
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "/webhooks/compliance"
+
+[pos]
+embedded = false
