@@ -33,7 +33,7 @@ export async function withTenant<T>(shopId: string, fn: (t: Tenant) => Promise<T
       await db.$executeRaw`SELECT set_config('app.shop_id', ${shopId}, true)`;
       return fn({ shopId, db });
     },
-    { maxWait: 5_000, timeout: opts.timeoutMs ?? 20_000 },
+    { maxWait: 5_000, timeout: opts.timeoutMs ?? 20_000 }, // not-plan-value: milliseconds
   );
 }
 

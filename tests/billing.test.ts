@@ -88,8 +88,12 @@ describe("Plans: one canonical configuration", () => {
   });
 
   test("no plan prices, allowances or names hard-coded outside the plan configuration", () => {
-    const hits = execFileSync("git", ["grep", "--untracked", "-n", "-E", String.raw`\$(9|19|39|79|90|190|390|790)\b|\b(5_000|25_?000|100_?000)\b|"(Starter|Growth|Scale)"|\b(Starter|Growth|Scale) plan\b`, "--", "app", "extensions"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-    assert.deepEqual([...new Set(hits.map((h) => h.split(":")[0]))], ["app/lib/plans.ts"]);
+    // Scanned in JS, not `git grep -E`: macOS's regex has no \b, so that check passed vacuously there. A line that
+    // coincides with a plan number but is unrelated must say so with `not-plan-value:`.
+    const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--", "app", "extensions"], { encoding: "utf8" }).trim().split("\n");
+    const pattern = /\$(9|19|39|79|90|190|390|790)\b|\b(5_000|25_?000|100_?000)\b|"(Starter|Growth|Scale)"|\b(Starter|Growth|Scale) plan\b/;
+    const hits = files.filter((f) => readFileSync(f, "utf8").split("\n").some((l) => pattern.test(l) && !l.includes("not-plan-value:")));
+    assert.deepEqual(hits, ["app/lib/plans.ts"]);
   });
 });
 

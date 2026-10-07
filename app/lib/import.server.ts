@@ -32,7 +32,7 @@ export const IMPORT_LIMITS = Object.freeze({
   csvBytes: 50 * MB,
   bodyChars: 20_000, titleChars: 255, nameChars: 255, batchRows: 50, reportProblems: 1_000,
   // Imports with at least this many rows write in Shopify bulk operations of up to bulkRows rows each.
-  bulkMinRows: 250, bulkRows: 5_000,
+  bulkMinRows: 250, bulkRows: 5_000, // not-plan-value: rows per bulk operation
 });
 
 export class ImportError extends Error {
@@ -448,7 +448,7 @@ async function writeBatch(api: ShopApi, source: string, jobId: string, batch: An
       productId: productOf(r), source, sourceReviewId: r.sourceReviewId, rating: r.rating, title: r.title, body: r.body,
       reviewerName: r.reviewerName, reviewDate: r.reviewDate, status: r.intent,
       // Published rows enter HELD; finalize admits them oldest-first within the plan allowance.
-      held: r.intent === "published", reply: r.reply ? r.reply.slice(0, 5_000) : null, replyDate: r.reply ? r.reviewDate : null,
+      held: r.intent === "published", reply: r.reply ? r.reply.slice(0, 5_000) : null, replyDate: r.reply ? r.reviewDate : null, // not-plan-value: reply length cap
       imported: true, importJobId: jobId, flags,
     } });
   }
