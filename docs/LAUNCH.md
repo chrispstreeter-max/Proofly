@@ -20,7 +20,9 @@ dependencies and the build output only, and runs as the non-root `node` user. `.
 - Web process: `npm run docker-start`. This runs `prisma migrate deploy` as the schema owner (`DIRECT_DATABASE_URL`),
   then serves on port 3000.
 - Scheduler: `npm run maintenance`, hourly ([PRIVACY.md](PRIVACY.md)). Use the same image and the same environment.
-- Health check: `GET /healthz` returns `200 ok`, or `503` if the database is unreachable. It never reveals tenant data.
+- Health checks: `GET /livez` returns `200 ok` while the process runs and never touches the database — it is the
+  host's health check, so a serverless database (Neon) can scale to zero; `GET /healthz` returns `200 ok`, or `503` if
+  the database is unreachable, for external monitoring at a low frequency. Neither reveals tenant data.
 
 **Environment:** the app refuses to start when the environment is incomplete (`envProblems` in `app/shopify.server.ts`).
 - Always required: `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`, `SCOPES`, `TOKEN_ENCRYPTION_KEY` (32

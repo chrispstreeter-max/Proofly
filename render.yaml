@@ -7,7 +7,7 @@ services:
     dockerfilePath: ./Dockerfile # CMD: npm run docker-start (prisma migrate deploy, then serve as the non-root user)
     region: virginia
     plan: starter
-    healthCheckPath: /healthz
+    healthCheckPath: /livez # process liveness only: lets Neon scale to zero (database health: /healthz)
     autoDeployTrigger: "off" # deploys are explicit
     envVars:
       - key: SCOPES

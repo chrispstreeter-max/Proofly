@@ -7,6 +7,7 @@ import prisma from "../app/db.server";
 import { getImport } from "../app/lib/import.server";
 import { withTenant } from "../app/lib/tenant.server";
 import { loader as health } from "../app/routes/healthz";
+import { loader as liveness } from "../app/routes/livez";
 import { envProblems } from "../app/shopify.server";
 import { installMerchant, owner, resetDb, type Merchant } from "./helpers";
 
@@ -27,6 +28,13 @@ test("production refuses to start without its database, a real salt and https; n
     "IP_HASH_SALT must be at least 32 characters", "SHOPIFY_APP_URL must be https"]) assert.ok(bad.includes(p), p);
   // Phase 4: Proofly has no S3/R2 or other file storage (import CSVs live in the database).
   assert.equal(JSON.parse(readFileSync("package.json", "utf8")).dependencies["@aws-sdk/client-s3"], undefined);
+});
+
+test("liveness (the host's health check) never touches the database, so Neon can scale to zero", () => {
+  const res = liveness();
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Cache-Control"), "no-store");
+  assert.doesNotMatch(readFileSync("app/routes/livez.tsx", "utf8"), /import/); // no database or app imports at all
 });
 
 test("health check: up/down only, never cached", async () => {
@@ -72,7 +80,7 @@ test("Render Blueprint: no secret values, scopes identical to the app configurat
   for (const secret of ["SHOPIFY_API_SECRET", "TOKEN_ENCRYPTION_KEY", "IP_HASH_SALT", "DATABASE_URL", "DIRECT_DATABASE_URL", "SHOPIFY_API_KEY"]) {
     for (const m of yaml.matchAll(new RegExp(`key: ${secret}\\b[^\\n]*\\n\\s+(\\w+):`, "g"))) assert.equal(m[1], "sync", `${secret} must be entered in the dashboard`);
   }
-  assert.match(yaml, /healthCheckPath: \/healthz/);
+  assert.match(yaml, /healthCheckPath: \/livez/); // not /healthz: a DB query every few seconds would keep Neon awake
   assert.match(yaml, /schedule: "0 \* \* \* \*"/);
   assert.match(yaml, /dockerCommand: npm run maintenance/);
 });
