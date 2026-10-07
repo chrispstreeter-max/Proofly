@@ -213,6 +213,10 @@ are purged daily, and production logs only warnings and errors.
    `DATABASE_URL` is the direct (non-pooled) connection string for `proofly_app` (Proofly's tenant transactions set a
    transaction-local setting; the direct endpoint avoids pooler caveats). Create the role **before** the first deploy:
    the migrations grant table privileges only to a role that exists. Use a plan with point-in-time restore for backups.
+   The password must be set in SQL (`openssl rand -hex 24 | pbcopy` gives a URL-safe one): Neon's console cannot
+   reset the password of a role created in SQL without one, and its Connect dialog then copies the URL with no
+   password. Check `DATABASE_URL` connects (as `proofly_app`) before deploying; on Render a bad login showed up as
+   "Can't reach database server", not as an authentication error.
 3. **Production Shopify app:** create it in the Partner organisation that will own the listing; link a separate
    config (`shopify app config link --config production` → `shopify.app.production.toml`); set `application_url`
    and `redirect_urls` to the Render URL; configure the five App Pricing plans (`free`, `starter`, `growth`, `pro`,
