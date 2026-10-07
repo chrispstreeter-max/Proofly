@@ -8,7 +8,6 @@ embedded = true
 
 [build]
 automatically_update_urls_on_dev = false
-include_config_on_deploy = true
 
 [access_scopes]
 # Same as the development app (shopify.app.toml): products + the merchant-owned metaobject type that stores reviews.
