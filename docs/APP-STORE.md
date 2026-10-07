@@ -26,8 +26,8 @@ padding, no text; 3–6 desktop screenshots at 1600 × 900 with browser chrome a
   - CSV export of all reviews
 - Do not list unreleased features: verified purchases, review requests, advanced analytics, API access, photos.
 - **Pricing:** recurring charges through Shopify App Pricing — the five plans in `app/lib/plans.ts` /
-  [BILLING.md](BILLING.md) (Free, Starter, Growth, Pro, Scale; monthly or annual). Free trial: **[REQUIRED FROM
-  CHRIS]** (Shopify recommends 14 days; none is configured today).
+  [BILLING.md](BILLING.md) (Free, Starter, Growth, Pro, Scale; monthly or annual). Free trial: **7 days** on every
+  paid plan (configured in Shopify App Pricing, 2026-10-07; plan handles match `app/lib/plans.ts`, return path `/app/plan`).
 - **Icon:** [`brand/proofly-app-icon-1200.png`](../brand/proofly-app-icon-1200.png) — the supplied mark, unaltered,
   centred on white with padding, no text (scaled up ≈2.1× from the raster logo; a vector master from the brand owner
   would make it sharper, optional).
@@ -136,7 +136,6 @@ Only information or actions that cannot be produced here:
 - Emergency developer contact (Partner Dashboard).
 - A public URL to host the privacy policy.
 - Hosting provider account and region (sub-processor names in §2 follow from it).
-- Free trial: yes/no and length.
 - Optional: an SVG master and reversed logo from the brand owner (BRAND.md).
 
 ## 6. Reviewer sample CSV
