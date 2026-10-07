@@ -29,11 +29,11 @@ jobs:
       - run: npm run build
       # Shopify CLI before the tests: tests/storefront.test.ts runs Theme Check through it
       - run: npm install -g @shopify/cli
-      # Unit, integration, tenant-isolation and security tests (incl. the production-build merchant-data scan)
-      - run: npm test
-      # Synthetic fixture replaces any real dataset in CI
+      # Synthetic fixture (git-ignored, generated) before the tests: tests/import.test.ts imports it end to end
       - run: npm run fixtures:generate
       - run: npm run fixtures:check
+      # Unit, integration, tenant-isolation and security tests (incl. the production-build merchant-data scan)
+      - run: npm test
       - run: npm run scan:merchant-data
       # Theme app extension rules (Shopify CLI) and every Admin GraphQL operation against the pinned API schema
       - run: npm run check:theme
