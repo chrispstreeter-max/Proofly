@@ -10,7 +10,7 @@ import prisma from "../app/db.server";
 import * as shopifyServer from "../app/shopify.server";
 import { afterAuth } from "../app/shopify.server";
 import { reviewParam } from "../app/lib/moderation.server";
-import { activeShopByDomain, withTenant } from "../app/lib/tenant.server";
+import { activeShopByDomain, registerShop, withTenant } from "../app/lib/tenant.server";
 import { action as dashboardAction, loader as dashboardLoader } from "../app/routes/app._index";
 import { loader as reviewsListLoader } from "../app/routes/app.reviews._index";
 import { loader as landingLoader } from "../app/routes/_index/route";
@@ -92,6 +92,19 @@ describe("Install: a newly installed merchant starts with an empty tenant", () =
       assert.equal(settings[0].onboardingCompletedAt, null);
     });
     assert.deepEqual(await audit(c.id), ["shop.installed"]);
+  });
+
+  test("first open registers the shop from concurrent requests (token exchange + page load) without a unique violation", async () => {
+    // Found on the first real production install: two first requests raced in registerShop → P2002 → Application Error.
+    const domain = "proofly-test-race.myshopify.com";
+    const results = await Promise.all(Array.from({ length: 5 }, () => registerShop({ shopDomain: domain, shopifyShopId: 9_200_000_000_099n, shopName: "Race", storefrontHosts: [] })));
+    assert.equal(new Set(results.map((s) => s.id)).size, 1);
+    const id = results[0].id;
+    assert.equal(await owner.shop.count({ where: { shopDomain: domain } }), 1);
+    assert.equal(await owner.shopSettings.count({ where: { shopId: id } }), 1);
+    assert.equal(await owner.billingState.count({ where: { shopId: id } }), 1);
+    assert.deepEqual(await audit(id), ["shop.installed"]);
+    await owner.shop.delete({ where: { id } }); // later tests count shops
   });
 
   test("the new merchant's admin and storefront are empty even for a product id another shop has reviews for", async () => {

@@ -97,7 +97,20 @@ export async function publishStorefrontSettings(shopId: string, graphql: Graphql
 }
 
 /** Creates the tenant (and its default settings) or reactivates it on reinstall. Data of a reinstalled shop is kept. */
-export async function registerShop(input: { shopDomain: string; shopifyShopId: bigint | null; shopName: string | null; storefrontHosts?: string[] }): Promise<Shop> {
+type ShopInput = { shopDomain: string; shopifyShopId: bigint | null; shopName: string | null; storefrontHosts?: string[] };
+
+// A shop's first open sends concurrent requests (token exchange + page load) that all register it. The loser of that
+// race hits a unique violation once the winner commits; retrying then finds the committed rows and only updates.
+export async function registerShop(input: ShopInput): Promise<Shop> {
+  try {
+    return await registerShopOnce(input);
+  } catch (e) {
+    if ((e as { code?: string }).code !== "P2002") throw e;
+    return registerShopOnce(input);
+  }
+}
+
+async function registerShopOnce(input: ShopInput): Promise<Shop> {
   const shopDomain = normalise(input.shopDomain);
   const existing = await prisma.shop.findUnique({ where: { shopDomain } });
   const shop = existing
@@ -114,9 +127,10 @@ export async function registerShop(input: { shopDomain: string; shopifyShopId: b
   // Only lifecycle changes go to the permanent audit trail; a routine token exchange/refresh of an active shop does not.
   const lifecycle = !existing ? "shop.installed" : existing.uninstalledAt ? "shop.reinstalled" : null;
   await withTenant(shop.id, async ({ db, shopId }) => {
-    await db.shopSettings.upsert({ where: { shopId }, create: { shopId, proxyPath: DEFAULT_PROXY_PATH }, update: {} });
+    // ON CONFLICT DO NOTHING (not upsert's select-then-insert): concurrent first requests can't collide here.
+    await db.shopSettings.createMany({ data: { shopId, proxyPath: DEFAULT_PROXY_PATH }, skipDuplicates: true });
     // Every merchant starts on Free (unverified until billing.server reconciles with Shopify).
-    await db.billingState.upsert({ where: { shopId }, create: { shopId, plan: "FREE" }, update: {} });
+    await db.billingState.createMany({ data: { shopId, plan: "FREE" }, skipDuplicates: true });
     if (lifecycle) await db.auditLog.create({ data: { shopId, actor: "shopify", action: lifecycle, entity: "shop", entityId: shopId } });
   });
   return shop;
