@@ -17,6 +17,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/build ./build
+COPY server.js ./server.js
 COPY prisma ./prisma
 COPY app ./app
 COPY scripts/maintenance.ts ./scripts/maintenance.ts

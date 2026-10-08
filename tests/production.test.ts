@@ -9,6 +9,7 @@ import { withTenant } from "../app/lib/tenant.server";
 import { loader as health } from "../app/routes/healthz";
 import { loader as liveness } from "../app/routes/livez";
 import { envProblems } from "../app/shopify.server";
+import { logLine } from "../server.js";
 import { installMerchant, owner, resetDb, type Merchant } from "./helpers";
 
 let A: Merchant;
@@ -58,6 +59,17 @@ test("container image: no secrets, local data, fixtures or tests; runs as a non-
   const start = JSON.parse(readFileSync("package.json", "utf8")).scripts["docker-start"] as string;
   assert.doesNotMatch(start, /prisma generate|npm run setup/);
   assert.match(start, /prisma migrate deploy/);
+});
+
+test("request logs never contain Shopify's id_token, hmac, session or signature (query strings are dropped)", () => {
+  const req = { method: "GET", url: "/app?embedded=1&hmac=abc123&host=x&id_token=eyJhbGciOiJIUzI1NiJ9.e30.sig&session=s3cr3t&shop=proofly-test-ra.myshopify.com&signature=f00", headers: {} };
+  const res = { statusCode: 500, headersSent: true, getHeader: () => "42" };
+  const line = logLine({ ...req, originalUrl: req.url }, res);
+  assert.equal(line, "GET /app 500 42 - - ms");
+  assert.doesNotMatch(line, /id_token|hmac|session|signature|eyJ|\?/);
+  // Production actually runs this server, and the image ships it.
+  assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.start, "node server.js");
+  assert.match(readFileSync("Dockerfile", "utf8"), /^COPY server\.js \.\/server\.js$/m);
 });
 
 test("an import whose worker stopped can be resumed straight away (before maintenance runs)", async () => {
