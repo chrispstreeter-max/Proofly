@@ -233,3 +233,10 @@ and for the listing demo). Shopify assigned the app handle **`proofly-8`** (Rend
 | L5 | "Change plan in Shopify" opens `/charges/proofly-8/pricing_plans` with the 5 plans, 7-day trials, "Free to test" on a dev store | PASS |
 | L6 | Choose Growth (monthly, $0 test) → approve → return `/app/plan?plan_handle=growth` → "confirmed with Shopify: Growth", allowance 5,000 | PASS |
 | L7 | Test subscription labelled "test subscription (no charge)" | UNVERIFIED: label absent; Shopify's dev-store "free to test" subscription may not set `test: true`. Dev stores only |
+| L8 | Review widget block added to Proofly Demo's product template (theme editor deep link) and rendered | PASS |
+| L9 | Widget in the narrow product-info column | **FAIL → fixed** (`a835291`, released as proofly-3): viewport media query forced the ~720px header and clipped "Write a review"; now an `@container` query |
+| L10 | Demo catalogue (6 products, `docs/app-store/demo-catalogue.json`) created with `shopify app execute` (productSet); `products/*` webhooks delivered (all 200) | PASS |
+| L11 | Reviewer sample CSV import: 8 rows → 6 imported (handle ×4, SKU ×1), 5 published, 1 pending; title-only row asks for a manual decision; unknown handle unmatched | PASS |
+| L12 | Moderation: approve the pending review → "Review published. Storefront rating updated." | PASS |
+| L13 | Storefront (theme preview): Stoneware Mug shows 4.5 ★ "Based on 2 reviews" with the distribution | PASS |
+| L14 | Manual match of the title-only row | NOT RUN: native `<select>` inside the admin iframe can't be driven from the automation pane |
