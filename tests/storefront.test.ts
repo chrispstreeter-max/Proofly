@@ -69,6 +69,15 @@ describe("Theme app extension build", () => {
     for (const m of css.matchAll(/^([^{}\n]*\[hidden\][^{}\n]*)\{/gm)) assert.equal(m.index, general, `narrower [hidden] rule: ${m[1]}`);
   });
 
+  // Real-Shopify finding (Proofly Demo, 2026-10-08): the merchant put the widget in the narrow product-info column; a
+  // viewport media query switched it to a ~720px three-column header on desktop, clipping the write-a-review button.
+  test("the widget's wide layout follows its own width (container query), not the viewport", () => {
+    const css = readFileSync(ext("assets/proofly.css"), "utf8");
+    assert.match(css, /\.pf \{[^}]*container-type: inline-size/);
+    assert.doesNotMatch(css, /@media \(min-width: 750px\) \{[^@]*\.pf-top/);
+    assert.match(css, /@container \(min-width: 750px\) \{[^@]*\.pf-top \{ grid-template-columns/);
+  });
+
   test("budgets: storefront JS < 10 KB gzipped in total, Liquid within Shopify's 100 KB extension limit", () => {
     const gz = (f: string) => gzipSync(readFileSync(ext(f)), { level: 9 }).length;
     const js = files("assets").filter((f) => f.endsWith(".js"));
