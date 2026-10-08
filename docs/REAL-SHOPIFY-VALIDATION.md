@@ -221,7 +221,7 @@ What is missing is only the real-world run.
 ## L. Production app on Render (2026-10-08)
 
 Production app "Proofly" (CHRISPSDesign, version proofly-2) on `https://proofly-22x6.onrender.com` (Render + Neon),
-installed on the development store **Proofly Demo** (`proofly-demo.myshopify.com`, CHRISPSDesign; created for this
+installed on the development store **Proofly Demo** (CHRISPSDesign; created for this
 and for the listing demo). Shopify assigned the app handle **`proofly-8`** (Render `SHOPIFY_APP_HANDLE` updated).
 
 | # | Check | Result |
