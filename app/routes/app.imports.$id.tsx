@@ -114,7 +114,7 @@ export default function ImportDetail() {
           <s-paragraph>
             {c.imported} imported · {c.published ?? 0} published · {c.planLimited ?? 0} held by your plan limit · {c.awaitingModeration ?? 0} awaiting moderation ·
             {" "}{c.alreadyImported ?? 0} already imported earlier ·
-            {" "}{c.repliesImported ?? 0} replies ({c.repliesSuppressed ?? 0} hidden until your plan includes replies). Nothing is deleted because of a plan limit.
+            {" "}{c.repliesImported ?? 0} {(c.repliesImported ?? 0) === 1 ? "reply" : "replies"} ({c.repliesSuppressed ?? 0} hidden until your plan includes replies). Nothing is deleted because of a plan limit.
           </s-paragraph>
         </s-section>
       )}
