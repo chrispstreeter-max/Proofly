@@ -242,3 +242,8 @@ and for the listing demo). Shopify assigned the app handle **`proofly-8`** (Rend
 | L14 | Manual match of the title-only row (done by the owner) → "Matched by you" → **Import newly matched rows** | PASS |
 | L15 | Follow-up import of the same file: 1 imported, 1 published, **6 already imported earlier** (no duplicates) | PASS. UX note: the "Import newly matched rows" button still shows after the matched row was imported |
 | L16 | Demo catalogue published to the Online Store (6 products) | PASS |
+| L17 | Uninstall from Proofly Demo → `POST /webhooks/app/uninstalled` 200 | PASS |
+| L18 | Reviews survive uninstall (merchant-owned `proofly_review` metaobjects: 7 entries remain in Content → Metaobjects) | PASS |
+| L19 | Reinstall → dashboard keeps reviews (7 published, 6 products) and import history; plan back to Free (uninstall cancelled the Growth test subscription); storefront ratings "in sync" | PASS |
+| L20 | After reinstall: Stoneware Mug app metafield `reviews` present; storefront still 4.5 ★ "Based on 2 reviews" | PASS |
+| L21 | `customers/data_request` from admin "Request customer data" (Shopify sample customer) | UNVERIFIED: Shopify confirmed the request, but no `/webhooks/compliance` delivery within ~10 min (Proofly has no customer scopes). To prove via the App Store submission page's automated checks ("Provides mandatory compliance webhooks", "Verifies webhooks with HMAC") |
