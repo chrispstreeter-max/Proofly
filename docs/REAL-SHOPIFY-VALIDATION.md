@@ -217,3 +217,19 @@ What is missing is only the real-world run.
   personal data".
 - **Visible browser pane** (H10–H13, K2): no authorisation, just the pane on screen for screenshots.
 - **Docker, managed Postgres, hosting** (I1–I3, I14, I15).
+
+## L. Production app on Render (2026-10-08)
+
+Production app "Proofly" (CHRISPSDesign, version proofly-2) on `https://proofly-22x6.onrender.com` (Render + Neon),
+installed on the development store **Proofly Demo** (`proofly-demo.myshopify.com`, CHRISPSDesign; created for this
+and for the listing demo). Shopify assigned the app handle **`proofly-8`** (Render `SHOPIFY_APP_HANDLE` updated).
+
+| # | Check | Result |
+|---|---|---|
+| L1 | Install consent shows only products + custom data (+ default store-owner view) | PASS |
+| L2 | First open after install | **FAIL → fixed** (`2cdff37`): concurrent first requests raced in `registerShop` (P2002, "Application Error"); retry-once + `ON CONFLICT DO NOTHING`, regression test added |
+| L3 | Dashboard after fix: Free plan, allowance 100, zero reviews | PASS |
+| L4 | Plan page reconciles with live Shopify billing ("Free · confirmed with Shopify") | PASS |
+| L5 | "Change plan in Shopify" opens `/charges/proofly-8/pricing_plans` with the 5 plans, 7-day trials, "Free to test" on a dev store | PASS |
+| L6 | Choose Growth (monthly, $0 test) → approve → return `/app/plan?plan_handle=growth` → "confirmed with Shopify: Growth", allowance 5,000 | PASS |
+| L7 | Test subscription labelled "test subscription (no charge)" | UNVERIFIED: label absent; Shopify's dev-store "free to test" subscription may not set `test: true`. Dev stores only |
