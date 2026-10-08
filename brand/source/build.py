@@ -33,6 +33,18 @@ CARD = f"""
   </div>
 </div>"""
 
+
+IMPORT_CARD = """
+<div class="card imp">
+  <div class="imp-h">Import complete</div>
+  <div class="muted" style="margin:4px 0 18px">reviews.csv · checked before anything was written</div>
+  <div class="row"><span>Stoneware Mug</span><span class="ok">Matched by handle</span></div>
+  <div class="row"><span>Linen Tote Bag</span><span class="ok">Matched by SKU</span></div>
+  <div class="row"><span>Walnut Serving Board</span><span class="ok">Matched by handle</span></div>
+  <div class="row"><span>Ceramic Pour-Over Set</span><span class="wait">Needs your decision</span></div>
+  <div class="foot">Stored in your Shopify store · Nothing deleted by plan limits</div>
+</div>"""
+
 BASE_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap');
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -65,6 +77,11 @@ h1 { font-weight: 800; letter-spacing: -0.035em; line-height: 1.04; font-size: v
 .av { width: 32px; height: 32px; border-radius: 50%; background: #EEF0FF; color: #2D2DCB; display: grid; place-items: center;
   font-weight: 700; font-size: 14px; }
 .badge { margin-left: auto; font-size: 12px; font-weight: 600; color: #2D2DCB; background: #EEF0FF; border-radius: 99px; padding: 3px 10px; }
+.imp { width: 500px; } .imp-h { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+.row { display: flex; justify-content: space-between; align-items: center; padding: 13px 0; border-top: 1px solid #EEEFF5; font-size: 15px; color: #2a2b3a; }
+.ok, .wait { font-size: 12.5px; font-weight: 600; border-radius: 99px; padding: 4px 11px; }
+.ok { color: #2D2DCB; background: #EEF0FF; } .wait { color: #7a4b00; background: #FFF1D6; }
+.foot { border-top: 1px solid #EEEFF5; margin-top: 4px; padding-top: 14px; font-size: 13px; color: #6b6c7e; }
 .rev p { font-size: 15px; line-height: 1.5; color: #2a2b3a; margin-top: 8px; }
 """
 
@@ -80,7 +97,7 @@ ASSETS = {
       <div class="glow g1"></div>
       <div class="wrap"><div><img class="logo" src="logo-trim.png" alt="Proofly">
         <h1 style="margin:56px 0 28px">{H}</h1><p class="sub">{S}</p></div>
-        <div style="display:grid;place-items:center">{CARD}</div></div>"""),
+        <div style="display:grid;place-items:center">{IMPORT}</div></div>"""),
     # Link preview (Open Graph / Twitter card), 1200×630.
     "social/proofly-og-1200x630": (1200, 630, """
       <style>:root{--logo-h:44px;--h1:58px;--sub:21px;--sub-w:30ch}
@@ -140,7 +157,7 @@ ASSETS = {
 
 def render(name, w, h, body):
     html = (f"<!doctype html><html><head><meta charset='utf-8'><style>:root{{--W:{w}px;--H:{h}px}}{BASE_CSS}</style></head>"
-            f"<body>{body.replace('{H}', HEADLINE).replace('{S}', SUB).replace('{CARD}', CARD)}</body></html>")
+            f"<body>{body.replace('{H}', HEADLINE).replace('{S}', SUB).replace('{CARD}', CARD).replace('{IMPORT}', IMPORT_CARD)}</body></html>")
     out = ROOT / "brand" / f"{name}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", suffix=".html", dir=SRC, delete=False) as f:
