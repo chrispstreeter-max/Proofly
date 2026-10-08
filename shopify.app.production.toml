@@ -2,7 +2,7 @@
 # (render.yaml, docs/LAUNCH.md §6). Deploy only deliberately: `shopify app deploy --config shopify.app.production.toml`.
 # Never run `shopify app dev` against this file (URLs must stay the production host).
 client_id = "863e500f0791a82ee946ab8c10ebdb6c"
-name = "Proofly"
+name = "Proofly Reviews"
 application_url = "https://proofly-22x6.onrender.com"
 embedded = true
 

@@ -9,7 +9,7 @@ Limits and image specifications from Shopify's [app requirements checklist](http
 (read 2026-10-04): name ≤ 30 characters, introduction ≤ 100, details ≤ 500; icon 1200 × 1200 PNG/JPEG, square with
 padding, no text; 3–6 desktop screenshots at 1600 × 900 with browser chrome and sensitive information cropped out.
 
-- **App name (7):** Proofly
+- **App name (15):** Proofly Reviews — "Proofly" alone is taken on the App Store (Shopify: "already in use", 2026-10-08); the brand stays Proofly
 - **Introduction (94):** Import your existing reviews, moderate them in one place and show them with fast theme blocks.
 - **Details (463):** Proofly moves your product reviews into Shopify from a CSV and keeps them in your own store as
   Shopify data. Products are matched by ID, handle or SKU; anything uncertain waits for your confirmation. Moderate,
