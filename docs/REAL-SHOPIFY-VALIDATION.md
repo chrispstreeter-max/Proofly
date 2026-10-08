@@ -247,3 +247,12 @@ and for the listing demo). Shopify assigned the app handle **`proofly-8`** (Rend
 | L19 | Reinstall → dashboard keeps reviews (7 published, 6 products) and import history; plan back to Free (uninstall cancelled the Growth test subscription); storefront ratings "in sync" | PASS |
 | L20 | After reinstall: Stoneware Mug app metafield `reviews` present; storefront still 4.5 ★ "Based on 2 reviews" | PASS |
 | L21 | `customers/data_request` from admin "Request customer data" (Shopify sample customer) | UNVERIFIED: Shopify confirmed the request, but no `/webhooks/compliance` delivery within ~10 min (Proofly has no customer scopes). To prove via the App Store submission page's automated checks ("Provides mandatory compliance webhooks", "Verifies webhooks with HMAC") |
+
+## M. Pre-submission checks (2026-10-08)
+
+| # | Check | Result |
+|---|---|---|
+| M1 | Partner Dashboard automated checks (authenticates after install, redirects to app UI, mandatory compliance webhooks, HMAC verification, valid TLS) | PASS ("Passed automated check for common errors"); closes L21 |
+| M2 | Protected customer data | "Doesn't need access to protected customer data" (no customer scopes) |
+| M3 | Shopify AI self-review requirements (live list via `shopify doc fetch`), groups 1.1, 1.2, 2.2, 2.3, 3.1, 3.2, 5.1 | 33 likely passing, 0 failing, 1 needs review (1.1.4 factual listing: feature image showed an illustrative rating and quote, replaced by an import image, `9e45e79`) |
+| M4 | Lighthouse (mobile, 3 runs each) on the same store-style page without vs with the real widget (CSS, JS, 6-review projection); the dev storefront itself is password-protected | Performance 100 vs 100 (Δ 0); FCP 0.6 s → 0.9 s (widget CSS linked render-blocking in this harness, worse than Shopify's app-block loading), LCP 0.8 → 0.9 s, TBT 0 ms, CLS 0 both. Real themes start lower; re-measure on a live store with a public storefront |
