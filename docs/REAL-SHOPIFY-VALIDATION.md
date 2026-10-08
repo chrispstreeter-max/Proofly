@@ -239,4 +239,6 @@ and for the listing demo). Shopify assigned the app handle **`proofly-8`** (Rend
 | L11 | Reviewer sample CSV import: 8 rows → 6 imported (handle ×4, SKU ×1), 5 published, 1 pending; title-only row asks for a manual decision; unknown handle unmatched | PASS |
 | L12 | Moderation: approve the pending review → "Review published. Storefront rating updated." | PASS |
 | L13 | Storefront (theme preview): Stoneware Mug shows 4.5 ★ "Based on 2 reviews" with the distribution | PASS |
-| L14 | Manual match of the title-only row | NOT RUN: native `<select>` inside the admin iframe can't be driven from the automation pane |
+| L14 | Manual match of the title-only row (done by the owner) → "Matched by you" → **Import newly matched rows** | PASS |
+| L15 | Follow-up import of the same file: 1 imported, 1 published, **6 already imported earlier** (no duplicates) | PASS. UX note: the "Import newly matched rows" button still shows after the matched row was imported |
+| L16 | Demo catalogue published to the Online Store (6 products) | PASS |
