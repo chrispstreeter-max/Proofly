@@ -37,3 +37,24 @@ cast-004,demo-wool-throw,,,5,So cosy,Soft enough for the sofa and warm on cold n
 cast-005,demo-beeswax-candle,,,4,Lovely scent,Gentle honey smell and a clean burn.,Isla F.,2025-09-14,pending,
 cast-006,,,Ceramic Pour-Over Set,5,Great coffee,Brews a smooth cup every time.,Ravi N.,2025-09-17,published,
 ```
+
+## Built version (2026-10-08)
+
+Raw recording: owner's screen recording on Proofly Demo (140 s). Kept source ranges (seconds): [[0, 2.8], [4, 9.8], [17, 37.5], [47, 63], [64, 70.6], [72.8, 80.5], [84, 94.2]] — cuts
+the macOS file picker (private file names), a page-loading flash and the screenshot toolbar at the end. Voice:
+`en-GB-RyanNeural` via edge-tts (the Liftline voice), one file per line passed as `file` in lines.json, then
+`swift scripts/voiceover.swift merge <recording> lines.json proofly-screencast.mp4` → 69.6 s + `.srt`.
+
+| At | Narration |
+|---|---|
+| 0.3s | This is Proofly Reviews, on a demo store. |
+| 4.2s | It brings your existing reviews into Shopify, kept in your own store. |
+| 9.2s | Upload a CSV from your old review app. Proofly matches each review to a product by ID, handle or SKU. |
+| 18.2s | Anything uncertain waits for your decision. |
+| 21.6s | Then the reviews are written to your store. Plan limits never delete a review. |
+| 29.4s | The dashboard shows what's published, and what's waiting for moderation. |
+| 34.3s | In Reviews, you can filter, approve, hide or reject reviews, one at a time or in bulk, and export them all as a CSV. |
+| 45.5s | Billing runs through Shopify. There's a free plan, and paid plans include a seven-day free trial. |
+| 53.0s | Merchants choose and change plans on Shopify's own plan page. |
+| 59.7s | In Settings, choose whether shoppers can write reviews, and whether new reviews need your approval first. |
+| 66.7s | That's Proofly Reviews. |
