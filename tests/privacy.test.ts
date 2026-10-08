@@ -198,3 +198,19 @@ describe("shop/redact — permanent deletion", () => {
     await assert.rejects(prisma.shopDeletion.updateMany({ data: { details: {} } }), /permission denied/);
   });
 });
+
+describe("Public legal pages (App Store listing links)", () => {
+  test("/privacy, /terms and /support load without login and state the facts the listing relies on", async () => {
+    const { loader: privacy } = await import("../app/routes/privacy");
+    const { loader: terms } = await import("../app/routes/terms");
+    const { loader: support } = await import("../app/routes/support");
+    const text = async (r: Response) => { assert.equal(r.status, 200); assert.match(r.headers.get("Content-Type") ?? "", /text\/html/); return r.text(); };
+    const p = await text(privacy()), t = await text(terms()), s = await text(support());
+    for (const page of [p, t, s]) assert.match(page, /hello@utilwell\.com/);
+    assert.match(p, /stored in the merchant's own Shopify store/);
+    assert.match(p, /does not ask for an email address/);
+    assert.match(p, /48 hours after uninstall/);
+    assert.match(t, /Render[^.]*Neon/);
+    assert.doesNotMatch(p + t + s, /<script/);
+  });
+});
