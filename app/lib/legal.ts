@@ -3,12 +3,16 @@
  * match the code: reviews live in the merchant's Shopify store (metaobjects); Proofly's database holds settings, the
  * product cache, import files (≤ 30 days after an import) and logs; shop/redact deletes all of it (tenant.server.ts).
  */
-export const SUPPORT_EMAIL = "hello@utilwell.com";
+// The support address comes from the environment (SUPPORT_EMAIL, like Liftline): the repository holds no real email
+// addresses (merchant-data scan R3).
 const MAKER = "CHRISPSDesign";
 const UPDATED = "8 October 2026";
-const mail = `<a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>`;
+const contact = () => {
+  const e = process.env.SUPPORT_EMAIL?.trim();
+  return e ? `<a href="mailto:${e}">${e}</a>` : "us through our Shopify App Store listing";
+};
 
-export const PRIVACY = `<h1>Proofly Reviews privacy policy</h1>
+export const PRIVACY = (mail = contact()) => `<h1>Proofly Reviews privacy policy</h1>
 <p><i>Last updated: ${UPDATED}. Proofly Reviews ("Proofly") is made by ${MAKER}.</i></p>
 
 <h2>What Proofly is</h2>
@@ -55,7 +59,7 @@ export const PRIVACY = `<h1>Proofly Reviews privacy policy</h1>
 <p>See also our <a href="/terms">terms of service and data processing terms</a>.</p>
 <p>${MAKER}: ${mail}</p>`;
 
-export const TERMS = `<h1>Proofly Reviews terms of service and data processing terms</h1>
+export const TERMS = (mail = contact()) => `<h1>Proofly Reviews terms of service and data processing terms</h1>
 <p><i>Last updated: ${UPDATED}. Proofly Reviews ("Proofly") is made by ${MAKER} ("we"). These terms apply to every store ("you") that installs Proofly from the Shopify App Store.</i></p>
 
 <h2>1. The service</h2>
@@ -87,7 +91,7 @@ export const TERMS = `<h1>Proofly Reviews terms of service and data processing t
 <h2>6. Changes and contact</h2>
 <p>We may update these terms; material changes will be announced in the app before they take effect. Questions: ${mail}.</p>`;
 
-export const SUPPORT = `<h1>Proofly Reviews support</h1>
+export const SUPPORT = (mail = contact()) => `<h1>Proofly Reviews support</h1>
 <p>Email ${mail}. We reply within one business day.</p>
 <p>Proofly runs inside your Shopify admin: go to <b>Apps → Proofly Reviews</b>. To show reviews on your store, open the theme editor and add the <b>Review widget</b> block to your product template.</p>
 <p><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of service</a></p>`;

@@ -206,7 +206,7 @@ describe("Public legal pages (App Store listing links)", () => {
     const { loader: support } = await import("../app/routes/support");
     const text = async (r: Response) => { assert.equal(r.status, 200); assert.match(r.headers.get("Content-Type") ?? "", /text\/html/); return r.text(); };
     const p = await text(privacy()), t = await text(terms()), s = await text(support());
-    for (const page of [p, t, s]) assert.match(page, /hello@utilwell\.com/);
+    for (const page of [p, t, s]) assert.ok(page.includes(`mailto:${process.env.SUPPORT_EMAIL}`));
     assert.match(p, /stored in the merchant's own Shopify store/);
     assert.match(p, /does not ask for an email address/);
     assert.match(p, /48 hours after uninstall/);
